@@ -66,7 +66,6 @@ calculate_metrics <- function(observed, predicted) {
   return(data.frame(r2 = r2, rmse = rmse, mae = mae, bias = bias))
 }
 
-
 #' Fit a random forest model
 #'
 #' @param train_data training data frame containing predictor variables and response
@@ -299,6 +298,101 @@ fit_gpr <- function(train_data, test_data, predictor_vars) {
   predictions <- predict(model, newdata = test_data)
   return(list(model = model, predictions = predictions))
 }
+
+#' Fit an exponential carbon decay model
+#'
+#' @param dat data frame containing the data
+#' @return list containing the fitted model, cleaned data, prediction data frame, and residuals standard deviation
+fit_exponential_carbon_decay <- function(dat) {
+  # clean data
+  dat_clean <- dat %>%
+    filter(!is.na(carbon_density_g_c_cm3) & !is.na(sediment_mean_depth_cm) &
+           carbon_density_g_c_cm3 > 0 & sediment_mean_depth_cm >= 0)
+  
+  if (nrow(dat_clean) < 3) {
+    warning("Insufficient data points after cleaning for NLS fitting.")
+    return(NULL)
+  }
+  
+  # Fit nls model: carbon_density = a * exp(b * depth)
+  nls_model <- tryCatch({
+    nls(carbon_density_g_c_cm3 ~ a * exp(b * sediment_mean_depth_cm),
+        data = dat_clean,
+        start = list(a = max(dat_clean$carbon_density_g_c_cm3, na.rm = TRUE), 
+                     b = -0.01))
+  }, error = function(e) {
+    cat("nls fitting failed, trying alternative starting values\n")
+    nls(carbon_density_g_c_cm3 ~ a * exp(b * sediment_mean_depth_cm),
+        data = dat_clean,
+        start = list(a = mean(dat_clean$carbon_density_g_c_cm3, na.rm = TRUE), 
+                     b = -0.001),
+        control = nls.control(maxiter = 500, warnOnly = TRUE))
+  })
+  
+  # Create prediction data frame
+  depth_seq <- seq(min(dat_clean$sediment_mean_depth_cm, na.rm = TRUE),
+                   max(dat_clean$sediment_mean_depth_cm, na.rm = TRUE),
+                   length.out = 200)
+  pred_df <- data.frame(sediment_mean_depth_cm = depth_seq)
+  pred_df$carbon_density_fit <- predict(nls_model, newdata = pred_df)
+  
+  # Calculate approximate confidence intervals based on residual standard error
+  residuals_sd <- sd(residuals(nls_model), na.rm = TRUE)
+  pred_df$carbon_density_se <- residuals_sd
+  pred_df$carbon_density_lower <- pred_df$carbon_density_fit - 1.96 * pred_df$carbon_density_se
+  pred_df$carbon_density_upper <- pred_df$carbon_density_fit + 1.96 * pred_df$carbon_density_se
+
+  return(list(
+    nls_model = nls_model,
+    dat_clean = dat_clean,
+    pred_df = pred_df,
+    residuals_sd = residuals_sd
+  ))
+}
+
+#' Fit an exponential carbon decay model per species
+#'
+#' @param dat_clean data frame containing the data
+#' @param spec character string specifying the species
+#' @return list containing the fitted model and prediction data frame
+fit_species <- function(dat, spec) {
+  species_dat <- dat %>% filter(seagrass_species == spec)
+  if (nrow(species_dat) < 3) return(NULL)
+  fit <- tryCatch({
+    nls(carbon_density_g_c_cm3 ~ a * exp(b * sediment_mean_depth_cm),
+        data = species_dat,
+        start = list(
+          a = max(species_dat$carbon_density_g_c_cm3, na.rm = TRUE),
+          b = -0.01
+        ))
+  }, error = function(e) {
+    nls(carbon_density_g_c_cm3 ~ a * exp(b * sediment_mean_depth_cm),
+        data = species_dat,
+        start = list(
+          a = mean(species_dat$carbon_density_g_c_cm3, na.rm = TRUE),
+          b = -0.001
+        ),
+        control = nls.control(maxiter = 500, warnOnly = TRUE))
+  })
+  # predictions
+  depth_seq <- seq(
+    min(species_dat$sediment_mean_depth_cm, na.rm = TRUE),
+    max(species_dat$sediment_mean_depth_cm, na.rm = TRUE),
+    length.out = 200
+  )
+  pred_df <- data.frame(
+    seagrass_species = spec,
+    sediment_mean_depth_cm = depth_seq
+  )
+  pred_df$carbon_density_fit <- predict(fit, newdata = pred_df)
+  # approx CI
+  residuals_sd <- sd(residuals(fit), na.rm = TRUE)
+  pred_df$carbon_density_se <- residuals_sd
+  pred_df$carbon_density_lower <- pred_df$carbon_density_fit - 1.96 * residuals_sd
+  pred_df$carbon_density_upper <- pred_df$carbon_density_fit + 1.96 * residuals_sd
+  list(fit = fit, pred_df = pred_df)
+}
+
 
 # ================================ HYPERPARAMETER TUNING ================================
 
@@ -679,6 +773,109 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars, tune
 
 
 # ================================ PLOTTING ================================
+#' Custom function for scatter plots with continuous color using turbo colormap
+#' turbo colormap is from viridisLite package (dependency of ggplot2)
+#'
+#' @param data data frame containing the data
+#' @param mapping ggplot mapping
+#' @param ... additional arguments to pass to ggplot
+#' @return a ggplot object
+scatter_with_color <- function(data, mapping, ...) {
+  # add color aesthetic to the mapping by combining with existing mapping
+  # use aes() to create new mapping that includes color
+  new_mapping <- aes(
+    x = !!mapping$x,
+    y = !!mapping$y,
+    color = carbon_density_g_c_cm3
+  )
+  
+  ggplot(data = data, mapping = new_mapping) +
+    geom_point(alpha = 0.5, ...) +
+    scale_color_gradientn(
+      colors = viridisLite::turbo(256),
+      name = "Carbon density\n(gC cm^-3)",
+      guide = guide_colorbar(
+        barwidth = 1, 
+        barheight = 10,
+        title.position = "right",
+        title.hjust = 0.5
+      )
+    ) +
+    theme(legend.position = "right")
+}
+
+#' Plot a pairs plot of specified variables with a continuous variable as the color
+#' and save it with a combined colorbar legend.
+#'
+#' @param data The input data frame
+#' @param env_vars Character vector of variable names to plot on axes (must be columns in data)
+#' @param color_var The variable name to use as the color aesthetic (must be in data)
+#' @param output_file Filename to save the figure (png)
+#' @param width Width of output image in inches (default 15)
+#' @param height Height of output image in inches (default 15)
+#' @param dpi Dots per inch for png output (default 300)
+#' @return NULL (saves output to file; displays plot)
+plot_env_pairs <- function(data, env_vars, color_var, output_file = "environmental_variables_pairs.png",
+                          width = 15, height = 15, dpi = 300) {
+
+  require(GGally)
+  require(ggplot2)
+  require(dplyr)
+  require(cowplot)
+
+  # Prepare data so color_var is present
+  dat_pairs <- data %>%
+    dplyr::select(dplyr::all_of(c(env_vars, color_var)))
+
+  # Use a custom wrapper for scatter plots that knows to color by color_var
+  pairs_plot <- ggpairs(
+    dat_pairs,
+    columns = env_vars,
+    lower = list(continuous = wrap(scatter_with_color)), # assumes scatter_with_color uses color_var
+    upper = list(continuous = wrap("cor", size = 3)),
+    diag = list(continuous = "densityDiag")
+  ) + 
+    theme_minimal()
+
+  # Extract the colorbar legend from one of the lower triangle plots
+  first_lower_plot <- getPlot(pairs_plot, 2, 1)
+  colorbar_legend <- cowplot::get_legend(first_lower_plot)
+
+  # Create combined plot with pairs plot and colorbar
+  if (!is.null(colorbar_legend)) {
+    library(grid)
+    library(gridExtra)
+
+    png(output_file, width = width + 1, height = height, units = "in", res = dpi)
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(1, 2, widths = unit(c(10, 1), "null"))))
+
+    pushViewport(viewport(layout.pos.col = 1))
+    print(pairs_plot, newpage = FALSE)
+    popViewport()
+
+    pushViewport(viewport(layout.pos.col = 2))
+    grid.draw(colorbar_legend)
+    popViewport()
+
+    dev.off()
+
+    # also print to screen
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(1, 2, widths = unit(c(10, 1), "null"))))
+    pushViewport(viewport(layout.pos.col = 1))
+    print(pairs_plot, newpage = FALSE)
+    popViewport()
+    pushViewport(viewport(layout.pos.col = 2))
+    grid.draw(colorbar_legend)
+    popViewport()
+  } else {
+    # Just plot and save if legend extraction fails
+    print(pairs_plot)
+    ggsave(output_file, plot = pairs_plot, width = width, height = height, dpi = dpi)
+  }
+  invisible(NULL)
+}
 
 #' Plot depth relationships by group (rotated axes: depth on y, C-density on x)
 #' 
