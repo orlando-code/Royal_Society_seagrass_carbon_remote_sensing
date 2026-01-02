@@ -1,0 +1,11 @@
+0
+"To make predictions on a new table, T, use: 
+  yfit = c.predictFcn(T) 
+replacing 'c' with the name of the variable that is this struct, e.g. 'trainedModel'. 
+ 
+The table, T, must contain the variables returned by: 
+  c.RequiredVariables 
+Variable formats (e.g. matrix/vector, datatype) must match the original training data. 
+Additional variables are ignored. 
+ 
+For more information, see <a href=""matlab:helpview(fullfile(docroot, 'stats', 'stats.map'), 'appregression_exportmodeltoworkspace')"">How to predict using an exported model</a>."
