@@ -1,5 +1,8 @@
 # cache files
 .DS_Store
+.Rapp.history
 
 # descriptions
 *.docx
+
+figures/
