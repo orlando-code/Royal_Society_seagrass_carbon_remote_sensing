@@ -23,7 +23,7 @@ env_rasters/
 NN/
 Updated_df/
 pipeline_run.log
-For_modelling_df*
+For_modeling_df*
 GAM_top_reduced*
 dev.ipynb
 
