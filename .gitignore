@@ -4,5 +4,26 @@
 
 # descriptions
 *.docx
+*.xlsx
+spatial_grid_*
 
-figures/
+# figures/
+
+# data which is too large to commit
+data/VRE
+
+# notes to self
+modelling_issues.md
+
+
+# ignoring working/unnecessary files
+deprecated/
+report/
+env_rasters/
+NN/
+Updated_df/
+pipeline_run.log
+For_modelling_df*
+GAM_top_reduced*
+
+
