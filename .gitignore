@@ -16,17 +16,18 @@ data/VRE
 modelling_issues.md
 
 
-# ignoring working/unnecessary files
+# ignoring working/unnecessary directories
 deprecated/
 report/
 env_rasters/
 NN/
 Updated_df/
+docs/
+
+# ignoring working/unnecessary files
 pipeline_run.log
 For_modeling_df*
 GAM_top_reduced*
 dev.ipynb
 covariate_pruning_pipeline.R
-
-
-docs/
+prediction_grid_cache*
