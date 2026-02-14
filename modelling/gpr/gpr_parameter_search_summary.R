@@ -11,7 +11,7 @@
 #   or add noise in folds where a level is rare in the test set. So "more information"
 #   does not guarantee higher R² in spatial CV.
 
-rm(list = ls())
+# rm(list = ls())
 setwd(here::here())
 set.seed(42)
 
@@ -24,6 +24,8 @@ target_var <- "median_carbon_density_100cm"
 out_dir <- "figures/cv_pipeline_output"
 fig_dir <- out_dir
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+if (exists("dpi", envir = .GlobalEnv)) dpi <- get("dpi", envir = .GlobalEnv) else dpi <- 150
+if (exists("show_titles", envir = .GlobalEnv)) show_titles <- get("show_titles", envir = .GlobalEnv) else show_titles <- TRUE
 
 n_folds <- 5
 kernels_to_test <- c("matern52", "matern32", "gaussian")
@@ -88,14 +90,17 @@ for (base in c("figures/cv_pipeline_output", "modelling/cv_pipeline_output")) {
               dplyr::arrange(random_core_variable)
             if (nrow(core_data_cv) == length(strategy$folds)) {
               core_locations <- paste(round(core_data_cv$longitude, 8), round(core_data_cv$latitude, 8), sep = "_")
-              fold_lookup <- data.frame(location = core_locations, fold = strategy$folds,
-                                       longitude = core_data_cv$longitude, latitude = core_data_cv$latitude, stringsAsFactors = FALSE)
+              fold_lookup <- data.frame(
+                location = core_locations, fold = strategy$folds,
+                longitude = core_data_cv$longitude, latitude = core_data_cv$latitude, stringsAsFactors = FALSE
+              )
               point_locations <- paste(round(dat_complete$longitude, 8), round(dat_complete$latitude, 8), sep = "_")
               folds_ids <- fold_lookup$fold[match(point_locations, fold_lookup$location)]
               unmatched <- is.na(folds_ids)
               if (sum(unmatched) > 0) {
                 for (i in which(unmatched)) {
-                  lon <- dat_complete$longitude[i]; lat <- dat_complete$latitude[i]
+                  lon <- dat_complete$longitude[i]
+                  lat <- dat_complete$latitude[i]
                   dists <- sqrt((fold_lookup$longitude - lon)^2 + (fold_lookup$latitude - lat)^2)
                   folds_ids[i] <- fold_lookup$fold[which.min(dists)]
                 }
@@ -129,7 +134,9 @@ cat("Using", length(unique(folds_ids)), "spatial folds.\n\n")
 # Helper: run 5-fold CV for one predictor set and kernel (GPR parameter search only). Not the same as helpers::run_cv.
 run_gpr_cv_parameter_search <- function(predictor_vars, kernel, nug.min = 1e-8, nug.est = TRUE) {
   pv <- intersect(predictor_vars, names(dat_complete))
-  if (length(pv) == 0) return(list(mean_r2 = NA, sd_r2 = NA, mean_rmse = NA, sd_rmse = NA))
+  if (length(pv) == 0) {
+    return(list(mean_r2 = NA, sd_r2 = NA, mean_rmse = NA, sd_rmse = NA))
+  }
   r2_vec <- numeric(n_folds)
   rmse_vec <- numeric(n_folds)
   for (fold in 1:n_folds) {
@@ -150,7 +157,7 @@ run_gpr_cv_parameter_search <- function(predictor_vars, kernel, nug.min = 1e-8, 
 }
 
 results_list <- list()
-default_kernel <- "matern52"   # used for step 1 (nugget) only
+default_kernel <- "matern52" # used for step 1 (nugget) only
 nugget_mins <- c(1e-8, 1e-6, 1e-4)
 
 # -----------------------------------------------------------------------------
@@ -195,7 +202,7 @@ cat("  Env only (from step 1): R² =", round(best_step1$mean_r2, 4), "\n")
 
 step2_results <- list("Env only" = best_step1)
 for (k in kernels_to_test) {
-  if (k == default_kernel) next   # already have Env only with default kernel
+  if (k == default_kernel) next # already have Env only with default kernel
   out <- run_gpr_cv_parameter_search(env_vars, k, nug.min = best_nug_min, nug.est = TRUE)
   step2_results[[k]] <- out
   results_list[[length(results_list) + 1]] <- data.frame(
@@ -337,15 +344,16 @@ strip_step_prefix <- function(x) {
 p <- ggplot(plot_tab, aes(x = plot_label, y = mean_r2, fill = step)) +
   geom_col(alpha = 0.9) +
   geom_errorbar(aes(ymin = mean_r2 - sd_r2, ymax = mean_r2 + sd_r2),
-                width = 0.2, linewidth = 0.4, color = "gray20") +
+    width = 0.2, linewidth = 0.4, color = "gray20"
+  ) +
   coord_flip() +
   scale_x_discrete(labels = strip_step_prefix) +
   scale_fill_manual(values = step_colours, name = "Step") +
   labs(
     x = "",
     y = "Mean R² (1 km spatial CV)",
-    title = "GPR parameter search (sequential: 1. Nugget → 2. Kernel → 3. Spatial → 4. Categorical)",
-    subtitle = "Regularization first, then model expansion. Adding spatial/species can lower R² in strict spatial CV (overfitting, redundancy)."
+    title = if (show_titles) "GPR parameter search (sequential: 1. Nugget → 2. Kernel → 3. Spatial → 4. Categorical)" else NULL,
+    subtitle = if (show_titles) "Regularization first, then model expansion. Adding spatial/species can lower R² in strict spatial CV (overfitting, redundancy)." else NULL
   ) +
   theme_minimal() +
   theme(
@@ -356,13 +364,11 @@ p <- ggplot(plot_tab, aes(x = plot_label, y = mean_r2, fill = step)) +
     axis.text.y = element_text(size = rel(0.9))
   )
 
-ggsave(file.path(out_dir, "gpr_parameter_search_summary.png"), p, width = 9, height = 7, dpi = 150)
-ggsave(file.path(out_dir, "gpr_parameter_search_summary.pdf"), p, width = 9, height = 7)
+ggsave(file.path(out_dir, "gpr_parameter_search_summary.png"), p, width = 9, height = 7, dpi = dpi)
 if (fig_dir != out_dir) {
-  ggsave(file.path(fig_dir, "gpr_parameter_search_summary.png"), p, width = 9, height = 7, dpi = 150)
-  ggsave(file.path(fig_dir, "gpr_parameter_search_summary.pdf"), p, width = 9, height = 7)
+  ggsave(file.path(fig_dir, "gpr_parameter_search_summary.png"), p, width = 9, height = 7, dpi = dpi)
 }
-cat("Figure saved: gpr_parameter_search_summary.png (and .pdf)\n")
+cat("Figure saved: gpr_parameter_search_summary.png\n")
 
 # Print summary
 cat("\n========================================\n")

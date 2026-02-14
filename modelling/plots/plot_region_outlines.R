@@ -8,12 +8,13 @@
 #   p <- plot_region_outlines()
 #   ggsave("figures/interpolation/region_outlines.png", p, width = 10, height = 6)
 
-rm(list = ls())
+# rm(list = ls())
 setwd(here::here())
 
 source("modelling/R/helpers.R")
 source("modelling/R/plot_config.R")
 load_packages(c("here", "ggplot2", "dplyr", "maps"))
+if (exists("dpi", envir = .GlobalEnv)) dpi <- get("dpi", envir = .GlobalEnv) else dpi <- 150
 
 world <- map_data("world")
 
@@ -86,7 +87,6 @@ region_labels <- region_labels %>%
   )
 
 
-
 ggplot() +
   geom_polygon(
     data = world,
@@ -114,10 +114,10 @@ ggplot() +
     expand = FALSE
   ) +
   theme_minimal() +
-  theme(legend.position = "none") + labs(x = "Longitude", y = "Latitude")
+  theme(legend.position = "none") +
+  labs(x = "Longitude", y = "Latitude")
 # save
-ggsave("figures/supplement/region_shapes.png", width = 10, height = 10)
-
+ggsave("figures/supplement/region_shapes.png", width = 10, height = 10, dpi = dpi)
 
 
 # #' Return a ggplot of region outlines and labels.
@@ -192,4 +192,3 @@ ggsave("figures/supplement/region_shapes.png", width = 10, height = 10)
 # if (interactive()) {
 #   print(plot_region_outlines())
 # }
-

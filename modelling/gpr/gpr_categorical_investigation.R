@@ -4,7 +4,7 @@
 # and writes a comparison table. Use the results to decide whether to include categoricals
 # in the main model.
 
-rm(list = ls())
+# # rm(list = ls())
 setwd(here::here())
 set.seed(42)
 
@@ -99,14 +99,17 @@ if (!is.null(cv_pipeline_cache_path)) {
           dplyr::arrange(random_core_variable)
         if (nrow(core_data_cv) == length(matching_strategy$folds)) {
           core_locations <- paste(round(core_data_cv$longitude, 8), round(core_data_cv$latitude, 8), sep = "_")
-          fold_lookup <- data.frame(location = core_locations, fold = matching_strategy$folds,
-                                   longitude = core_data_cv$longitude, latitude = core_data_cv$latitude, stringsAsFactors = FALSE)
+          fold_lookup <- data.frame(
+            location = core_locations, fold = matching_strategy$folds,
+            longitude = core_data_cv$longitude, latitude = core_data_cv$latitude, stringsAsFactors = FALSE
+          )
           point_locations <- paste(round(dat_complete$longitude, 8), round(dat_complete$latitude, 8), sep = "_")
           folds_ids <- fold_lookup$fold[match(point_locations, fold_lookup$location)]
           unmatched <- is.na(folds_ids)
           if (sum(unmatched) > 0) {
             for (i in which(unmatched)) {
-              lon <- dat_complete$longitude[i]; lat <- dat_complete$latitude[i]
+              lon <- dat_complete$longitude[i]
+              lat <- dat_complete$latitude[i]
               dists <- sqrt((fold_lookup$longitude - lon)^2 + (fold_lookup$latitude - lat)^2)
               folds_ids[i] <- fold_lookup$fold[which.min(dists)]
             }
@@ -171,8 +174,10 @@ for (config_name in names(configs)) {
     n_folds_valid = sum(valid),
     stringsAsFactors = FALSE
   )
-  cat("  Mean R² =", round(mean(r2_vec[valid]), 4),
-      ", Mean RMSE =", round(mean(rmse_vec[valid]), 4), "\n\n")
+  cat(
+    "  Mean R² =", round(mean(r2_vec[valid]), 4),
+    ", Mean RMSE =", round(mean(rmse_vec[valid]), 4), "\n\n"
+  )
 }
 
 results_df <- do.call(rbind, results_list)
@@ -180,6 +185,8 @@ write.csv(results_df, file.path(out_dir, "gpr_categorical_investigation.csv"), r
 cat("Saved:", file.path(out_dir, "gpr_categorical_investigation.csv"), "\n")
 
 best_r2 <- which.max(results_df$mean_r2)
-cat("\nBest configuration by mean R²:", results_df$configuration[best_r2],
-    "(R² =", round(results_df$mean_r2[best_r2], 4), ")\n")
+cat(
+  "\nBest configuration by mean R²:", results_df$configuration[best_r2],
+  "(R² =", round(results_df$mean_r2[best_r2], 4), ")\n"
+)
 cat("Use this to set include_species / include_region in gpr_predictions.R if desired.\n")

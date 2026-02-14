@@ -12,20 +12,22 @@ library(dplyr)
 library(tidyr)
 
 out_dir <- "figures/cv_pipeline_output"
-search_dirs <- c("figures/cv_pipeline_output", "modelling/cv_pipeline_output")
+search_dirs <- c("figures/covariate_selection")
+if (exists("dpi", envir = .GlobalEnv)) dpi <- get("dpi", envir = .GlobalEnv) else dpi <- 150
+if (exists("show_titles", envir = .GlobalEnv)) show_titles <- get("show_titles", envir = .GlobalEnv) else show_titles <- TRUE
 
 # Find the permutation pruning CSV (any block size)
 csv_path <- NULL
 for (d in search_dirs) {
   if (!dir.exists(d)) next
-  f <- list.files(d, pattern = "^cv_model_permutation_pruning_.*\\.csv$", full.names = TRUE)
+  f <- list.files(d, pattern = "^pruned_model_variables*\\.csv$", full.names = TRUE)
   if (length(f) > 0L) {
     csv_path <- f[1L]
     break
   }
 }
 if (is.null(csv_path)) {
-  stop("No cv_model_permutation_pruning_*.csv found in ", paste(search_dirs, collapse = " or "),
+  stop("No pruned_model_variables*.csv found in ", paste(search_dirs, collapse = " or "),
        ". Run model_permutation_pruning.R first.")
 }
 
@@ -91,8 +93,8 @@ p_importance <- ggplot(imp_plot, aes(x = variable_label, y = rmse_increase, fill
   labs(
     x = "Predictor",
     y = "RMSE increase (permutation importance; sqrt scale)",
-    title = "Model-wise permutation importance (1 km spatial block CV)",
-    subtitle = paste0("Top ", top_n_per_model, " predictors per model; blue = retained. Sqrt scale shows full ranking.")
+    title = if (show_titles) "Model-wise permutation importance (1 km spatial block CV)" else NULL,
+    subtitle = if (show_titles) paste0("Top ", top_n_per_model, " predictors per model; blue = retained. Sqrt scale shows full ranking.") else NULL
   ) +
   theme_minimal() +
   theme(
@@ -110,20 +112,20 @@ n_kept <- imp %>%
 p_n_kept <- ggplot(n_kept, aes(x = reorder(model, n_kept), y = n_kept, fill = model)) +
   geom_col(show.legend = FALSE) +
   coord_flip() +
-  labs(x = NULL, y = "Number of predictors kept", title = "Predictors kept per model (cumulative importance)") +
+  labs(x = NULL, y = "Number of predictors kept", title = if (show_titles) "Predictors kept per model (cumulative importance)" else NULL) +
   theme_minimal() +
   theme(plot.title = element_text(hjust = 0.5))
 
 # Save
 if (requireNamespace("patchwork", quietly = TRUE)) {
   p_combined <- p_n_kept + p_importance + patchwork::plot_layout(ncol = 1, heights = c(0.3, 0.7))
-  ggsave(file.path(out_dir, "model_permutation_pruning_importance.png"), p_combined, width = 12, height = 2 + 0.22 * length(unique(imp_plot$variable_label)), dpi = 150, limitsize = FALSE)
+  ggsave(file.path(out_dir, "model_permutation_pruning_importance.png"), p_combined, width = 12, height = 2 + 0.22 * length(unique(imp_plot$variable_label)), dpi = dpi, limitsize = FALSE)
 } else {
-  ggsave(file.path(out_dir, "model_permutation_pruning_importance.png"), p_importance, width = 12, height = 2 + 0.22 * length(unique(imp_plot$variable_label)), dpi = 150, limitsize = FALSE)
+  ggsave(file.path(out_dir, "model_permutation_pruning_importance.png"), p_importance, width = 12, height = 2 + 0.22 * length(unique(imp_plot$variable_label)), dpi = dpi, limitsize = FALSE)
 }
 cat("Saved", file.path(out_dir, "model_permutation_pruning_importance.png"), "\n")
 
-ggsave(file.path(out_dir, "model_permutation_pruning_n_kept.png"), p_n_kept, width = 6, height = 3, dpi = 150)
+ggsave(file.path(out_dir, "model_permutation_pruning_n_kept.png"), p_n_kept, width = 6, height = 3, dpi = dpi)
 cat("Saved", file.path(out_dir, "model_permutation_pruning_n_kept.png"), "\n")
 
 # ---------------------------------------------------------------------------
@@ -146,7 +148,7 @@ if (nrow(imp_gpr) > 0L) {
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom", axis.text.y = element_text(size = rel(0.9)))
   ggsave(file.path(out_dir, "model_permutation_pruning_importance_gpr_paper.png"), p_gpr,
-         width = 8, height = max(5, 0.32 * nrow(imp_gpr)), dpi = 150)
+         width = 8, height = max(5, 0.32 * nrow(imp_gpr)), dpi = dpi)
   cat("Saved", file.path(out_dir, "model_permutation_pruning_importance_gpr_paper.png"), " (GPR-only, for paper)\n")
 }
 

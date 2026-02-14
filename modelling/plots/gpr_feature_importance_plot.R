@@ -24,6 +24,7 @@ n_val <- 500
 # Output
 out_dir <- "figures/cv_pipeline_output"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+if (exists("dpi", envir = .GlobalEnv)) dpi <- get("dpi", envir = .GlobalEnv) else dpi <- 150
 
 # Best config path: check figures then modelling
 best_config_path <- "figures/cv_pipeline_output/gpr_best_config.rds"
@@ -118,5 +119,5 @@ p <- ggplot(importance_results, aes(x = reorder(variable_label, rmse_increase), 
   theme(axis.text.y = element_text(size = rel(0.9)))
 print(p)
 ggsave(file.path(out_dir, "gpr_feature_importance_best_model.png"), p,
-       width = 9, height = max(5, nrow(importance_results) * 0.35), dpi = 150)
+       width = 9, height = max(5, nrow(importance_results) * 0.35), dpi = dpi)
 cat("Saved:", file.path(out_dir, "gpr_feature_importance_best_model.png"), " (best fitted GPR; sqrt scale)\n")

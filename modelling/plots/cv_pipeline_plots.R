@@ -17,6 +17,8 @@ source("modelling/R/plot_config.R")
 # Prefer figures/cv_pipeline_output; fallback to modelling/cv_pipeline_output
 out_dir <- "figures/cv_pipeline_output"
 if (!dir.exists(out_dir)) out_dir <- "modelling/cv_pipeline_output"
+if (exists("dpi", envir = .GlobalEnv)) dpi <- get("dpi", envir = .GlobalEnv) else dpi <- 300
+if (exists("show_titles", envir = .GlobalEnv)) show_titles <- get("show_titles", envir = .GlobalEnv) else show_titles <- TRUE
 
 required_files <- c(
   "cv_results_detailed.csv",
@@ -130,14 +132,14 @@ p_metrics <- p_metrics_data %>%
   geom_boxplot(outlier.size = 0.8, position = position_dodge(0.8), width = 0.7) +
   facet_wrap(~metric, scales = "free_y", ncol = 1, labeller = as_labeller(metric_labeller)) +
   scale_fill_manual(values = model_colours, na.value = "gray75") +
-  labs(x = "CV method", y = NULL, title = "Cross-validation performance by method and model") +
+  labs(x = "CV method", y = NULL, title = if (show_titles) "Cross-validation performance by method and model" else NULL) +
   theme_minimal() +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
     legend.position = "bottom",
     plot.title = element_text(hjust = 0.5)
   )
-ggsave(file.path(out_dir, "cv_metrics_by_method_model.png"), p_metrics, width = 12, height = 8, dpi = 300)
+ggsave(file.path(out_dir, "cv_metrics_by_method_model.png"), p_metrics, width = 12, height = 8, dpi = dpi)
 cat("Saved", file.path(out_dir, "cv_metrics_by_method_model.png"), "\n")
 if (any(results_df$rmse > rmse_upper, na.rm = TRUE)) {
   n_capped <- sum(results_df$rmse > rmse_upper, na.rm = TRUE)
@@ -182,10 +184,10 @@ if (!is.null(best_1km_for_plot) && nrow(best_1km_for_plot) > 0) {
     geom_boxplot(outlier.size = 0.8, position = position_dodge(0.8), width = 0.7) +
     facet_wrap(~ metric, scales = "free_y", ncol = 1, labeller = as_labeller(metric_labeller)) +
     scale_fill_manual(values = model_colours, na.value = "gray75") +
-    labs(x = "CV method", y = NULL, title = "Cross-validation performance by method and model (best predictor set per model)") +
+    labs(x = "CV method", y = NULL, title = if (show_titles) "Cross-validation performance by method and model (best predictor set per model)" else NULL) +
     theme_minimal() +
     theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), legend.position = "bottom", plot.title = element_text(hjust = 0.5))
-  ggsave(file.path(out_dir, "cv_metrics_by_method_model_best_predictors.png"), p_metrics_best, width = 12, height = 8, dpi = 300)
+  ggsave(file.path(out_dir, "cv_metrics_by_method_model_best_predictors.png"), p_metrics_best, width = 12, height = 8, dpi = dpi)
   cat("Saved", file.path(out_dir, "cv_metrics_by_method_model_best_predictors.png"), "\n")
 }
 
@@ -198,42 +200,14 @@ if (!is.null(predictions_df) && nrow(predictions_df) > 0) {
       geom_point(alpha = 0.4, size = 1) +
       geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "red", linewidth = 0.5) +
       facet_wrap(~model, scales = "free", ncol = 3) +
-      labs(x = "Predicted", y = "Observed", title = "Observed vs predicted by model (all CV folds)") +
+      labs(x = "Predicted", y = "Observed", title = if (show_titles) "Observed vs predicted by model (all CV folds)" else NULL) +
       theme_minimal() +
       theme(plot.title = element_text(hjust = 0.5))
-    ggsave(file.path(out_dir, "cv_observed_vs_predicted.png"), p_scatter, width = 12, height = 10, dpi = 300)
+    ggsave(file.path(out_dir, "cv_observed_vs_predicted.png"), p_scatter, width = 12, height = 10, dpi = dpi)
     cat("Saved", file.path(out_dir, "cv_observed_vs_predicted.png"), "\n")
   }
 }
 
-# Spatial GAM: predictions and errors side by side (inspired by interpolation.R)
-if (!is.null(predictions_df) && nrow(predictions_df) > 0) {
-  gam_pred <- predictions_df %>%
-    filter(model == "GAM", if ("predictor_set" %in% names(predictions_df)) predictor_set == "all" else TRUE) %>%
-    mutate(error = observed - predicted)
-  if (nrow(gam_pred) > 0) {
-    world <- ggplot2::map_data("world")
-    xlim <- range(gam_pred$longitude, na.rm = TRUE)
-    ylim <- range(gam_pred$latitude, na.rm = TRUE)
-    p_gam_pred <- ggplot() +
-      geom_polygon(data = world, aes(x = long, y = lat, group = group), fill = "#eeeeee", colour = "#a5a5a5") +
-      geom_point(data = gam_pred, aes(x = longitude, y = latitude, colour = predicted), size = 1.5, alpha = 0.8) +
-      scale_colour_viridis_c(option = "turbo", name = "Predicted") +
-      coord_cartesian(xlim = xlim, ylim = ylim) +
-      theme_minimal() +
-      labs(x = "Longitude", y = "Latitude", title = "GAM: spatial distribution of predictions")
-    p_gam_err <- ggplot() +
-      geom_polygon(data = world, aes(x = long, y = lat, group = group), fill = "#eeeeee", colour = "#a5a5a5") +
-      geom_point(data = gam_pred, aes(x = longitude, y = latitude, colour = error), size = 1.5, alpha = 0.8) +
-      scale_colour_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, name = "Error (obs - pred)") +
-      coord_cartesian(xlim = xlim, ylim = ylim) +
-      theme_minimal() +
-      labs(x = "Longitude", y = "Latitude", title = "GAM: spatial distribution of errors")
-    p_gam_spatial <- p_gam_pred + p_gam_err + plot_layout(ncol = 2)
-    ggsave(file.path(out_dir, "cv_gam_spatial_predictions_and_errors.png"), p_gam_spatial, width = 12, height = 5, dpi = 300)
-    cat("Saved", file.path(out_dir, "cv_gam_spatial_predictions_and_errors.png"), "\n")
-  }
-}
 
 # Direct comparison: GAM vs ML methods under the same CV (mean R² by model and CV method)
 # Filter to full predictor set for clean comparison
@@ -254,10 +228,10 @@ p_gam_vs_ml <- ggplot(summary_plot, aes(x = reorder(model, -mean_r2), y = mean_r
   facet_wrap(~method_label, scales = "free_x", ncol = 2) +
   scale_fill_manual(values = model_colours, na.value = "gray75") +
   coord_flip() +
-  labs(x = NULL, y = "Mean R² (± SD across folds)", title = "GAM vs ML methods: same CV test") +
+  labs(x = NULL, y = "Mean R² (± SD across folds)", title = if (show_titles) "GAM vs ML methods: same CV test" else NULL) +
   theme_minimal() +
   theme(legend.position = "none", plot.title = element_text(hjust = 0.5))
-ggsave(file.path(out_dir, "cv_gam_vs_ml_by_method.png"), p_gam_vs_ml, width = 10, height = 4 + 1.2 * length(unique(summary_plot$method)), dpi = 300, limitsize = FALSE)
+ggsave(file.path(out_dir, "cv_gam_vs_ml_by_method.png"), p_gam_vs_ml, width = 10, height = 4 + 1.2 * length(unique(summary_plot$method)), dpi = dpi, limitsize = FALSE)
 cat("Saved", file.path(out_dir, "cv_gam_vs_ml_by_method.png"), "\n")
 
 # Two-panel: Random split vs Spatial block (first available) – direct side-by-side
@@ -294,10 +268,10 @@ if (length(compare_methods) >= 2 && !is.null(first_spatial)) {
                   position = position_dodge(0.9), width = 0.2, linewidth = 0.4) +
     scale_fill_manual(values = cv_method_colours, name = NULL) +
     coord_flip() +
-    labs(x = NULL, y = "Mean R² (± SD)", title = "Random split vs spatial block CV: GAM and ML methods") +
+    labs(x = NULL, y = "Mean R² (± SD)", title = if (show_titles) "Random split vs spatial block CV: GAM and ML methods" else NULL) +
     theme_minimal() +
     theme(legend.title = element_blank(), legend.position = "bottom", plot.title = element_text(hjust = 0.5))
-  ggsave(file.path(out_dir, "cv_random_vs_spatial_gam_ml.png"), p_random_vs_spatial, width = 9, height = 5, dpi = 300)
+  ggsave(file.path(out_dir, "cv_random_vs_spatial_gam_ml.png"), p_random_vs_spatial, width = 9, height = 5, dpi = dpi)
   cat("Saved", file.path(out_dir, "cv_random_vs_spatial_gam_ml.png"), "\n")
 }
 
@@ -331,13 +305,13 @@ p_method <- summary_method %>%
   tidyr::pivot_longer(cols = c(r2, rmse), names_to = "metric", values_to = "value") %>%
   ggplot(aes(x = method_label, y = value, fill = metric)) +
   geom_col(position = "dodge") +
-  labs(x = "CV method", y = "Mean (across folds and models)", title = "Ensemble performance by CV method") +
+  labs(x = "CV method", y = "Mean (across folds and models)", title = if (show_titles) "Ensemble performance by CV method" else NULL) +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 if ("predictor_set" %in% names(summary_method)) {
   p_method <- p_method + facet_wrap(~predictor_set, ncol = 1)
 }
-ggsave(file.path(out_dir, "cv_ensemble_by_method.png"), p_method, width = 10, height = 5, dpi = 300)
+ggsave(file.path(out_dir, "cv_ensemble_by_method.png"), p_method, width = 10, height = 5, dpi = dpi)
 cat("Saved", file.path(out_dir, "cv_ensemble_by_method.png"), "\n")
 
 # Performance over block sizes (1, 5, 25, 50, 100 km)
@@ -395,7 +369,7 @@ if (nrow(spatial_results) > 0 && "block_size_m" %in% names(spatial_results)) {
   p_block_r2 <- ggplot(sum_block, aes(x = block_km, y = mean_r2, colour = model, group = model)) +
     geom_line(linewidth = 1) + geom_point(size = 3) +
     scale_colour_manual(values = model_colours, na.value = "gray75") +
-    labs(x = "Block size (km)", y = "Mean R²", title = "Performance over spatial block sizes") +
+    labs(x = "Block size (km)", y = "Mean R²", title = if (show_titles) "Performance over spatial block sizes" else NULL) +
     scale_x_discrete(labels = paste0(km_levels, " km")) +
     theme_minimal() + theme(legend.position = "bottom", plot.title = element_text(size = 10, hjust = 0.5))
   # Cap RMSE y-axis so main models are visible (high-RMSE models e.g. Universal Kriging may be off-scale)
@@ -408,12 +382,12 @@ if (nrow(spatial_results) > 0 && "block_size_m" %in% names(spatial_results)) {
     geom_line(linewidth = 1) + geom_point(size = 3) +
     scale_colour_manual(values = model_colours, na.value = "gray75") +
     coord_cartesian(ylim = c(0, rmse_cap_block)) +
-    labs(x = "Block size (km)", y = "Mean RMSE", title = "Performance over spatial block sizes",
-         subtitle = paste0("RMSE axis capped at ", round(rmse_cap_block, 2), "; some models may be off-scale.")) +
+    labs(x = "Block size (km)", y = "Mean RMSE", title = if (show_titles) "Performance over spatial block sizes" else NULL,
+         subtitle = if (show_titles) paste0("RMSE axis capped at ", round(rmse_cap_block, 2), "; some models may be off-scale.") else NULL) +
     scale_x_discrete(labels = paste0(km_levels, " km")) +
     theme_minimal() + theme(legend.position = "bottom", plot.title = element_text(size = 10, hjust = 0.5), plot.subtitle = element_text(size = 7))
   p_block_combined <- p_block_r2 + p_block_rmse + plot_layout(ncol = 1)
-  ggsave(file.path(out_dir, "cv_performance_over_block_sizes.png"), p_block_combined, width = 9, height = 7, dpi = 300)
+  ggsave(file.path(out_dir, "cv_performance_over_block_sizes.png"), p_block_combined, width = 9, height = 7, dpi = dpi)
   cat("Saved", file.path(out_dir, "cv_performance_over_block_sizes.png"), "\n")
 }
 
@@ -444,12 +418,12 @@ if (nrow(summary_unc) > 0) {
     labs(
       x = "CV method",
       y = "Mean R² (± SD)",
-      title = "Model selection for spatial prediction with uncertainty",
-      subtitle = "GAM and GPR provide prediction intervals; others give point predictions only. Spatial block CV tests transfer to nearby, unsampled areas."
+      title = if (show_titles) "Model selection for spatial prediction with uncertainty" else NULL,
+      subtitle = if (show_titles) "GAM and GPR provide prediction intervals; others give point predictions only. Spatial block CV tests transfer to nearby, unsampled areas." else NULL
     ) +
     theme_minimal() +
     theme(axis.text.x = element_text(angle = 30, hjust = 1), legend.position = "bottom", plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(size = 8))
-  ggsave(file.path(out_dir, "cv_uncertainty_capable_models.png"), p_unc_simple, width = 8, height = 5, dpi = 300)
+  ggsave(file.path(out_dir, "cv_uncertainty_capable_models.png"), p_unc_simple, width = 8, height = 5, dpi = dpi)
   cat("Saved", file.path(out_dir, "cv_uncertainty_capable_models.png"), "\n")
 }
 
@@ -492,12 +466,12 @@ if ("predictor_set" %in% names(summary_by_method_model) && length(unique(summary
       labs(
         x = "CV method",
         y = "Mean R² (± SD)",
-        title = "All vs pruned predictor sets (GAM, XGBoost, GPR)",
-        subtitle = "Same folds; pruned sets reduce overfitting risk."
+        title = if (show_titles) "All vs pruned predictor sets (GAM, XGBoost, GPR)" else NULL,
+        subtitle = if (show_titles) "Same folds; pruned sets reduce overfitting risk." else NULL
       ) +
       theme_minimal() +
       theme(axis.text.x = element_text(angle = 30, hjust = 1), legend.position = "bottom", plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(size = 8))
-    ggsave(file.path(out_dir, "cv_all_vs_pruned_predictors.png"), p_all_vs_pruned, width = 4 + 3 * n_ps_facets, height = 5.5, dpi = 300)
+    ggsave(file.path(out_dir, "cv_all_vs_pruned_predictors.png"), p_all_vs_pruned, width = 4 + 3 * n_ps_facets, height = 5.5, dpi = dpi)
     cat("Saved", file.path(out_dir, "cv_all_vs_pruned_predictors.png"), "\n")
   }
 }
@@ -506,7 +480,7 @@ if ("predictor_set" %in% names(summary_by_method_model) && length(unique(summary
 # That plot can only be generated when running the full cv_pipeline.R script.
 
 cat("\n========================================\n")
-cat("All plots regenerated successfully!\n")
+cat("All plots generated successfully!\n")
 cat("========================================\n\n")
 cat("Note: cv_spatial_blocks_and_points.png requires spatial data structures and is only generated\n")
 cat("      when running the full cv_pipeline.R script.\n\n")

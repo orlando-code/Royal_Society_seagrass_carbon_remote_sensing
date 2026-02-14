@@ -8,7 +8,7 @@
 #   ggsave("figures/interpolation/gpr_region_collage.png", collage, width = 14, height = 10)
 #
 
-rm(list = ls())
+# rm(list = ls())
 setwd(here::here())
 
 source("modelling/R/helpers.R")
@@ -29,6 +29,7 @@ world <- map_data("world")
 create_gpr_region_collage <- function(pred_grid,
                                       regions = NULL,
                                       sample_every = 1L) {
+  if (exists("show_titles", envir = .GlobalEnv)) show_titles <- get("show_titles", envir = .GlobalEnv) else show_titles <- TRUE
   dat <- pred_grid
   if (!"region" %in% names(dat)) {
     if (all(c("longitude", "latitude") %in% names(dat))) {
@@ -38,10 +39,10 @@ create_gpr_region_collage <- function(pred_grid,
     }
   }
   dat <- dat[!is.na(dat$region) &
-               !is.na(dat$gpr_mean) &
-               !is.na(dat$gpr_se) &
-               !is.na(dat$longitude) &
-               !is.na(dat$latitude), , drop = FALSE]
+    !is.na(dat$gpr_mean) &
+    !is.na(dat$gpr_se) &
+    !is.na(dat$longitude) &
+    !is.na(dat$latitude), , drop = FALSE]
   if (nrow(dat) == 0) stop("create_gpr_region_collage: no valid prediction points with region and GPR outputs.")
 
   if (is.null(regions)) {
@@ -98,7 +99,7 @@ create_gpr_region_collage <- function(pred_grid,
       labs(
         x = "Longitude",
         y = "Latitude",
-        title = paste("Mean:", r)
+        title = if (show_titles) paste("Mean:", r) else NULL
       )
 
     p_se <- ggplot() +
@@ -134,7 +135,7 @@ create_gpr_region_collage <- function(pred_grid,
       labs(
         x = "Longitude",
         y = "Latitude",
-        title = paste("SE:", r)
+        title = if (show_titles) paste("SE:", r) else NULL
       )
 
     region_plots[[r]] <- p_mean + p_se + plot_layout(ncol = 2)
@@ -146,4 +147,3 @@ create_gpr_region_collage <- function(pred_grid,
   collage <- wrap_plots(region_plots, ncol = 1)
   collage
 }
-
