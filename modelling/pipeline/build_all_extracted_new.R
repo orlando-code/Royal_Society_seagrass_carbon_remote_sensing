@@ -11,7 +11,7 @@
 #   it will do nothing (just print a message).
 # - Otherwise it will re-create the file.
 
-rm(list = ls())
+# rm(list = ls())
 setwd(here::here())
 
 source("modelling/R/extract_covariates_from_rasters.R")
@@ -43,7 +43,7 @@ cat("Extracting covariates at point locations with method = 'nearest'...\n")
 cat("(This may take a few minutes)\n\n")
 
 all_extracted <- extract_covariates_at_points(
-  dat[, c("latitude", "longitude")],
+  points = dat[, c("latitude", "longitude")],
   use_closest = TRUE,
   method = "nearest"
 )
@@ -61,8 +61,10 @@ meta_cols <- c(
 
 missing_meta <- setdiff(meta_cols, names(dat))
 if (length(missing_meta) > 0) {
-  stop("Missing metadata columns in For_modeling_df_v3.rds: ",
-       paste(missing_meta, collapse = ", "))
+  stop(
+    "Missing metadata columns in For_modeling_df_v3.rds: ",
+    paste(missing_meta, collapse = ", ")
+  )
 }
 
 all_extracted_new <- dplyr::select(dat, dplyr::all_of(meta_cols)) %>%
@@ -98,4 +100,3 @@ cat("Saved new data to:", all_extracted_path, "\n")
 cat("======================================================================\n")
 cat("BUILD COMPLETE\n")
 cat("======================================================================\n\n")
-

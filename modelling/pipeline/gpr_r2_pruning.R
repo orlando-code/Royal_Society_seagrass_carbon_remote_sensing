@@ -9,7 +9,7 @@
 #
 # Requires: spatial_folds_cache.rds from cv_pipeline (run paper figures / cv_pipeline first).
 
-rm(list = ls())
+# rm(list = ls())
 setwd(here::here())
 set.seed(42)
 
@@ -31,8 +31,6 @@ block_size_name <- paste0("spatial_block_", block_size_m, "m")
 # 1. Load core-level data (same as model_permutation_pruning.R)
 # ---------------------------------------------------------------------------
 dat <- read_rds("data/all_extracted_new.rds")
-RASTER_DIR <- "data/env_rasters"
-raster_covariates <- names(build_covariate_config_from_dir(RASTER_DIR))
 predictor_vars_full <- raster_covariates[raster_covariates %in% colnames(dat)]
 if (length(predictor_vars_full) == 0) {
   stop("No predictor_vars found in dat. Check all_extracted_new.rds and raster config.")
@@ -74,7 +72,9 @@ if (length(predictor_vars) >= 2) {
     cor_with_target <- sapply(predictor_vars, function(v) {
       if (v %in% names(dat_complete)) {
         stats::cor(dat_complete[[v]], dat_complete[["median_carbon_density"]], use = "complete.obs")
-      } else NA_real_
+      } else {
+        NA_real_
+      }
     })
     cor_df <- data.frame(
       variable = predictor_vars,
@@ -246,6 +246,10 @@ current_vars <- predictor_vars
 pruned_csv <- file.path(covariate_dir, "pruned_variables_to_include_gpr.csv")
 write.csv(data.frame(variable = current_vars), pruned_csv, row.names = FALSE)
 cat("Wrote:", pruned_csv, "\n")
+if (exists("combine_pruned_model_variables", mode = "function")) {
+  out_combined <- combine_pruned_model_variables(covariate_dir)
+  if (!is.null(out_combined)) cat("Updated combined file:", out_combined, "\n")
+}
 
 summary_df <- data.frame(
   baseline_r2 = baseline_r2,
