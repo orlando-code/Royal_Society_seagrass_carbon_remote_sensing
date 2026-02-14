@@ -11,7 +11,7 @@
 # broad European marine regions. You may refine these polygons later
 # (e.g. using official shapefiles) without changing the interface.
 
-rm(list = ls())
+# rm(list = ls())
 setwd(here::here())
 
 source("modelling/R/helpers.R")
@@ -21,7 +21,7 @@ load_packages(c("here", "dplyr"))
 load_packages(c("tidyverse"))
 
 
-# region_shapes is now an sf data frame with regions: Baltic Sea, Mediterranean Sea, Black Sea, 
+# region_shapes is now an sf data frame with regions: Baltic Sea, Mediterranean Sea, Black Sea,
 # North European Atlantic, and South European Atlantic with their respective geometries.
 
 #' Assign Region based on lon/lat using simple geographic rules.
@@ -85,7 +85,7 @@ assign_region_from_latlon <- function(dat) {
   )
 
   # Any remaining NA region can stay NA (or be assigned "Unknown")
-  dat$region[is.na(dat$region)] <- dat$region[is.na(dat$region)]  # no-op placeholder
+  dat$region[is.na(dat$region)] <- dat$region[is.na(dat$region)] # no-op placeholder
 
   dat
 }
@@ -94,4 +94,3 @@ assign_region_from_latlon <- function(dat) {
 # dat <- readr::read_rds("data/all_extracted_new.rds")
 # dat <- assign_region_from_latlon(dat)
 # readr::write_rds(dat, "data/all_extracted_new_with_region.rds")
-

@@ -1,11 +1,11 @@
 # =============================================================================
 # Shared GPR utilities for fitting, partial dependence, and importance.
-# No side effects or rm(list = ls()). Callers load data and options.
+# No side effects or # rm(list = ls()). Callers load data and options.
 # Dependencies: GauPro; for plotting, ggplot2; for bind_rows, dplyr (or use base).
 # Predictors are scaled (center + scale) before fitting for stable length-scales.
 # Categorical predictors are one-hot encoded so GauPro receives numeric X only.
 # =============================================================================
-
+source("modelling/R/plot_config.R")
 # -----------------------------------------------------------------------------
 # One-hot encoding (GauPro requires numeric X)
 # -----------------------------------------------------------------------------
@@ -46,6 +46,31 @@ gpr_onehot_encode <- function(X, predictor_vars,
   )
 }
 
+
+#' Predict from a saved GPR object (one-hot encode if needed, scale, then call model).
+#' @param gpr List with model, scale_params, predictor_vars, encoding (optional), encoded_names (from fit or readRDS)
+#' @param newdata Data frame with columns matching predictor_vars
+#' @param se If TRUE, return standard errors
+#' @return List with mean (numeric) and se (numeric or NULL)
+predict_gpr <- function(gpr, newdata, se = TRUE) {
+  X <- newdata[, gpr$predictor_vars, drop = FALSE]
+  # One-hot encode categoricals if the model was fit with encoding
+  if (!is.null(gpr$encoding)) {
+    X <- gpr_apply_onehot(X, gpr$encoding, gpr$predictor_vars)
+  }
+  X_scaled <- gpr_apply_scale(X, gpr$scale_params)
+  # GauPro::pred expects a numeric matrix (same column order as model)
+  col_order <- if (!is.null(gpr$encoded_names)) gpr$encoded_names else colnames(X_scaled)
+  X_mat <- as.matrix(X_scaled[, col_order, drop = FALSE])
+  storage.mode(X_mat) <- "double"
+  out <- gpr$model$pred(X_mat, se.fit = se, return_df = TRUE)
+  list(
+    mean = as.numeric(out$mean),
+    se   = if (se) as.numeric(out$se) else NULL
+  )
+}
+
+
 #' Apply the same one-hot encoding to new data (test/grid).
 #' @param X Data frame with same predictor_vars (numeric and factor/character)
 #' @param encoding From gpr_onehot_encode; NULL = no categoricals, return X as-is
@@ -61,8 +86,11 @@ gpr_apply_onehot <- function(X, encoding, predictor_vars) {
     lev <- encoding$levels[[v]]
     if (is.null(lev)) next
     x <- X[[v]]
-    if (is.character(x)) x <- factor(x, levels = lev)
-    else x <- factor(x, levels = lev)
+    if (is.character(x)) {
+      x <- factor(x, levels = lev)
+    } else {
+      x <- factor(x, levels = lev)
+    }
     x[is.na(x)] <- lev[1]
     X[[v]] <- x
   }
@@ -88,7 +116,7 @@ gpr_apply_onehot <- function(X, encoding, predictor_vars) {
 #' @return List with x_center (named vector), x_scale (named vector; 1 where sd=0)
 gpr_compute_scale_params <- function(X, predictor_vars) {
   x_center <- numeric(0)
-  x_scale  <- numeric(0)
+  x_scale <- numeric(0)
   for (v in predictor_vars) {
     if (!v %in% names(X)) next
     col <- X[[v]]
@@ -97,7 +125,7 @@ gpr_compute_scale_params <- function(X, predictor_vars) {
     s <- sd(col, na.rm = TRUE)
     if (!is.finite(s) || s <= 0) s <- 1
     x_center[v] <- m
-    x_scale[v]  <- s
+    x_scale[v] <- s
   }
   list(x_center = x_center, x_scale = x_scale)
 }
@@ -108,7 +136,9 @@ gpr_compute_scale_params <- function(X, predictor_vars) {
 #' @param scale_params List from gpr_compute_scale_params (x_center, x_scale)
 #' @return Same type as X with numeric columns scaled; others unchanged
 gpr_apply_scale <- function(X, scale_params) {
-  if (is.null(scale_params) || is.null(scale_params$x_center)) return(X)
+  if (is.null(scale_params) || is.null(scale_params$x_center)) {
+    return(X)
+  }
   is_df <- is.data.frame(X)
   if (is_df) {
     out <- as.data.frame(X)
@@ -196,36 +226,41 @@ fit_gpr_cv <- function(train_data, test_data, value_var, predictor_vars,
   train_combined <- cbind(train_y, train_X_scaled)
   names(train_combined)[1] <- value_var
 
-  result <- tryCatch({
-    gpr_model <- GauPro::gpkm(formula_obj, data = train_combined, kernel = kernel,
-                              nug.min = nug.min, nug.max = nug.max, nug.est = nug.est)
-    test_X_complete <- test_X_scaled[test_complete, , drop = FALSE]
-    test_X_mat <- as.matrix(test_X_complete)
-    storage.mode(test_X_mat) <- "double"
-    test_predictions <- gpr_model$pred(test_X_mat, se.fit = FALSE)
-    predictions <- rep(NA, nrow(test_data))
-    predictions[test_complete] <- test_predictions
+  result <- tryCatch(
+    {
+      gpr_model <- GauPro::gpkm(formula_obj,
+        data = train_combined, kernel = kernel,
+        nug.min = nug.min, nug.max = nug.max, nug.est = nug.est
+      )
+      test_X_complete <- test_X_scaled[test_complete, , drop = FALSE]
+      test_X_mat <- as.matrix(test_X_complete)
+      storage.mode(test_X_mat) <- "double"
+      test_predictions <- gpr_model$pred(test_X_mat, se.fit = FALSE)
+      predictions <- rep(NA, nrow(test_data))
+      predictions[test_complete] <- test_predictions
 
-    test_y <- test_data[[value_var]][test_complete]
-    valid <- !is.na(predictions[test_complete]) & !is.na(test_y) &
-             is.finite(predictions[test_complete]) & is.finite(test_y)
-    if (sum(valid) < 2) {
-      return(list(
-        predictions = predictions, r2 = NA, rmse = NA,
-        error = "Insufficient valid predictions"
-      ))
+      test_y <- test_data[[value_var]][test_complete]
+      valid <- !is.na(predictions[test_complete]) & !is.na(test_y) &
+        is.finite(predictions[test_complete]) & is.finite(test_y)
+      if (sum(valid) < 2) {
+        return(list(
+          predictions = predictions, r2 = NA, rmse = NA,
+          error = "Insufficient valid predictions"
+        ))
+      }
+      pred_valid <- predictions[test_complete][valid]
+      obs_valid <- test_y[valid]
+      r2 <- cor(pred_valid, obs_valid)^2
+      rmse <- sqrt(mean((obs_valid - pred_valid)^2))
+      list(predictions = predictions, r2 = r2, rmse = rmse, error = NULL)
+    },
+    error = function(e) {
+      list(
+        predictions = rep(NA, nrow(test_data)),
+        r2 = NA, rmse = NA, error = e$message
+      )
     }
-    pred_valid <- predictions[test_complete][valid]
-    obs_valid <- test_y[valid]
-    r2 <- cor(pred_valid, obs_valid)^2
-    rmse <- sqrt(mean((obs_valid - pred_valid)^2))
-    list(predictions = predictions, r2 = r2, rmse = rmse, error = NULL)
-  }, error = function(e) {
-    list(
-      predictions = rep(NA, nrow(test_data)),
-      r2 = NA, rmse = NA, error = e$message
-    )
-  })
+  )
   result
 }
 
@@ -245,9 +280,9 @@ fit_gpr_cv <- function(train_data, test_data, value_var, predictor_vars,
 #' @param kernel Kernel type ("matern52", "matern32", "gaussian"); default matern52
 #' @return List with model, predictions, se, variance, prediction_grid, n_train, n_pred
 fit_gaussian_process_regression <- function(dat, value_var, coords, predictor_vars,
-                                           formula = NULL, prediction_grid,
-                                           include_spatial = FALSE,
-                                           kernel = "matern52") {
+                                            formula = NULL, prediction_grid,
+                                            include_spatial = FALSE,
+                                            kernel = "matern52", nug_min = 1e-8, nug_max = 100, nug_est = TRUE) {
   if (!requireNamespace("GauPro", quietly = TRUE)) {
     stop("GauPro package is required. Install with: install.packages('GauPro')")
   }
@@ -301,11 +336,13 @@ fit_gaussian_process_regression <- function(dat, value_var, coords, predictor_va
 
   if (is.null(formula)) {
     formula_str <- paste(value_var, "~", paste(encoded_names, collapse = " + "))
+    model_predictor_names <- encoded_names
   } else {
     formula_vars <- setdiff(all.vars(formula), value_var)
     formula_vars <- intersect(formula_vars, encoded_names)
     if (length(formula_vars) == 0) stop("No valid predictor variables in formula.")
     formula_str <- paste(value_var, "~", paste(formula_vars, collapse = " + "))
+    model_predictor_names <- formula_vars
   }
   formula_obj <- as.formula(formula_str)
   formula_vars_needed <- all.vars(formula_obj)
@@ -318,12 +355,12 @@ fit_gaussian_process_regression <- function(dat, value_var, coords, predictor_va
   # If no prediction rows have complete covariates, return NA predictions
   if (n_pred == 0L) {
     warning("No complete rows in prediction grid for the chosen predictor set; returning NA predictions.")
-    gpr_model <- GauPro::gpkm(formula_obj, data = train_data_subset, kernel = kernel)
+    gpr_model <- GauPro::gpkm(formula_obj, data = train_data_subset, kernel = kernel, nug.min = nug_min, nug.max = nug_max, nug.est = nug_est)
     mu <- rep(NA_real_, nrow(prediction_grid))
     se <- rep(NA_real_, nrow(prediction_grid))
 
     prediction_grid$gpr_mean <- mu
-    prediction_grid$gpr_se   <- se
+    prediction_grid$gpr_se <- se
 
     return(list(
       model = gpr_model,
@@ -345,18 +382,18 @@ fit_gaussian_process_regression <- function(dat, value_var, coords, predictor_va
   pred_X_num <- gpr_apply_onehot(pred_X, encoding, predictor_vars)
   XX_scaled <- gpr_apply_scale(pred_X_num, scale_params)
 
-  gpr_model <- GauPro::gpkm(formula_obj, data = train_data_subset, kernel = kernel)
-  # GauPro::pred expects a numeric matrix (same column order as model)
-  XX_mat <- as.matrix(XX_scaled[, encoded_names, drop = FALSE])
+  gpr_model <- GauPro::gpkm(formula_obj, data = train_data_subset, kernel = kernel, nug.min = nug_min, nug.max = nug_max, nug.est = nug_est)
+  # GauPro::pred expects a numeric matrix with same columns as model was trained on
+  XX_mat <- as.matrix(XX_scaled[, model_predictor_names, drop = FALSE])
   storage.mode(XX_mat) <- "double"
   pred_result <- gpr_model$pred(XX_mat, se.fit = TRUE, return_df = TRUE)
   mu <- as.numeric(pred_result$mean)
   se <- as.numeric(pred_result$se)
 
   prediction_grid$gpr_mean <- NA_real_
-  prediction_grid$gpr_se   <- NA_real_
+  prediction_grid$gpr_se <- NA_real_
   prediction_grid$gpr_mean[pred_complete] <- mu
-  prediction_grid$gpr_se[pred_complete]   <- se
+  prediction_grid$gpr_se[pred_complete] <- se
 
   list(
     model           = gpr_model,
@@ -393,11 +430,14 @@ fit_gaussian_process_regression <- function(dat, value_var, coords, predictor_va
 #' @param use_conditional If TRUE, use conditional partial dependence (actual data bins)
 #' @param range_quantiles Optional c(low, high) e.g. c(0.01, 0.99) to restrict to percentile range
 #' @param scale_params Optional list from fit (x_center, x_scale); if provided, data is scaled before prediction
+#' @param encoding Optional encoding from fit (for one-hot encoded categoricals)
+#' @param encoded_names Optional; columns the model expects (default: predictor_vars when no encoding)
 #' @return Data frame with var_value, prediction_mean, prediction_se (and optionally n_points)
 create_partial_dependence <- function(gpr_model, dat, var_name, predictor_vars,
                                       n_points = 50, reference_method = "median",
                                       n_samples = 100, use_conditional = FALSE,
-                                      range_quantiles = NULL, scale_params = NULL) {
+                                      range_quantiles = NULL, scale_params = NULL,
+                                      encoding = NULL, encoded_names = NULL) {
   if (!var_name %in% predictor_vars) {
     stop("Variable '", var_name, "' not found in predictor_vars")
   }
@@ -444,8 +484,11 @@ create_partial_dependence <- function(gpr_model, dat, var_name, predictor_vars,
   if (use_conditional || reference_method == "conditional") {
     pred_list <- lapply(seq_along(var_seq), function(i) {
       v_val <- var_seq[i]
-      if (i < length(var_seq)) bin_width <- var_seq[i + 1] - v_val
-      else bin_width <- v_val - var_seq[i - 1]
+      if (i < length(var_seq)) {
+        bin_width <- var_seq[i + 1] - v_val
+      } else {
+        bin_width <- v_val - var_seq[i - 1]
+      }
       tolerance <- bin_width * 0.5
       in_bin <- abs(dat[[var_name]] - v_val) <= tolerance
       if (sum(in_bin, na.rm = TRUE) == 0) {
@@ -453,12 +496,20 @@ create_partial_dependence <- function(gpr_model, dat, var_name, predictor_vars,
         in_bin <- distances <= quantile(distances, 0.1, na.rm = TRUE)
       }
       bin_data <- dat[in_bin & !is.na(in_bin), predictor_vars, drop = FALSE]
-      if (nrow(bin_data) == 0) return(NULL)
-      pred_input <- as.matrix(bin_data)
-      if (!is.null(scale_params)) pred_input <- gpr_apply_scale(pred_input, scale_params)
-      pred_result <- tryCatch({
-        gpr_model$pred(pred_input, se.fit = TRUE, return_df = TRUE)
-      }, error = function(e) NULL)
+      if (nrow(bin_data) == 0) {
+        return(NULL)
+      }
+      pred_num <- gpr_apply_onehot(bin_data, encoding, predictor_vars)
+      pred_scaled <- gpr_apply_scale(pred_num, scale_params)
+      model_cols <- if (!is.null(encoded_names)) encoded_names else colnames(pred_scaled)
+      pred_input <- as.matrix(pred_scaled[, model_cols, drop = FALSE])
+      storage.mode(pred_input) <- "double"
+      pred_result <- tryCatch(
+        {
+          gpr_model$pred(pred_input, se.fit = TRUE, return_df = TRUE)
+        },
+        error = function(e) NULL
+      )
       if (!is.null(pred_result) && nrow(pred_result) > 0) {
         data.frame(
           var_value = v_val,
@@ -466,7 +517,9 @@ create_partial_dependence <- function(gpr_model, dat, var_name, predictor_vars,
           prediction_se = sqrt(mean(pred_result$se^2, na.rm = TRUE)),
           n_points = nrow(bin_data)
         )
-      } else NULL
+      } else {
+        NULL
+      }
     })
   } else {
     if (reference_method == "sample") {
@@ -480,16 +533,26 @@ create_partial_dependence <- function(gpr_model, dat, var_name, predictor_vars,
       pred_list <- lapply(var_seq, function(v_val) {
         ref_data_mod <- reference_data[, predictor_vars, drop = FALSE]
         ref_data_mod[[var_name]] <- v_val
-        pred_input <- as.matrix(ref_data_mod)
-        if (!is.null(scale_params)) pred_input <- gpr_apply_scale(pred_input, scale_params)
-        pred_result <- tryCatch({
-          gpr_model$pred(pred_input, se.fit = TRUE, return_df = TRUE)
-        }, error = function(e) NULL)
+        pred_num <- gpr_apply_onehot(ref_data_mod, encoding, predictor_vars)
+        pred_scaled <- gpr_apply_scale(pred_num, scale_params)
+        model_cols <- if (!is.null(encoded_names)) encoded_names else colnames(pred_scaled)
+        pred_input <- as.matrix(pred_scaled[, model_cols, drop = FALSE])
+        storage.mode(pred_input) <- "double"
+        pred_result <- tryCatch(
+          {
+            gpr_model$pred(pred_input, se.fit = TRUE, return_df = TRUE)
+          },
+          error = function(e) NULL
+        )
         if (!is.null(pred_result) && nrow(pred_result) > 0) {
-          data.frame(var_value = v_val,
-                    prediction_mean = mean(pred_result$mean, na.rm = TRUE),
-                    prediction_se = sqrt(mean(pred_result$se^2, na.rm = TRUE)))
-        } else NULL
+          data.frame(
+            var_value = v_val,
+            prediction_mean = mean(pred_result$mean, na.rm = TRUE),
+            prediction_se = sqrt(mean(pred_result$se^2, na.rm = TRUE))
+          )
+        } else {
+          NULL
+        }
       })
     } else {
       n_ref_points <- min(50, nrow(dat))
@@ -498,16 +561,26 @@ create_partial_dependence <- function(gpr_model, dat, var_name, predictor_vars,
       pred_list <- lapply(var_seq, function(v_val) {
         pred_data <- reference_base
         pred_data[[var_name]] <- v_val
-        pred_input <- as.matrix(pred_data)
-        if (!is.null(scale_params)) pred_input <- gpr_apply_scale(pred_input, scale_params)
-        pred_result <- tryCatch({
-          gpr_model$pred(pred_input, se.fit = TRUE, return_df = TRUE)
-        }, error = function(e) NULL)
+        pred_num <- gpr_apply_onehot(pred_data, encoding, predictor_vars)
+        pred_scaled <- gpr_apply_scale(pred_num, scale_params)
+        model_cols <- if (!is.null(encoded_names)) encoded_names else colnames(pred_scaled)
+        pred_input <- as.matrix(pred_scaled[, model_cols, drop = FALSE])
+        storage.mode(pred_input) <- "double"
+        pred_result <- tryCatch(
+          {
+            gpr_model$pred(pred_input, se.fit = TRUE, return_df = TRUE)
+          },
+          error = function(e) NULL
+        )
         if (!is.null(pred_result) && nrow(pred_result) > 0) {
-          data.frame(var_value = v_val,
-                    prediction_mean = mean(pred_result$mean, na.rm = TRUE),
-                    prediction_se = sqrt(mean(pred_result$se^2, na.rm = TRUE)))
-        } else NULL
+          data.frame(
+            var_value = v_val,
+            prediction_mean = mean(pred_result$mean, na.rm = TRUE),
+            prediction_se = sqrt(mean(pred_result$se^2, na.rm = TRUE))
+          )
+        } else {
+          NULL
+        }
       })
     }
   }
@@ -537,26 +610,30 @@ create_partial_dependence <- function(gpr_model, dat, var_name, predictor_vars,
 #' @param range_quantiles Optional c(low, high) to restrict to percentile range
 #' @param show_training_range If TRUE, add rug of training values (requires ggplot2)
 #' @param scale_params Optional scale params from fit (for scaled models)
+#' @param encoding Optional encoding from fit (for one-hot encoded categoricals)
+#' @param encoded_names Optional; columns the model expects
 #' @return ggplot object (requires ggplot2)
 plot_partial_dependence <- function(gpr_model, dat, var_names, predictor_vars,
-                                     n_points = 50, reference_method = "median",
-                                     n_samples = 100, use_conditional = FALSE,
-                                     target_var_name = "Response",
-                                     range_quantiles = NULL,
-                                     show_training_range = FALSE,
-                                     scale_params = NULL) {
+                                    n_points = 50, reference_method = "median",
+                                    n_samples = 100, use_conditional = FALSE,
+                                    target_var_name = "Response",
+                                    range_quantiles = NULL,
+                                    show_training_range = FALSE,
+                                    scale_params = NULL,
+                                    encoding = NULL, encoded_names = NULL) {
   if (!requireNamespace("ggplot2", quietly = TRUE)) {
     stop("ggplot2 is required for plot_partial_dependence.")
   }
 
-  if (length(var_names) == 1) {
+  if (length(var_names) == 1) { # single variable
     pd_data <- create_partial_dependence(
       gpr_model, dat, var_names[1], predictor_vars,
       n_points = n_points, reference_method = reference_method,
       n_samples = n_samples, use_conditional = use_conditional,
-      range_quantiles = range_quantiles, scale_params = scale_params
+      range_quantiles = range_quantiles, scale_params = scale_params,
+      encoding = encoding, encoded_names = encoded_names
     )
-    # Y-range of PDP ribbon
+    # Y-range of PDP ribbon (with 95% CI assuming normal distribution)
     y_min <- min(pd_data$prediction_mean - 1.96 * pd_data$prediction_se, na.rm = TRUE)
     y_max <- max(pd_data$prediction_mean + 1.96 * pd_data$prediction_se, na.rm = TRUE)
 
@@ -590,8 +667,10 @@ plot_partial_dependence <- function(gpr_model, dat, var_names, predictor_vars,
     p <- ggplot2::ggplot(pd_data, ggplot2::aes(x = .data$var_value, y = .data$prediction_mean)) +
       hist_layer +
       ggplot2::geom_ribbon(
-        ggplot2::aes(ymin = .data$prediction_mean - 1.96 * .data$prediction_se,
-                    ymax = .data$prediction_mean + 1.96 * .data$prediction_se),
+        ggplot2::aes(
+          ymin = .data$prediction_mean - 1.96 * .data$prediction_se,
+          ymax = .data$prediction_mean + 1.96 * .data$prediction_se
+        ),
         alpha = 0.2, fill = "steelblue"
       ) +
       ggplot2::geom_line(color = "steelblue", linewidth = 1.2) +
@@ -607,8 +686,8 @@ plot_partial_dependence <- function(gpr_model, dat, var_names, predictor_vars,
       ) +
       ggplot2::labs(
         x = var_names[1],
-        y = paste("Partial effect on", target_var_name),
-        title = paste("Partial Dependence:", var_names[1])
+        y = paste("Partial effect on", VAR_LABELS[target_var_name]),
+        title = if (exists("show_titles", envir = .GlobalEnv) && !get("show_titles", envir = .GlobalEnv)) NULL else paste("Partial Dependence:", VAR_LABELS[var_names[1]])
       ) +
       ggplot2::theme_minimal() +
       ggplot2::theme(plot.title = ggplot2::element_text(size = 12, face = "bold"))
@@ -619,31 +698,38 @@ plot_partial_dependence <- function(gpr_model, dat, var_names, predictor_vars,
         y = NULL, inherit.aes = FALSE, sides = "b", alpha = 0.3
       )
     }
-  } else {
+  } else {  # multiple variables
     pd_list <- lapply(var_names, function(v) {
       pd <- create_partial_dependence(
         gpr_model, dat, v, predictor_vars,
         n_points = n_points, reference_method = reference_method,
         n_samples = n_samples, use_conditional = use_conditional,
-        range_quantiles = range_quantiles, scale_params = scale_params
+        range_quantiles = range_quantiles, scale_params = scale_params,
+        encoding = encoding, encoded_names = encoded_names
       )
       pd$variable <- v
       pd
     })
     pd_data <- do.call(rbind, pd_list)
 
-    # Precompute per-row lower/upper PDP bounds for later scaling of histograms
+    # Precompute per-row lower/upper PDP bounds for vertical scaling of histograms
     pd_data$y_lower <- pd_data$prediction_mean - 1.96 * pd_data$prediction_se
     pd_data$y_upper <- pd_data$prediction_mean + 1.96 * pd_data$prediction_se
 
     # Build per-variable histograms and scale into lower y-band
     hist_dfs <- lapply(var_names, function(v) {
-      if (!v %in% names(dat)) return(NULL)
+      if (!v %in% names(dat)) {
+        return(NULL)
+      }
       vals <- dat[[v]]
       vals <- vals[is.finite(vals)]
-      if (length(vals) == 0) return(NULL)
+      if (length(vals) == 0) {
+        return(NULL)
+      }
       h <- graphics::hist(vals, plot = FALSE, breaks = "FD")
-      if (length(h$mids) == 0 || max(h$counts) == 0) return(NULL)
+      if (length(h$mids) == 0 || max(h$counts) == 0) {
+        return(NULL)
+      }
       data.frame(
         variable = v,
         x = h$mids,
@@ -669,26 +755,41 @@ plot_partial_dependence <- function(gpr_model, dat, var_names, predictor_vars,
     }
 
     p <- ggplot2::ggplot(pd_data, ggplot2::aes(x = .data$var_value, y = .data$prediction_mean)) +
-      (if (!is.null(hist_df)) ggplot2::geom_col(
-        data = hist_df,
-        ggplot2::aes(x = .data$x, y = .data$y),
-        inherit.aes = FALSE,
-        fill = "grey80",
-        alpha = 0.6,
-        width = hist_df$width
-      ) else NULL) +
-      ggplot2::geom_ribbon(
-        ggplot2::aes(ymin = .data$prediction_mean - 1.96 * .data$prediction_se,
-                    ymax = .data$prediction_mean + 1.96 * .data$prediction_se),
+      (if (!is.null(hist_df)) {
+        ggplot2::geom_col(
+          data = hist_df,
+          ggplot2::aes(x = .data$x, y = .data$y),
+          inherit.aes = FALSE,
+          fill = "grey80",
+          alpha = 0.6,
+          width = hist_df$width
+        )
+      } else {
+        NULL
+      }) +
+      ggplot2::geom_ribbon( # 95% CI assuming normal distribution
+        ggplot2::aes(
+          ymin = .data$prediction_mean - 1.96 * .data$prediction_se,
+          ymax = .data$prediction_mean + 1.96 * .data$prediction_se
+        ),
         alpha = 0.2, fill = "steelblue"
       ) +
       ggplot2::geom_line(color = "steelblue", linewidth = 1) +
       ggplot2::geom_smooth(se = FALSE, color = "black", linewidth = 0.8, method = "loess", span = 1.5) +
-      ggplot2::facet_wrap(~ variable, scales = "free_x", ncol = 2) +
+      ggplot2::facet_wrap(
+        ~variable,
+        scales = "free_x",
+        ncol = 2,
+        labeller = ggplot2::labeller(variable = function(x) {
+          labs <- VAR_LABELS[x]
+          labs[is.na(labs)] <- x[is.na(labs)]
+          labs
+        })
+      ) +
       ggplot2::labs(
         x = "Variable value",
-        y = paste("Partial effect on", target_var_name),
-        title = "Partial Dependence Plots (training data ranges)"
+        y = paste("Partial effect on", VAR_LABELS[target_var_name]),
+        title = if (exists("show_titles", envir = .GlobalEnv) && !get("show_titles", envir = .GlobalEnv)) NULL else "Partial Dependence Plots (training data ranges)"
       ) +
       ggplot2::theme_minimal() +
       ggplot2::theme(
@@ -699,7 +800,9 @@ plot_partial_dependence <- function(gpr_model, dat, var_names, predictor_vars,
       rug_dfs <- lapply(var_names, function(v) {
         if (v %in% names(dat)) {
           data.frame(variable = v, x = dat[[v]])
-        } else NULL
+        } else {
+          NULL
+        }
       })
       rug_dfs <- rug_dfs[!sapply(rug_dfs, is.null)]
       if (length(rug_dfs) > 0) {
@@ -727,18 +830,38 @@ plot_partial_dependence <- function(gpr_model, dat, var_names, predictor_vars,
 #' @param n_permutations Number of permutations per variable (default 5)
 #' @param n_val Max number of rows to use for validation (default 500)
 #' @param scale_params Optional scale params from fit (for scaled models)
+#' @param encoding Optional encoding from fit (for one-hot encoded categoricals)
+#' @param encoded_names Optional encoded column names; model expects these columns
 #' @return Data frame with variable, rmse_increase, mae_increase, rmse_pct_increase
 gpr_permutation_importance <- function(gpr_model, data, value_var, predictor_vars,
-                                      n_permutations = 5, n_val = 500, scale_params = NULL) {
+                                       n_permutations = 5, n_val = 500, scale_params = NULL,
+                                       encoding = NULL, encoded_names = NULL) {
   train_data <- data[, c(value_var, predictor_vars), drop = FALSE]
   train_data <- train_data[complete.cases(train_data), ]
   n_val <- min(n_val, nrow(train_data))
   val_indices <- sample(nrow(train_data), n_val)
   val_data <- train_data[val_indices, ]
 
-  val_X <- as.matrix(val_data[, predictor_vars, drop = FALSE])
-  if (!is.null(scale_params)) val_X <- gpr_apply_scale(val_X, scale_params)
-  baseline_pred <- gpr_model$pred(val_X, se.fit = FALSE)
+  val_X <- val_data[, predictor_vars, drop = FALSE]
+  val_X_num <- gpr_apply_onehot(val_X, encoding, predictor_vars)
+  val_X_scaled <- gpr_apply_scale(val_X_num, scale_params)
+  avail_cols <- colnames(val_X_scaled)
+  model_cols <- if (!is.null(encoded_names)) {
+    keep <- encoded_names[encoded_names %in% avail_cols]
+    if (length(keep) != length(encoded_names)) {
+      stop(
+        "Column mismatch for permutation importance: model expects ",
+        length(encoded_names), " columns (encoded_names) but data has ", length(keep),
+        " matching. Missing: ", paste(setdiff(encoded_names, avail_cols), collapse = ", ")
+      )
+    }
+    keep
+  } else {
+    avail_cols
+  }
+  val_X_mat <- as.matrix(val_X_scaled[, model_cols, drop = FALSE])
+  storage.mode(val_X_mat) <- "double"
+  baseline_pred <- gpr_model$pred(val_X_mat, se.fit = FALSE)
   baseline_rmse <- sqrt(mean((val_data[[value_var]] - baseline_pred)^2, na.rm = TRUE))
   baseline_mae <- mean(abs(val_data[[value_var]] - baseline_pred), na.rm = TRUE)
 
@@ -757,11 +880,17 @@ gpr_permutation_importance <- function(gpr_model, data, value_var, predictor_var
     for (perm in seq_len(n_permutations)) {
       val_perm <- val_data
       val_perm[[var]] <- sample(val_perm[[var]])
-      val_perm_X <- as.matrix(val_perm[, predictor_vars, drop = FALSE])
-      if (!is.null(scale_params)) val_perm_X <- gpr_apply_scale(val_perm_X, scale_params)
-      pred_perm <- tryCatch({
-        gpr_model$pred(val_perm_X, se.fit = FALSE)
-      }, error = function(e) rep(NA, nrow(val_perm)))
+      val_perm_X <- val_perm[, predictor_vars, drop = FALSE]
+      val_perm_X_num <- gpr_apply_onehot(val_perm_X, encoding, predictor_vars)
+      val_perm_X_scaled <- gpr_apply_scale(val_perm_X_num, scale_params)
+      val_perm_X_mat <- as.matrix(val_perm_X_scaled[, model_cols, drop = FALSE])
+      storage.mode(val_perm_X_mat) <- "double"
+      pred_perm <- tryCatch(
+        {
+          gpr_model$pred(val_perm_X_mat, se.fit = FALSE)
+        },
+        error = function(e) rep(NA, nrow(val_perm))
+      )
       if (!all(is.na(pred_perm))) {
         rmse_increases[perm] <- sqrt(mean((val_data[[value_var]] - pred_perm)^2, na.rm = TRUE)) - baseline_rmse
         mae_increases[perm] <- mean(abs(val_data[[value_var]] - pred_perm), na.rm = TRUE) - baseline_mae
@@ -793,10 +922,27 @@ gpr_permutation_importance <- function(gpr_model, data, value_var, predictor_var
 #' @return List with coverage proportion, level, and interval bounds used
 gpr_interval_coverage <- function(observed, pred_mean, pred_se, level = 0.95) {
   valid <- !is.na(observed) & !is.na(pred_mean) & !is.na(pred_se) & is.finite(pred_se) & pred_se > 0
-  if (sum(valid) == 0) return(list(coverage = NA, level = level, n = 0))
+  if (sum(valid) == 0) {
+    return(list(coverage = NA, level = level, n = 0))
+  }
   z <- qnorm(0.5 + level / 2)
   lo <- pred_mean[valid] - z * pred_se[valid]
   hi <- pred_mean[valid] + z * pred_se[valid]
   covered <- observed[valid] >= lo & observed[valid] <= hi
   list(coverage = mean(covered), level = level, n = sum(valid))
+}
+
+
+
+#' Validate that a loaded cache has the required structure for prediction
+#'
+#' @param obj List containing the cached GPR model
+#' @return Logical indicating whether the cache is valid
+is_valid_gpr_cache <- function(obj) {
+  !is.null(obj) &&
+    is.list(obj) &&
+    "model" %in% names(obj) && !is.null(obj$model) &&
+    "scale_params" %in% names(obj) && !is.null(obj$scale_params) &&
+    "predictor_vars" %in% names(obj) && length(obj$predictor_vars) > 0L &&
+    "encoded_names" %in% names(obj) && length(obj$encoded_names) > 0L
 }
