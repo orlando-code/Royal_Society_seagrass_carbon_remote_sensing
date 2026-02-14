@@ -26,5 +26,7 @@ pipeline_run.log
 For_modeling_df*
 GAM_top_reduced*
 dev.ipynb
+covariate_pruning_pipeline.R
 
 
+docs/
