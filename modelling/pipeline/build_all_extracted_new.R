@@ -89,7 +89,7 @@ if (length(covariate_cols) > 0) {
 names(all_extracted_new) <- tolower(names(all_extracted_new))
 
 cat("Column names after lower-casing:\n")
-cat("  ", paste(names(all_extracted_new)[1:min(20, ncol(all_extracted_new))], collapse = ", "), "\n\n")
+cat("  ", paste(names(all_extracted_new)[seq_len(min(20, ncol(all_extracted_new)))], collapse = ", "), "\n\n")
 
 # Save to file
 write_rds(all_extracted_new, all_extracted_path)
