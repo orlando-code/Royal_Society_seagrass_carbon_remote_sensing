@@ -1,29 +1,26 @@
 #!/usr/bin/env Rscript
 
 # Build (or rebuild) data/all_extracted_new.rds for the paper pipeline.
-# - Uses nearest-neighbour extraction (best R²).
+# - Uses nearest-neighbour extraction (this was shown to lead to models with highest R²).
 # - Attaches key metadata columns.
-# - Makes ALL column names lower-case before saving.
-# - Backs up any existing file to data/all_extracted_new.rds.backup.
-#
-# This script is designed to be idempotent and optionally cached:
-# - If data/all_extracted_new.rds exists and FORCE_REBUILD_ALLEXTRACTED is FALSE,
-#   it will do nothing (just print a message).
-# - Otherwise it will re-create the file.
+# - Makes all column names lower-case before saving.
+# - Clips remote-sensed covariates to zero to remove any processing errors.
 
-# rm(list = ls())
+# - If data/all_extracted_new.rds exists and FORCE_REBUILD_ALLEXTRACTED is FALSE:
+#   it will do nothing (just print a message)
+#   ELSE: it will re-create the file.
+
 setwd(here::here())
-
+load_packages(c("here", "dplyr", "ggplot2", "maps"))
 source("modelling/R/extract_covariates_from_rasters.R")
 source("modelling/R/helpers.R")
 
-load_packages(c("here", "dplyr", "ggplot2", "maps"))
-
+# save here
 all_extracted_path <- "data/all_extracted_new.rds"
 
 # Global flag: set TRUE to force re-extraction even if file exists
 if (!exists("FORCE_REBUILD_ALLEXTRACTED")) {
-  FORCE_REBUILD_ALLEXTRACTED <- FALSE
+  FORCE_REBUILD_ALLEXTRACTED <- TRUE
 }
 
 if (file.exists(all_extracted_path) && !isTRUE(FORCE_REBUILD_ALLEXTRACTED)) {
@@ -50,7 +47,7 @@ all_extracted <- extract_covariates_at_points(
 
 cat("\nExtraction complete.\n\n")
 
-# Attach metadata (keep original casing here; we will lower-case at the end)
+# Attach metadata
 meta_cols <- c(
   "latitude", "longitude",
   "number_id_final_version",
@@ -67,12 +64,17 @@ if (length(missing_meta) > 0) {
   )
 }
 
+# Attach covariates to survey site metadata
 all_extracted_new <- dplyr::select(dat, dplyr::all_of(meta_cols)) %>%
   dplyr::bind_cols(all_extracted[, setdiff(names(all_extracted), c("latitude", "longitude"))])
 
+# Clip to zero any values in remote-sensed covariates with negative values (sign of processing error)
+all_extracted_new <- process_rs_covariates(all_extracted_new)
+
+# Report on the dataset condition
 cat("Rows:", nrow(all_extracted_new), "  Columns:", ncol(all_extracted_new), "\n\n")
 
-# Basic NA diagnostics (optional; non-fatal)
+# Basic NA diagnostics
 covariate_cols <- grep("_closest$", names(all_extracted_new), value = TRUE)
 covariate_cols <- setdiff(covariate_cols, meta_cols)
 na_rows <- all_extracted_new[rowSums(is.na(all_extracted_new[, covariate_cols, drop = FALSE])) > 0, ]
@@ -83,18 +85,13 @@ if (length(covariate_cols) > 0) {
   all_extracted_new$n_na_per_point <- rowSums(is.na(all_extracted_new[, covariate_cols, drop = FALSE]))
 }
 
-# LOWER-CASE ALL COLUMN NAMES (paper pipeline convention)
+# Lower-case all column names
 names(all_extracted_new) <- tolower(names(all_extracted_new))
 
 cat("Column names after lower-casing:\n")
 cat("  ", paste(names(all_extracted_new)[1:min(20, ncol(all_extracted_new))], collapse = ", "), "\n\n")
 
-# Backup and save
-cat("Backing up any existing file to: data/all_extracted_new.rds.backup\n")
-if (file.exists(all_extracted_path)) {
-  file.copy(all_extracted_path, "data/all_extracted_new.rds.backup", overwrite = TRUE)
-}
-
+# Save to file
 write_rds(all_extracted_new, all_extracted_path)
 cat("Saved new data to:", all_extracted_path, "\n")
 cat("======================================================================\n")
