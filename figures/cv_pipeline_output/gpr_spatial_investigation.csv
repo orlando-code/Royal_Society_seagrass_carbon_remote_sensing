@@ -1,3 +1,0 @@
-"configuration","description","mean_r2","sd_r2","mean_rmse","sd_rmse","n_folds_valid"
-"env_only","Baseline (revert to dataset mean)",0.461742978721665,0.30520624959304,0.0326772553238093,0.022924537001505,5
-"env_plus_lat_lon","Spatial smoothing (revert to spatially-close mean)",0.504100764802221,0.305920835798754,0.027782553231631,0.0243898180983678,5

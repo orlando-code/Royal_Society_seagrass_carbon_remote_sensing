@@ -90,16 +90,6 @@ build_covariate_config_from_dir <- function(raster_dir = RASTER_DIR) {
   out
 }
 
-# # Auto-build config from all rasters in env_rasters (one entry per .nc file)
-# Base path for final rasters (used by default)
-RASTER_DIR <- "data/env_rasters"
-if (!exists("RASTER_CONFIG")) {
-  RASTER_CONFIG <- build_covariate_config_from_dir(RASTER_DIR)
-  assign("RASTER_CONFIG", RASTER_CONFIG, envir = .GlobalEnv)
-  assign("raster_covariates", names(RASTER_CONFIG), envir = .GlobalEnv)
-}
-
-
 #' Find nearest grid index for a vector of coordinates (vectorized)
 #' Handles grid_vals that are unsorted or contain NAs (uses only non-NA, sorts for findInterval).
 nearest_grid_index <- function(coords, grid_vals) {
@@ -496,4 +486,14 @@ verify_extraction <- function(existing_data,
   }
 
   list(results = results, mismatches = mismatches)
+}
+
+
+# # Auto-build config from all rasters in env_rasters (one entry per .nc file)
+# Base path for final rasters (used by default)
+RASTER_DIR <- "data/env_rasters"
+if (!exists("RASTER_CONFIG")) {
+  RASTER_CONFIG <- build_covariate_config_from_dir(RASTER_DIR)
+  assign("RASTER_CONFIG", RASTER_CONFIG, envir = .GlobalEnv)
+  assign("raster_covariates", names(RASTER_CONFIG), envir = .GlobalEnv)
 }

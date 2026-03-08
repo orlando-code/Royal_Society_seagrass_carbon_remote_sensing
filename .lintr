@@ -1,2 +1,2 @@
 # Line length: default 80; increase to allow longer lines, or set NULL to disable
-linters: with_defaults(line_length_linter = line_length_linter(200))
+linters: linters_with_defaults(line_length_linter(200), commented_code_linter=NULL)

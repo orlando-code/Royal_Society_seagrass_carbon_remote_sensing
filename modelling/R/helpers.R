@@ -1,3 +1,181 @@
+# ================================ UTILITY FUNCTIONS ================================
+source("modelling/R/ml.R")
+
+#' Install packages if not already installed
+#'
+#' @param packages character vector of package names to install
+#' @return NULL but prints message to console when packages are installed
+install_packages <- function(packages) {
+  # if string, convert to list
+  if (is.character(packages)) {
+    packages <- list(packages)
+  }
+  for (package in packages) {
+    if (!requireNamespace(package, quietly = TRUE)) {
+      install.packages(package)
+    }
+  }
+  print(paste("Installed packages:", paste(packages, collapse = ", ")))
+}
+
+#' Load packages, installing missing ones; skips already-loaded packages.
+#' @param packages character vector of required package names
+#' @param optional character vector of package names to warn (not stop) if unavailable
+load_packages <- function(packages, optional = NULL) {
+  loaded <- character()
+  for (pkg in packages) {
+    if (isNamespaceLoaded(pkg)) next
+    is_opt <- pkg %in% optional
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      tryCatch(
+        install.packages(pkg, quiet = TRUE),
+        error = function(e) if (!is_opt) stop("Failed to install '", pkg, "': ", conditionMessage(e))
+      )
+    }
+    if (suppressWarnings(require(pkg, character.only = TRUE, quietly = TRUE))) {
+      loaded <- c(loaded, pkg)
+    } else if (is_opt) {
+      warning("Optional package '", pkg, "' could not be loaded.")
+    } else {
+      stop("Required package '", pkg, "' could not be loaded.")
+    }
+  }
+  if (length(loaded) > 0) cat("Loaded packages:", paste(loaded, collapse = ", "), "\n")
+}
+
+
+safe_write_csv <- function(x, path) {
+  tryCatch(
+    { write.csv(x, path, row.names = FALSE); cat("Saved", path, "\n") },
+    error = function(e) cat("Warning: failed to write", path, ":", e$message, "\n")
+  )
+}
+### CACHING
+#' Get or create spatial CV folds with robust caching based on coordinates and parameters.
+#'
+#' @param dat Data frame with \code{longitude} and \code{latitude} columns
+#' @param block_size Block size (metres) for \code{blockCV::cv_spatial}
+#' @param n_folds Number of folds
+#' @param cache_tag Character tag to distinguish different uses (e.g. "permutation_importance")
+#' @param exclude_regions Character vector of Excluded region(s) (for key transparency only)
+#' @param progress Logical; passed to \code{blockCV::cv_spatial(progress = ...)}
+#' @return List with \code{fold_indices}, \code{cache_path}, and \code{used_cache}
+get_cached_spatial_folds <- function(dat,
+                                     block_size,
+                                     n_folds,
+                                     cache_tag,
+                                     exclude_regions = character(0),
+                                     progress = TRUE) {
+  if (!all(c("longitude", "latitude") %in% names(dat))) {
+    stop("get_cached_spatial_folds: dat must contain 'longitude' and 'latitude' columns.")
+  }
+
+  coord_df <- dat[, c("longitude", "latitude")]
+  dat_hash <- digest::digest(coord_df, algo = "sha256")
+  cache_key <- list(
+    dat_hash = dat_hash,
+    exclude_regions = sort(exclude_regions),
+    block_size = as.integer(block_size),
+    n_folds = as.integer(n_folds)
+  )
+  key_hash <- digest::digest(cache_key, algo = "sha256")
+  cache_dir <- if (requireNamespace("here", quietly = TRUE)) {
+    file.path(here::here(), "output/cache")
+  } else {
+    "output/cache"
+  }
+  cache_path <- file.path(cache_dir, paste0(cache_tag, "_", key_hash, "_folds.rds"))
+
+  fold_indices <- NULL
+  used_cache <- FALSE
+
+  if (file.exists(cache_path)) {
+    cached <- tryCatch(readRDS(cache_path), error = function(e) NULL)
+    if (is.list(cached) &&
+      !is.null(cached$cache_key) &&
+      !is.null(cached$fold_indices) &&
+      identical(cached$cache_key, cache_key) &&
+      length(cached$fold_indices) == nrow(dat)) {
+      fold_indices <- cached$fold_indices
+      used_cache <- TRUE
+      cat("  Using cached spatial folds: ", cache_path, "\n", sep = "")
+    } else {
+      cat("  Cache found but does not match current data or parameters. Regenerating folds...\n")
+    }
+  }
+
+  if (is.null(fold_indices)) {
+    core_sf <- sf::st_as_sf(dat, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+    cv_spatial <- blockCV::cv_spatial(
+      x = core_sf, k = n_folds, size = block_size,
+      selection = "random",
+      iteration = 50,
+      progress = progress,
+      biomod2 = FALSE,
+      hexagon = FALSE,
+      plot = FALSE
+    )
+    fold_indices <- cv_spatial$folds_ids
+    dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+    saveRDS(list(cache_key = cache_key, fold_indices = fold_indices), cache_path)
+    cat("  Cached spatial folds to: ", cache_path, "\n", sep = "")
+  }
+
+  list(fold_indices = fold_indices, cache_path = cache_path, used_cache = used_cache)
+}
+
+#' Create a generic progress bar e.g. for hyperparameter tuning
+#'
+#' @param total total number of iterations for the progress bar
+#' @param format format string for the progress bar display
+#' @param clear whether to clear the progress bar when done
+#' @param width width of the progress bar in characters
+#' @return a progress bar object from the progress package
+progress_bar <- function(total, format = "[:bar] :current/:total (:percent)", clear = FALSE, width = 60) {
+  if (!requireNamespace("progress", quietly = TRUE)) {
+    install.packages("progress")
+  }
+  progress::progress_bar$new(total = total, format = format, clear = clear, width = width)
+}
+
+
+# ================================ DATA PREPARATION ================================
+
+#' Process remote sensing covariates by clipping negative values to zero.
+#' Call this after loading extracted raster data and before any training or prediction.
+#'
+#' @param dat Data frame with remote sensing (and possibly other) covariates.
+#' @param rs_covariates Character vector of column names to clip (default: common OLCI product names).
+#' @return The same data frame with the specified columns clipped to \code{pmax(x, 0)}; columns not present are ignored.
+process_rs_covariates <- function(dat, rs_covariates = c(
+                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.CHL.chlor_a.4km",
+                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.IOP.adg_443.4km",
+                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.IOP.bbp_443.4km",
+                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.KD.Kd_490.4km",
+                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.RRS.Rrs_443.4km",
+                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.RRS.Rrs_620.4km"
+                                  )) {
+  existing_vars <- intersect(rs_covariates, colnames(dat))
+  if (length(existing_vars) == 0) {
+    return(dat)
+  }
+  dat <- as.data.frame(dat)
+  for (v in existing_vars) {
+    if (is.numeric(dat[[v]])) {
+      dat[[v]] <- pmax(dat[[v]], 0, na.rm = FALSE)
+    }
+  }
+  dat
+}
+
+# ================================ FEATURE SELECTION ================================
+
+#' Check if a variable is a seagrass species variable
+#'
+#' @param v variable name
+#' @return TRUE if the variable is a seagrass species variable, FALSE otherwise
+is_species_var <- function(v) v == "seagrass_species" | startsWith(as.character(v), "seagrass_species")
+
 #' Prune predictors by pairwise correlation threshold
 #'
 #' Removes one variable from each pair with |correlation| > threshold, keeping the one with higher absolute correlation to the target.
@@ -23,7 +201,12 @@ prune_by_correlation <- function(data, predictor_vars, target_var, cor_threshold
       NA_real_
     }
   })
-  cor_df <- data.frame(variable = predictor_vars, correlation = cor_with_target, abs_correlation = abs(cor_with_target), stringsAsFactors = FALSE)
+  cor_df <- data.frame(
+    variable = predictor_vars,
+    correlation = cor_with_target,
+    abs_correlation = abs(cor_with_target),
+    stringsAsFactors = FALSE
+  )
   cor_df <- cor_df[!is.na(cor_df$correlation), ]
   vars_for_cor <- cor_df$variable
   if (length(vars_for_cor) < 2) {
@@ -59,234 +242,404 @@ prune_by_correlation <- function(data, predictor_vars, target_var, cor_threshold
   }
   setdiff(vars_for_cor, unique(vars_removed))
 }
-# ================================ UTILITY FUNCTIONS ================================
 
-#' Install packages if not already installed
-#'
-#' @param packages character vector of package names to install
-#' @return NULL but prints message to console when packages are installed
-install_packages <- function(packages) {
-  # if string, convert to list
-  if (is.character(packages)) {
-    packages <- list(packages)
+permutation_importance_cv <- function(core_data, target_var, predictor_vars, model_name,
+                                      fold_indices, n_permutations = 1L,
+                                      verbose = TRUE, log_response = TRUE, hyperparams = NULL) {
+  if (is.list(fold_indices)) {
+    fvec <- integer(nrow(core_data))
+    for (k in seq_along(fold_indices)) fvec[fold_indices[[k]]] <- k
+    fold_indices <- fvec
   }
-  for (package in packages) {
-    if (!requireNamespace(package, quietly = TRUE)) {
-      install.packages(package)
+  n_folds <- max(fold_indices)
+  if (n_folds < 2L) stop("Need at least 2 folds for CV")
+  if (!target_var %in% names(core_data))
+    stop("target_var \"", target_var, "\" not found in core_data")
+  predictor_vars <- intersect(predictor_vars, names(core_data))
+  if (length(predictor_vars) < 2L)
+    stop("permutation_importance_cv: need at least 2 predictor columns present in core_data")
+
+  keep_cols <- c(predictor_vars, target_var,
+                 intersect(c("longitude", "latitude"), names(core_data)))
+  last_error <- NULL
+  hp <- hyperparams
+
+  rmse_for_split <- function(train, test) {
+    train <- train[complete.cases(train), , drop = FALSE]
+    test  <- test[complete.cases(test), , drop = FALSE]
+    if (nrow(train) < 2L || nrow(test) < 1L) return(NA_real_)
+    test_orig_y <- test[[target_var]]
+    train$median_carbon_density <- train[[target_var]]
+    test$median_carbon_density  <- test[[target_var]]
+    if (log_response) {
+      train <- transform_response(train, "median_carbon_density", log = TRUE)
+      test  <- transform_response(test, "median_carbon_density", log = TRUE)
     }
+    err <- tryCatch({
+      prep <- prepare_data_for_model(model_name, train, test, predictor_vars)
+      fit <- switch(model_name,
+        GPR = fit_gpr(prep$train, prep$predictor_vars, test_data = prep$test, hyperparams = hp),
+        RF  = fit_rf(prep$train, prep$test, prep$predictor_vars),
+        XGB = fit_xgboost(prep$train, prep$test, prep$predictor_vars, hyperparams = hp),
+        GAM = fit_gam(prep$train, prep$test, prep$predictor_vars, k_spatial = if (is.list(hp) && !is.null(hp$k_spatial)) hp$k_spatial else 80L),
+        stop("Unsupported model: ", model_name)
+      )
+      pred <- fit$predictions
+      if (log_response) pred <- inverse_response_transform(pred, log = TRUE)
+      sqrt(mean((test_orig_y - pred)^2, na.rm = TRUE))
+    }, error = function(e) {
+      last_error <<- conditionMessage(e)
+      NA_real_
+    })
+    err
   }
-  print(paste("Installed packages:", paste(packages, collapse = ", ")))
+
+  if (verbose) cat("  Baseline ", model_name, " RMSE (", n_folds, " folds)... ", sep = "")
+  baseline <- vapply(seq_len(n_folds), function(k)
+    rmse_for_split(core_data[fold_indices != k, keep_cols, drop = FALSE],
+                   core_data[fold_indices == k, keep_cols, drop = FALSE]),
+    numeric(1))
+  baseline_rmse <- mean(baseline, na.rm = TRUE)
+  if (!is.finite(baseline_rmse)) {
+    msg <- paste0("Baseline RMSE could not be computed for ", model_name, ".")
+    if (!is.null(last_error)) msg <- paste0(msg, " Last error: ", last_error)
+    stop(msg)
+  }
+  if (verbose) cat("done (", round(baseline_rmse, 4), ").\n", sep = "")
+
+  n_vars <- length(predictor_vars)
+  if (verbose) { pb <- utils::txtProgressBar(0, n_vars, style = 3, width = 50); on.exit(close(pb), add = TRUE) }
+
+  imp_list <- vector("list", n_vars)
+  for (i in seq_len(n_vars)) {
+    v <- predictor_vars[i]
+    core_perm <- as.data.frame(core_data)
+    rmse_inc <- vapply(seq_len(n_permutations), function(perm) {
+      core_perm[[v]] <- sample(core_perm[[v]])
+      mean(vapply(seq_len(n_folds), function(k)
+        rmse_for_split(core_perm[fold_indices != k, keep_cols, drop = FALSE],
+                       core_perm[fold_indices == k, keep_cols, drop = FALSE]),
+        numeric(1)), na.rm = TRUE) - baseline_rmse
+    }, numeric(1))
+    imp_list[[i]] <- data.frame(variable = v, rmse_increase = mean(rmse_inc), stringsAsFactors = FALSE)
+    if (verbose) utils::setTxtProgressBar(pb, i)
+  }
+
+  imp_df <- do.call(rbind, imp_list)
+  imp_df[order(-imp_df$rmse_increase), , drop = FALSE]
 }
 
-#' Load packages, install if necessary
+#' Select the top variables from an importance data frame.
 #'
-#' @param packages character vector of package names to load
-#' @param optional Optional character vector of package names that are not required (warn if missing but continue)
-#' @return NULL but prints message to console when packages are loaded
-load_packages <- function(packages, optional = NULL) {
-  loaded <- character()
-  failed <- character()
-
-  for (package in packages) {
-    if (package %in% optional) {
-      # Optional package: try to load but don't fail if unavailable
-      if (suppressWarnings(require(package, character.only = TRUE, quietly = TRUE))) {
-        loaded <- c(loaded, package)
-      } else {
-        # Try to install
-        if (!requireNamespace(package, quietly = TRUE)) {
-          tryCatch(
-            {
-              install.packages(package, quiet = TRUE)
-            },
-            error = function(e) NULL
-          )
-        }
-        # Try to load again
-        if (suppressWarnings(require(package, character.only = TRUE, quietly = TRUE))) {
-          loaded <- c(loaded, package)
-        } else {
-          warning("Optional package '", package, "' could not be loaded. Continuing without it.")
-        }
-      }
-    } else {
-      # Required package: must load successfully
-      if (!suppressWarnings(require(package, character.only = TRUE, quietly = TRUE))) {
-        # Try to install
-        if (!requireNamespace(package, quietly = TRUE)) {
-          tryCatch(
-            {
-              install.packages(package, quiet = TRUE)
-            },
-            error = function(e) {
-              stop("Failed to install required package '", package, "': ", conditionMessage(e))
-            }
-          )
-        }
-        # Try to load
-        if (!suppressWarnings(require(package, character.only = TRUE, quietly = TRUE))) {
-          stop("Required package '", package, "' could not be loaded after installation attempt.")
-        }
-      }
-      loaded <- c(loaded, package)
-    }
-  }
-
-  if (length(loaded) > 0) {
-    cat("Loaded packages:", paste(loaded, collapse = ", "), "\n")
-  }
-  if (length(failed) > 0) {
-    warning("Failed to load packages:", paste(failed, collapse = ", "))
-  }
+#' Keeps variables that together account for \code{coverage} fraction of total
+#' importance, capped at \code{max_vars}. Always keeps at least 2.
+#'
+#' @param df        data.frame with columns \code{variable} and \code{value_col}.
+#' @param value_col Name of the numeric importance column.
+#' @param max_vars  Maximum number of variables to retain.
+#' @param coverage  Cumulative importance coverage threshold (0–1).
+#' @return Character vector of selected variable names.
+select_top_vars <- function(df, value_col, max_vars = 15L, coverage = 0.99) {
+  df  <- df[order(-df[[value_col]]), , drop = FALSE]
+  cum <- cumsum(pmax(df[[value_col]], 0))
+  tot <- max(cum, na.rm = TRUE)
+  cum <- if (tot > 0) cum / tot else seq_along(cum) / length(cum)
+  n_keep <- max(2L, min(as.integer(max_vars),
+                        sum(cum <= coverage, na.rm = TRUE) + 1L,
+                        nrow(df)))
+  df$variable[seq_len(n_keep)]
 }
 
-# ================================ PREDICTOR SETS FROM MODEL PERMUTATION PRUNING ================================
-# Generic model-wise permutation pruning (model_permutation_pruning.R) writes a CSV with
-# model, variable, rmse_increase, cum_rmse, total_rmse, cum_frac, keep, permutation_keep_frac.
-# Use this for "best covariate set" per model instead of model-specific pruning CSVs.
+#' Print a tidy ranked importance table to the console.
+#'
+#' @param df         data.frame with columns \code{variable} and \code{value_col}.
+#' @param value_col  Name of the numeric importance column.
+#' @param method_label Short label for the method (e.g. "Permutation", "SHAP").
+#' @param model_name   Model name string, used in the header line.
+#' @param max_show     Maximum rows to print (default 15).
+print_importance <- function(df, value_col, method_label, model_name,
+                             max_show = 15L) {
+  df  <- df[order(-df[[value_col]]), , drop = FALSE]
+  top <- head(df, as.integer(max_show))
+  cat(sprintf("    %s – %s (top %d):\n", method_label, model_name, nrow(top)))
+  for (i in seq_len(nrow(top)))
+    cat(sprintf("      %2d. %-45s  %+.4f\n",
+                i, top$variable[i], top[[value_col]][i]))
+}
 
-#' Get pruned predictor names for a model from the generic permutation-pruning CSV
+#' Compute model-agnostic SHAP feature importance via iml::Shapley.
 #'
-#' Looks for \code{cv_model_permutation_pruning_*.csv} in \code{figures/cv_pipeline_output}
-#' and \code{modelling/cv_pipeline_output}, filters to the given model and \code{keep == TRUE},
-#' and returns the variable names (optionally intersected with \code{data_cols}).
+#' Fits a quick model of type \code{model_name} on \code{core_data} and
+#' estimates global importance by averaging |phi| over \code{n_points} sampled
+#' observations. For GPR, training rows are capped at \code{max_gpr_train} for
+#' speed (GPR is O(n^3) to fit).
 #'
-#' @param model_name Character, e.g. \code{"GPR"}.
-#' @param data_cols Optional character vector of column names; if provided, returned
-#'   variables are intersected with this (so only names present in your data are returned).
-#' @param search_dirs Directories to search for the CSV (default: figures then modelling output).
-#' @return Character vector of variable names, or \code{NULL} if no CSV found or no kept variables.
-get_pruned_predictors_for_model <- function(model_name,
-                                            data_cols = NULL,
-                                            search_dirs = c("figures/cv_pipeline_output", "modelling/cv_pipeline_output")) {
-  pattern <- "cv_model_permutation_pruning_.*\\.csv"
-  csv_path <- NULL
-  for (d in search_dirs) {
-    if (!dir.exists(d)) next
-    f <- list.files(d, pattern = pattern, full.names = TRUE)
-    if (length(f) > 0L) {
-      csv_path <- f[1L]
-      break
-    }
-  }
-  if (is.null(csv_path)) {
-    return(NULL)
-  }
-  df <- tryCatch(
-    read.csv(csv_path, stringsAsFactors = FALSE),
-    error = function(e) NULL
+#' @param core_data  Data frame with target_var, predictor_vars (+ lon/lat for GPR).
+#' @param target_var Response variable name.
+#' @param predictor_vars Character vector of predictor names.
+#' @param model_name One of \code{"XGB"}, \code{"GAM"}, \code{"RF"}, \code{"GPR"}.
+#' @param n_points   Observations to sample for SHAP (default 30; higher = slower).
+#' @param max_gpr_train Max rows used to fit GPR (subsampled; default 300).
+#' @param log_response If TRUE (default), fit and SHAP are on log(response); use same as rest of pipeline.
+#' @param hyperparams Optional list of best hyperparameters (e.g. from tuning). XGB: nrounds, max_depth, learning_rate, subsample, colsample_bytree; GAM: k_spatial; GPR: kernel, nug.min, nug.max.
+#' @return data.frame(variable, shap_importance) sorted descending, or NULL on failure.
+compute_shap_importance <- function(core_data, target_var, predictor_vars,
+                                    model_name, n_points = 30L,
+                                    max_gpr_train = 300L,
+                                    log_response = TRUE,
+                                    hyperparams = NULL) {
+  load_packages("iml")
+  hp <- hyperparams
+
+  keep_cols <- intersect(
+    c(target_var, predictor_vars, "longitude", "latitude"), names(core_data)
   )
-  if (is.null(df) || !all(c("model", "variable", "keep") %in% names(df))) {
+  core <- core_data[complete.cases(core_data[, keep_cols, drop = FALSE]),
+                    keep_cols, drop = FALSE]
+  if (nrow(core) < 20L) {
+    warning("Too few complete cases for SHAP (", nrow(core), "); returning NULL.")
     return(NULL)
   }
-  keep_ok <- if (is.logical(df$keep)) df$keep else (toupper(as.character(df$keep)) %in% c("TRUE", "T", "1"))
-  vars <- unique(df$variable[df$model == model_name & keep_ok])
-  if (length(vars) == 0L) {
-    return(NULL)
+
+  core$median_carbon_density <- core[[target_var]]
+  if (log_response) core <- transform_response(core, "median_carbon_density", log = TRUE)
+  y <- core$median_carbon_density
+
+  if (model_name == "XGB") {
+    core <- as.data.frame(core)
+    prep <- prepare_predictors_train(core, predictor_vars)
+    core_sc <- prep$data
+    core_sc$median_carbon_density <- y
+    pvars <- predictor_vars
+    X <- core_sc[, pvars, drop = FALSE]
+    fit <- fit_xgboost(core_sc, core_sc, pvars, hyperparams = hp)
+    mdl <- fit$model
+    pred_fun <- function(m, newdata) as.numeric(predict(m, newdata = as.matrix(newdata)))
+
+  } else if (model_name == "GAM" || model_name == "RF") {
+    prep <- prepare_predictors_train_numeric_only(core, predictor_vars)
+    core_sc <- prep$data
+    core_sc$median_carbon_density <- y
+    pvars <- predictor_vars
+    if (model_name == "GAM" && is.list(hp) && !is.null(hp$k_spatial)) {
+      if (all(c("longitude", "latitude") %in% names(core))) {
+        core_sc$longitude <- core$longitude
+        core_sc$latitude  <- core$latitude
+      }
+      fit <- fit_gam(core_sc, core_sc, pvars, k_spatial = hp$k_spatial %||% 80L)
+      mdl <- fit$model
+      if (is.null(mdl)) { warning("GAM SHAP failed; returning NULL."); return(NULL) }
+      pred_fun <- function(m, newdata) {
+        as.numeric(mgcv::predict.gam(m, newdata = as.data.frame(newdata), type = "response"))
+      }
+      X <- core_sc[, c("longitude", "latitude", pvars), drop = FALSE]
+    } else {
+      X <- core_sc[, pvars, drop = FALSE]
+      if (model_name == "GAM") {
+        form <- as.formula(
+          paste("median_carbon_density ~", paste(predictor_vars, collapse = " + "))
+        )
+        mdl <- tryCatch(mgcv::gam(form, data = core_sc, family = gaussian()),
+                        error = function(e) NULL)
+        if (is.null(mdl)) { warning("GAM SHAP failed; returning NULL."); return(NULL) }
+        pred_fun <- function(m, newdata) {
+          nd <- apply_scaling(as.data.frame(newdata), prep$scale_params, predictor_vars)
+          as.numeric(mgcv::predict.gam(m, newdata = nd, type = "response"))
+        }
+      } else {
+        fit <- fit_rf(core_sc, core_sc, predictor_vars)
+        mdl <- fit$model
+        pred_fun <- function(m, newdata) {
+          nd <- apply_scaling(as.data.frame(newdata), prep$scale_params, predictor_vars)
+          as.numeric(predict(m, newdata = nd))
+        }
+      }
+    }
+
+  } else if (model_name == "GPR") {
+    pvars <- predictor_vars
+    train_core <- if (nrow(core) > max_gpr_train) {
+      core[sample(nrow(core), max_gpr_train), , drop = FALSE]
+    } else core
+    train_X <- train_core[, predictor_vars, drop = FALSE]
+    prep    <- prepare_predictors_train(train_X, predictor_vars)
+    train_sc <- prep$data
+    train_df <- cbind(median_carbon_density = train_core$median_carbon_density,
+                      train_sc)
+    X <- train_sc[, pvars, drop = FALSE]
+    y_gpr <- train_core$median_carbon_density  # y must match nrow(X) for iml::Predictor
+    form_str <- paste("median_carbon_density ~",
+                      paste(predictor_vars, collapse = " + "))
+    kernel  <- if (is.list(hp) && !is.null(hp$kernel)) hp$kernel else "matern52"
+    nug_min <- if (is.list(hp) && !is.null(hp$nug.min)) hp$nug.min else 1e-8
+    nug_max <- if (is.list(hp) && !is.null(hp$nug.max)) hp$nug.max else 100
+    mdl <- tryCatch(
+      GauPro::gpkm(as.formula(form_str), data = train_df,
+                   kernel = kernel, nug.min = nug_min, nug.max = nug_max),
+      error = function(e) NULL
+    )
+    if (is.null(mdl)) {
+      warning("GPR fitting failed in compute_shap_importance; returning NULL.")
+      return(NULL)
+    }
+    pred_fun  <- function(m, newdata) {
+      Xn    <- as.data.frame(newdata[, predictor_vars, drop = FALSE])
+      Xn_sc <- as.matrix(prepare_predictors_new(Xn, predictor_vars, prep$scale_params, prep$encoding)[, predictor_vars, drop = FALSE])
+      storage.mode(Xn_sc) <- "double"
+      as.numeric(m$pred(Xn_sc, se.fit = FALSE))
+    }
+    y <- y_gpr
+  } else {
+    stop("compute_shap_importance: unsupported model_name '", model_name, "'")
   }
-  if (!is.null(data_cols)) vars <- intersect(vars, data_cols)
-  vars
+
+  predictor_iml <- iml::Predictor$new(
+    model            = mdl,
+    data             = X,
+    y                = y,
+    predict.function = pred_fun
+  )
+
+  n_pts <- min(as.integer(n_points), nrow(X))
+  idx   <- sample(seq_len(nrow(X)), n_pts)
+  shap_mat <- matrix(0, nrow = n_pts, ncol = length(pvars), dimnames = list(NULL, pvars))
+  n_ok <- 0L
+  for (i in seq_len(n_pts)) {
+    sh <- tryCatch(iml::Shapley$new(predictor_iml, x.interest = X[idx[i], , drop = FALSE]),
+                   error = function(e) NULL)
+    if (is.null(sh)) next
+    phi_vals <- as.numeric(sh$results$phi)
+    # iml may return feature names that don't match pvars (e.g. make.names: _ to .); match by position
+    if (length(phi_vals) == length(pvars)) {
+      shap_mat[i, ] <- abs(phi_vals)
+      n_ok <- n_ok + 1L
+    } else {
+      feat_names <- as.character(sh$results$feature)
+      common <- intersect(feat_names, pvars)
+      if (length(common) == 0L) {
+        # try matching after normalizing (dots/underscores)
+        norm_pvars <- gsub("[^a-zA-Z0-9]", ".", pvars)
+        norm_feat <- gsub("[^a-zA-Z0-9]", ".", feat_names)
+        for (j in seq_along(pvars)) {
+          match_j <- match(norm_pvars[j], norm_feat)
+          if (!is.na(match_j)) shap_mat[i, pvars[j]] <- abs(phi_vals[match_j])
+        }
+        n_ok <- n_ok + 1L
+      } else {
+        shap_mat[i, common] <- abs(phi_vals[match(common, feat_names)])
+        n_ok <- n_ok + 1L
+      }
+    }
+  }
+  if (n_ok == 0L)
+    warning("SHAP: no Shapley computations succeeded for ", model_name, "; importance will be zero.")
+  imp <- colMeans(shap_mat, na.rm = TRUE)
+  data.frame(variable = names(imp), shap_importance = as.numeric(imp), stringsAsFactors = FALSE)[order(-imp), , drop = FALSE]
 }
 
-#' Combine per-model pruned variable CSVs into a single file.
+#' Combine per-model variable/importance CSVs into a single file.
 #'
-#' Reads all \code{pruned_variables_to_include_<model>.csv} files in
-#' \code{covariate_dir} and writes \code{pruned_model_variables.csv} with
-#' columns \code{model} and \code{variable}. Call after writing any
-#' pruned_variables_to_include_*.csv so the combined file stays up to date.
+#' \code{type = "pruned"}: \code{pruned_variables_to_include_<model>.csv} ->
+#' \code{pruned_model_variables.csv} (model, variable).
+#' \code{type = "permutation"} or \code{"shap"}: \code{importance_<type>_<model>.csv} ->
+#' \code{importance_<type>_combined.csv} (model, variable, value column).
 #'
-#' @param covariate_dir Directory containing the per-model CSVs (default:
-#'   \code{figures/covariate_selection}).
-#' @return Invisibly the path to the combined CSV, or \code{NULL} if no
-#'   per-model files were found.
-combine_pruned_model_variables <- function(covariate_dir = "figures/covariate_selection") {
-  pruned_files <- list.files(covariate_dir, pattern = "^pruned_variables_to_include_.+\\.csv$", full.names = TRUE)
-  pruned_files <- setdiff(pruned_files, file.path(covariate_dir, "pruned_model_variables.csv"))
-  if (length(pruned_files) == 0L) return(invisible(NULL))
-  combined_list <- lapply(pruned_files, function(f) {
-    model_name <- sub("^pruned_variables_to_include_(.+)\\.csv$", "\\1", basename(f))
+#' @param covariate_dir Directory containing the per-model CSVs.
+#' @param type One of \code{"pruned"}, \code{"permutation"}, \code{"shap"}.
+#' @return Path to the combined CSV, or \code{NULL} if no per-model files found.
+combine_pruned_model_variables <- function(covariate_dir = "output/covariate_selection",
+                                           type = c("pruned", "permutation", "shap")) {
+  type <- match.arg(type)
+  if (type == "pruned") {
+    pat <- "^pruned_variables_to_include_.+\\.csv$"
+    out <- file.path(covariate_dir, "pruned_model_variables.csv")
+    value_col <- NULL
+  } else {
+    pat <- paste0("^importance_", type, "_.+\\.csv$")
+    out <- file.path(covariate_dir, paste0("importance_", type, "_combined.csv"))
+    value_col <- if (type == "permutation") "rmse_increase" else "shap_importance"
+  }
+  files <- setdiff(list.files(covariate_dir, pattern = pat, full.names = TRUE), out)
+  if (length(files) == 0L) return(invisible(NULL))
+  combined_list <- lapply(files, function(f) {
+    m <- sub(paste0("^(pruned_variables_to_include_|importance_", type, "_)(.+)\\.csv$"),
+             "\\2", basename(f))
     d <- read.csv(f, stringsAsFactors = FALSE)
     if (!"variable" %in% names(d)) return(NULL)
-    data.frame(model = model_name, variable = d$variable, stringsAsFactors = FALSE)
+    if (is.null(value_col)) return(data.frame(model = m, variable = d$variable, stringsAsFactors = FALSE))
+    if (!value_col %in% names(d)) return(NULL)
+    out_df <- data.frame(model = m, variable = d$variable, d[[value_col]], stringsAsFactors = FALSE)
+    names(out_df)[3L] <- value_col
+    out_df
   })
   combined_list <- combined_list[!vapply(combined_list, is.null, logical(1L))]
   if (length(combined_list) == 0L) return(invisible(NULL))
   combined <- do.call(rbind, combined_list)
-  out_combined <- file.path(covariate_dir, "pruned_model_variables.csv")
-  write.csv(combined, out_combined, row.names = FALSE)
-  out_combined
+  write.csv(combined, out, row.names = FALSE)
+  invisible(out)
 }
 
-# ================================ DATA PREPARATION ================================
-
-#' Process remote sensing covariates by clipping negative values to zero.
-#' Call this after loading extracted raster data and before any training or prediction.
+#' Compare covariates between models
 #'
-#' @param dat Data frame with remote sensing (and possibly other) covariates.
-#' @param rs_covariates Character vector of column names to clip (default: common OLCI product names).
-#' @return The same data frame with the specified columns clipped to \code{pmax(x, 0)}; columns not present are ignored.
-process_rs_covariates <- function(dat, rs_covariates = c(
-                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.CHL.chlor_a.4km",
-                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.IOP.adg_443.4km",
-                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.IOP.bbp_443.4km",
-                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.KD.Kd_490.4km",
-                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.RRS.Rrs_443.4km",
-                                    "S3A_OLCI_ERRNT.20160425_20241231.L3m.CU.RRS.Rrs_620.4km"
-                                  )) {
-  existing_vars <- intersect(rs_covariates, colnames(dat))
-  if (length(existing_vars) == 0) {
-    return(dat)
+#' Given a data frame with a 'model' and 'variable' column (for n models), prints and returns
+#' a list of variables grouped by how many models share them (e.g. shared by 2, 3 models, etc.),
+#' and, for each variable, indicates which models share it.
+#'
+#' @param model_variables_df data frame with 'model' and 'variable' columns
+#' @return named list: each name is number of models that share variables; each entry is a data.frame
+#'         with columns 'variable' and 'models' (character vector of model names sharing that variable)
+compare_covariates_between_models <- function(model_variables_df) {
+  if (!requireNamespace("dplyr", quietly = TRUE))
+    stop("Package 'dplyr' is required.")
+  out <- model_variables_df %>%
+    dplyr::group_by(.data$variable) %>%
+    dplyr::summarise(
+      n_models = dplyr::n_distinct(.data$model),
+      models   = list(sort(unique(as.character(.data$model)))),
+      .groups  = "drop"
+    ) %>%
+    dplyr::arrange(dplyr::desc(.data$n_models), .data$variable)
+
+  shared_list <- split(out[, c("variable", "models")], out$n_models)
+  for (k in sort(unique(out$n_models), decreasing = TRUE)) {
+    vars_tab <- shared_list[[as.character(k)]]
+    cat(sprintf("Variables shared by %d model%s:\n", k, if (k == 1) "" else "s"))
+    for (i in seq_len(nrow(vars_tab)))
+      cat(sprintf("  %s (%s)\n", vars_tab$variable[i],
+                  paste(vars_tab$models[[i]], collapse = ", ")))
+    cat("\n")
   }
-  dat <- as.data.frame(dat)
-  for (v in existing_vars) {
-    if (is.numeric(dat[[v]])) {
-      dat[[v]] <- pmax(dat[[v]], 0, na.rm = FALSE)
-    }
-  }
-  dat
+  invisible(shared_list)
 }
+
+
 
 # ================================ INITIALISATION ================================
 
-# load packages if not already loaded
-load_packages(c("here", "mgcv", "tidyverse", "ggplot2", "visreg", "randomForest", "corrplot", "blockCV", "GauPro", "xgboost", "e1071", "neuralnet", "purrr", "sp", "viridisLite", "patchwork", "maps"))
-world <- map_data("world")
-
-
-#' Create a progress bar for hyperparameter tuning
+#' Index of test rows whose factor predictor levels were present in training
 #'
-#' @param total total number of iterations for the progress bar
-#' @param format format string for the progress bar display
-#' @param clear whether to clear the progress bar when done
-#' @param width width of the progress bar in characters
-#' @return a progress bar object from the progress package
-progress_bar <- function(total, format = "[:bar] :current/:total (:percent)", clear = FALSE, width = 60) {
-  if (!requireNamespace("progress", quietly = TRUE)) {
-    install.packages("progress")
+#' Used so CV metrics are computed only on test rows we can fairly evaluate
+#' (e.g. species seen in the training fold). Does not change train/test split.
+#'
+#' @param train training data frame (with factor columns)
+#' @param test test data frame (same factor column names)
+#' @param factor_vars character vector of factor predictor names (e.g. \code{c("seagrass_species", "region")})
+#' @return logical vector of length \code{nrow(test)}: TRUE where all factor_vars (present in both frames) have values in train
+test_rows_with_factors_in_train <- function(train, test, factor_vars = c("seagrass_species", "region")) {
+  keep <- rep(TRUE, nrow(test))
+  for (col in factor_vars) {
+    if (col %in% names(train) && col %in% names(test)) {
+      train_vals <- unique(train[[col]])
+      keep <- keep & (test[[col]] %in% train_vals)
+    }
   }
-  progress::progress_bar$new(total = total, format = format, clear = clear, width = width)
+  keep
 }
-
-# ================================ MODEL FITTING ================================
-
-#' Calculate the aggregate carbon density for each core at a given depth
-#'
-#' @param core_data data frame containing the core data
-#' @param aggregation_level the depth level to which to aggregate
-#' @param aggregation_function the function to use to aggregate the carbon density (e.g. median, mean, sum)
-#' @return data frame containing the aggregate carbon density for each core
-calculate_core_aggregate <- function(core_data, aggregation_level = 5, aggregation_function = median) {
-  core_data %>%
-    filter(sediment_mean_depth_cm <= aggregation_level) %>%
-    group_by(random_core_variable) %>%
-    summarise(
-      aggregate_carbon_density = aggregation_function(carbon_density_g_c_cm3, na.rm = TRUE),
-      .groups = "drop"
-    )
-}
-
 
 #' Calculate performance metrics for model predictions
+#'
+#' R² is the standard squared correlation between observed and predicted
+#' (always in [0, 1] when defined; NA if either vector has zero variance).
 #'
 #' @param observed vector of observed (true) values
 #' @param predicted vector of predicted values
@@ -300,1135 +653,101 @@ calculate_metrics <- function(observed, predicted) {
   return(data.frame(r2 = r2, rmse = rmse, mae = mae, bias = bias))
 }
 
-
-#' Fit a random forest model
+#' Read per-model predictor variables from a CSV (e.g. pruned_model_variables_shap.csv).
 #'
-#' @param train_data training data frame containing predictor variables and response
-#' @param test_data test data frame for making predictions
-#' @param predictor_vars character vector of predictor variable names
-#' @param hyperparams optional list of hyperparameters (ntree, mtry, nodesize). if null, uses defaults
-#' @return list containing the fitted model and predictions on test data
-fit_rf <- function(train_data, test_data, predictor_vars, hyperparams = NULL) {
-  formula_str <- paste("median_carbon_density ~", paste(predictor_vars, collapse = " + "))
-  formula_obj <- as.formula(formula_str)
-
-  # use provided hyperparameters or defaults
-  ntree <- if (!is.null(hyperparams$ntree)) hyperparams$ntree else 500
-  mtry <- if (!is.null(hyperparams$mtry)) hyperparams$mtry else floor(sqrt(length(predictor_vars)))
-  nodesize <- if (!is.null(hyperparams$nodesize)) hyperparams$nodesize else NULL
-
-  model <- randomForest(formula_obj,
-    data = train_data,
-    ntree = ntree,
-    mtry = mtry,
-    nodesize = nodesize,
-    importance = TRUE
-  )
-
-  predictions <- predict(model, newdata = test_data)
-
-  return(list(model = model, predictions = predictions))
+#' @param fn Path to CSV with columns \code{model} and \code{variable}.
+#' @param valid_cols Optional character vector (e.g. \code{colnames(core_data)}); if provided, variables are intersected with this.
+#' @return Named list: model name -> character vector of variables (or \code{NULL} if file missing/invalid).
+read_model_vars <- function(fn, valid_cols = NULL) {
+  if (!file.exists(fn)) return(NULL)
+  df <- read.csv(fn, stringsAsFactors = FALSE)
+  if (!all(c("model", "variable") %in% names(df))) return(NULL)
+  out <- lapply(split(df$variable, df$model), function(v) {
+    if (length(valid_cols)) intersect(v, valid_cols) else v
+  })
+  out
 }
 
-#' Fit an xgboost (gradient boosted trees) model
+#' Build per-model variable lists from SHAP and permutation CSV files.
 #'
-#' @param train_data training data frame containing predictor variables and response
-#' @param test_data test data frame for making predictions
-#' @param predictor_vars character vector of predictor variable names
-#' @param hyperparams optional list of hyperparameters (nrounds, max_depth, learning_rate, subsample, colsample_bytree). if null, uses defaults
-#' @return list containing the fitted model and predictions on test data
-fit_xgboost <- function(train_data, test_data, predictor_vars, hyperparams = NULL) {
-  # prepare data matrices
-  X_train <- as.matrix(train_data[, predictor_vars])
-  y_train <- train_data$median_carbon_density
-  X_test <- as.matrix(test_data[, predictor_vars])
-
-  # use provided hyperparameters or defaults
-  nrounds <- if (!is.null(hyperparams$nrounds)) hyperparams$nrounds else 100
-  max_depth <- if (!is.null(hyperparams$max_depth)) hyperparams$max_depth else 6
-  learning_rate <- if (!is.null(hyperparams$learning_rate)) hyperparams$learning_rate else 0.3
-  subsample <- if (!is.null(hyperparams$subsample)) hyperparams$subsample else 0.8
-  colsample_bytree <- if (!is.null(hyperparams$colsample_bytree)) hyperparams$colsample_bytree else 0.8
-  nthreads <- if (!is.null(hyperparams$nthreads) && !is.na(hyperparams$nthreads)) as.integer(hyperparams$nthreads)[1L] else 1L
-
-  # fit model
-  model <- xgboost(
-    x = X_train,
-    y = y_train,
-    nrounds = nrounds,
-    max_depth = max_depth,
-    learning_rate = learning_rate,
-    subsample = subsample,
-    colsample_bytree = colsample_bytree,
-    nthread = nthreads,
-    objective = "reg:squarederror"
+#' @param cov_dir Directory containing \code{pruned_model_variables_shap.csv} and \code{pruned_model_variables_perm.csv}.
+#' @param valid_cols Optional character vector to restrict variables (e.g. \code{colnames(core_data)}).
+#' @param use_shap_first If \code{TRUE}, prefer SHAP file when both exist; else prefer permutation.
+#' @return List with elements \code{shap} and \code{perm}, each a named list (model -> variables).
+get_per_model_vars <- function(cov_dir, valid_cols = NULL, use_shap_first = TRUE) {
+  shap_file <- file.path(cov_dir, "pruned_model_variables_shap.csv")
+  perm_file <- file.path(cov_dir, "pruned_model_variables_perm.csv")
+  list(
+    shap = read_model_vars(shap_file, valid_cols),
+    perm = read_model_vars(perm_file, valid_cols)
   )
-
-  predictions <- predict(model, newdata = X_test)
-
-  return(list(model = model, predictions = predictions))
 }
 
-#' Fit a support vector machine (svm) model with automatic parameter tuning
+#' Return the predictor variable vector for a model from pre-built SHAP/perm lists.
 #'
-#' @param train_data training data frame containing predictor variables and response
-#' @param test_data test data frame for making predictions
-#' @param predictor_vars character vector of predictor variable names
-#' @return list containing the fitted model and predictions on test data
-fit_svm <- function(train_data, test_data, predictor_vars) {
-  formula_str <- paste("median_carbon_density ~", paste(predictor_vars, collapse = " + "))
-  formula_obj <- as.formula(formula_str)
-
-  # tune svm parameters (cost, gamma, and kernel type) using grid search
-  # tune.svm doesn't accept a vector for kernel, so we need to tune each kernel separately
-  # and then select the best overall model
-  kernels_to_try <- c("linear", "polynomial", "sigmoid")
-  best_result <- NULL
-  best_performance <- Inf
-
-  for (kernel_type in kernels_to_try) {
-    # tune parameters for this kernel type
-    # note: linear kernel doesn't use gamma, so we skip it for non-linear kernels
-    # polynomial and sigmoid kernels use both cost and gamma
-    tune_result <- tryCatch(
-      {
-        tune.svm(formula_obj,
-          data = train_data,
-          gamma = 10^(-3:1),
-          cost = 10^(-1:2),
-          kernel = kernel_type,
-          tunecontrol = tune.control(sampling = "cross", cross = 3)
-        )
-      },
-      error = function(e) {
-        cat("    Warning: Failed to tune", kernel_type, "kernel:", e$message, "\n")
-        return(NULL)
-      }
-    )
-
-    if (!is.null(tune_result)) {
-      # extract performance (error) - lower is better
-      current_performance <- tune_result$best.performance
-      if (current_performance < best_performance) {
-        best_performance <- current_performance
-        best_result <- tune_result
-      }
-    }
+#' @param model_name Model name (e.g. \code{"GPR"}, \code{"GAM"}, \code{"XGB"}).
+#' @param per_model_vars List from \code{get_per_model_vars()} with elements \code{shap} and \code{perm}.
+#' @param use_shap_first If \code{TRUE}, use SHAP vars when available and sufficient; else try permutation first.
+#' @return Character vector of variable names (at least 2).
+load_model_vars <- function(model_name, per_model_vars, use_shap_first = TRUE) {
+  src_order <- if (use_shap_first) c("shap", "perm") else c("perm", "shap")
+  for (s in src_order) {
+    src_list <- per_model_vars[[s]]
+    if (!is.list(src_list)) next
+    v <- src_list[[model_name]]
+    if (!is.null(v) && length(v) >= 2L) return(v)
   }
-
-  # if no kernel worked, fall back to default svm
-  if (is.null(best_result)) {
-    cat("    Warning: All kernel tuning failed, using default svm\n")
-    model <- svm(formula_obj, data = train_data)
-  } else {
-    model <- best_result$best.model
-  }
-
-  predictions <- predict(model, newdata = test_data)
-
-  return(list(model = model, predictions = predictions))
+  stop("No pruned variables for ", model_name, " in SHAP or permutation CSV. Run covariate selection first.")
 }
-
-#' Fit a neural network model
-#'
-#' @param train_data training data frame containing predictor variables and response
-#' @param test_data test data frame for making predictions
-#' @param predictor_vars character vector of predictor variable names
-#' @param hyperparams optional list of hyperparameters (hidden, learningrate). if null, uses defaults
-#' @return list containing the fitted model and predictions on test data (unscaled)
-fit_nn <- function(train_data, test_data, predictor_vars, hyperparams = NULL) {
-  # neuralnet requires all numeric data and works better with scaled data
-  # ensure data is a data.frame (not tibble) to avoid namespace conflicts
-  train_data <- as.data.frame(train_data)
-  test_data <- as.data.frame(test_data)
-
-  # prepare training data: select only numeric predictors and response
-  # use explicit dplyr namespace to avoid conflicts
-  train_numeric <- train_data %>%
-    dplyr::select(dplyr::all_of(predictor_vars), median_carbon_density) %>%
-    dplyr::mutate_all(as.numeric) %>%
-    as.data.frame()
-
-  # remove any rows with missing values
-  train_numeric <- train_numeric[complete.cases(train_numeric), ]
-
-  # scale the data (neural networks work better with scaled inputs)
-  # store scaling parameters to apply to test data
-  scale_params <- list(
-    means = colMeans(train_numeric[, predictor_vars, drop = FALSE]),
-    sds = apply(train_numeric[, predictor_vars, drop = FALSE], 2, sd)
-  )
-
-  # scale training data
-  train_scaled <- train_numeric
-  for (var in predictor_vars) {
-    if (scale_params$sds[var] > 0) { # avoid division by zero
-      train_scaled[[var]] <- (train_numeric[[var]] - scale_params$means[var]) / scale_params$sds[var]
-    } else {
-      train_scaled[[var]] <- 0 # if no variance, set to 0
-    }
-  }
-
-  # scale response variable separately
-  response_mean <- mean(train_numeric$median_carbon_density)
-  response_sd <- sd(train_numeric$median_carbon_density)
-  train_scaled$median_carbon_density <- (train_numeric$median_carbon_density - response_mean) / response_sd
-
-  # prepare test data
-  test_numeric <- test_data %>%
-    dplyr::select(dplyr::all_of(predictor_vars), median_carbon_density) %>%
-    dplyr::mutate_all(as.numeric) %>%
-    as.data.frame()
-
-  # scale test data using training scaling parameters
-  test_scaled <- test_numeric
-  for (var in predictor_vars) {
-    if (scale_params$sds[var] > 0) {
-      test_scaled[[var]] <- (test_numeric[[var]] - scale_params$means[var]) / scale_params$sds[var]
-    } else {
-      test_scaled[[var]] <- 0
-    }
-  }
-
-  # create formula
-  formula_str <- paste("median_carbon_density ~", paste(predictor_vars, collapse = " + "))
-  formula_obj <- as.formula(formula_str)
-
-  # use provided hyperparameters or defaults
-  hidden <- if (!is.null(hyperparams$hidden)) hyperparams$hidden else c(10, 5)
-  learningrate <- if (!is.null(hyperparams$learningrate)) hyperparams$learningrate else NULL
-
-  # fit neural network
-  # linear.output = true for regression (not classification)
-  # act.fct = "logistic" for hidden layers, but output is linear for regression
-  model_args <- list(
-    formula = formula_obj,
-    data = train_scaled,
-    hidden = hidden,
-    act.fct = "logistic",
-    linear.output = TRUE,
-    threshold = 0.01,
-    stepmax = 1e+05
-  )
-  if (!is.null(learningrate)) model_args$learningrate <- learningrate
-
-  model <- do.call(neuralnet, model_args)
-
-  # predict on scaled test data
-  # neuralnet predict returns a matrix, extract first column
-  predictions_scaled <- predict(model, newdata = test_scaled[, predictor_vars, drop = FALSE])
-
-  # convert predictions_scaled from matrix to vector if needed
-  if (is.matrix(predictions_scaled)) {
-    predictions_scaled <- predictions_scaled[, 1]
-  }
-
-  # unscale predictions back to original scale
-  predictions <- predictions_scaled * response_sd + response_mean
-
-  # store scaling parameters in model object for later use
-  model$scale_params <- scale_params
-  model$response_mean <- response_mean
-  model$response_sd <- response_sd
-
-  return(list(model = model, predictions = predictions))
-}
-
-fit_gpr <- function(train_data, test_data, predictor_vars) {
-  formula_str <- paste("median_carbon_density ~", paste(predictor_vars, collapse = " + "))
-  formula_obj <- as.formula(formula_str)
-
-  model <- gpkm(formula_obj, data = train_data, kernel = "matern52")
-  XX <- as.matrix(test_data[, predictor_vars, drop = FALSE])
-  predictions <- predict(model, XX = XX)
-  return(list(model = model, predictions = predictions))
-}
-
-# ================================ SPATIAL INTERPOLATION (KRIGING) ================================
-
-#' Project points to a metric CRS for variogram/kriging (UTM zone from centroid)
-#' @param sf_pts sf object with point geometry (WGS84)
-#' @return sf object in UTM (metres)
-project_for_kriging <- function(sf_pts) {
-  cen <- sf::st_union(sf::st_geometry(sf_pts)) %>% sf::st_centroid()
-  xy <- sf::st_coordinates(cen)
-  zone <- floor((xy[1, "X"] + 180) / 6) + 1
-  hem <- if (xy[1, "Y"] >= 0) " +north" else " +south"
-  crs_utm <- paste0("+proj=utm +zone=", zone, hem, " +datum=WGS84 +units=m")
-  sf::st_transform(sf_pts, crs_utm)
-}
-
-#' Fit ordinary kriging (spatial correlation only) and predict at test locations
-#' Uses gstat; aggregates to unique locations and local kriging (nmax) to avoid singular matrix.
-#' @param train_data data frame with median_carbon_density, longitude, latitude
-#' @param test_data data frame with longitude, latitude
-#' @param nmax max nearest neighbours per prediction (default 25); avoids singular covariance.
-#' @return list(model = gstat object or NULL, predictions = vector)
-fit_ok <- function(train_data, test_data, predictor_vars = NULL, nmax = 25) {
-  if (!requireNamespace("gstat", quietly = TRUE)) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  # Aggregate to unique locations (duplicate coords cause singular covariance in krige)
-  train_agg <- train_data %>%
-    dplyr::group_by(longitude, latitude) %>%
-    dplyr::summarise(median_carbon_density = mean(median_carbon_density, na.rm = TRUE), .groups = "drop") %>%
-    as.data.frame()
-  if (nrow(train_agg) < 4) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  train_sf <- sf::st_as_sf(train_agg, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
-  test_sf <- sf::st_as_sf(test_data, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
-  train_sf <- project_for_kriging(train_sf)
-  test_sf <- project_for_kriging(test_sf)
-  # Variogram: use cutoff up to ~1/3 of max distance so we have enough bins
-  d_obs <- sf::st_coordinates(train_sf)
-  max_d <- max(sqrt(outer(d_obs[, 1], d_obs[, 1], "-")^2 + outer(d_obs[, 2], d_obs[, 2], "-")^2), na.rm = TRUE)
-  cutoff <- min(500e3, max(1.5 * max_d, 10e3))
-  v <- tryCatch(
-    gstat::variogram(median_carbon_density ~ 1, data = train_sf, cutoff = cutoff),
-    error = function(e) NULL
-  )
-  if (is.null(v) || nrow(v) < 3) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  v0 <- var(train_agg$median_carbon_density, na.rm = TRUE)
-  if (!is.finite(v0) || v0 <= 0) v0 <- 0.1
-  fit <- tryCatch(
-    gstat::fit.variogram(v, gstat::vgm(NA, "Sph", NA, NA), fit.method = 7),
-    error = function(e) {
-      tryCatch(
-        gstat::fit.variogram(v, gstat::vgm(v0, "Sph", 50e3, 0.1), fit.method = 7),
-        error = function(e2) {
-          tryCatch(
-            gstat::fit.variogram(v, gstat::vgm(v0, "Exp", 50e3, 0.1), fit.method = 7),
-            error = function(e3) NULL
-          )
-        }
-      )
-    }
-  )
-  if (is.null(fit) || !is.data.frame(fit) || nrow(fit) < 2 ||
-    (length(fit$range) >= 2 && fit$range[2] <= 0)) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  # Minimum nugget for numerical stability (avoids singular kriging matrix)
-  sill_tot <- sum(fit$psill, na.rm = TRUE)
-  if (sill_tot > 0 && fit$psill[1] < 1e-6 * sill_tot) fit$psill[1] <- 1e-6 * sill_tot
-  pred <- tryCatch(
-    gstat::krige(median_carbon_density ~ 1, locations = train_sf, newdata = test_sf, model = fit, nmax = nmax),
-    error = function(e) NULL
-  )
-  if (is.null(pred)) {
-    return(list(model = list(variogram = fit), predictions = rep(NA_real_, nrow(test_data))))
-  }
-  list(model = list(variogram = fit), predictions = as.numeric(pred$var1.pred))
-}
-
-#' Fit universal kriging with environmental covariates as drift and predict at test locations
-#' Aggregates to unique locations and uses local kriging (nmax) to avoid singular matrix.
-#' @param train_data data frame with median_carbon_density, longitude, latitude, and predictor_vars
-#' @param test_data data frame with longitude, latitude, and predictor_vars
-#' @param predictor_vars character vector of covariate names (drift terms)
-#' @param nmax max nearest neighbours per prediction (default 25).
-#' @return list(model = gstat object or NULL, predictions = vector)
-fit_uk <- function(train_data, test_data, predictor_vars, nmax = 25) {
-  if (!requireNamespace("gstat", quietly = TRUE) || length(predictor_vars) == 0) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  pv <- intersect(predictor_vars, names(train_data))
-  pv <- pv[pv %in% names(test_data)]
-  if (length(pv) == 0) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  # Aggregate to unique locations (duplicate coords cause singular covariance)
-  train_agg <- train_data %>%
-    dplyr::group_by(longitude, latitude) %>%
-    dplyr::summarise(
-      median_carbon_density = mean(median_carbon_density, na.rm = TRUE),
-      dplyr::across(dplyr::all_of(pv), ~ if (is.numeric(.)) mean(., na.rm = TRUE) else .[1]),
-      .groups = "drop"
-    ) %>%
-    as.data.frame()
-  if (nrow(train_agg) < 4) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  train_sf <- sf::st_as_sf(train_agg, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
-  test_sf <- sf::st_as_sf(test_data, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
-  train_sf <- project_for_kriging(train_sf)
-  test_sf <- project_for_kriging(test_sf)
-  form <- as.formula(paste("median_carbon_density ~", paste(pv, collapse = " + ")))
-  max_d <- max(sqrt(outer(sf::st_coordinates(train_sf)[, 1], sf::st_coordinates(train_sf)[, 1], "-")^2 +
-    outer(sf::st_coordinates(train_sf)[, 2], sf::st_coordinates(train_sf)[, 2], "-")^2), na.rm = TRUE)
-  cutoff <- min(500e3, max(1.5 * max_d, 10e3))
-  v <- tryCatch(
-    gstat::variogram(form, data = train_sf, cutoff = cutoff),
-    error = function(e) NULL
-  )
-  if (is.null(v) || nrow(v) < 3) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  fit <- tryCatch(
-    gstat::fit.variogram(v, gstat::vgm(NA, "Sph", NA, NA), fit.method = 7),
-    error = function(e) {
-      tryCatch(
-        gstat::fit.variogram(v, gstat::vgm(0.1, "Sph", 50e3, 0.01), fit.method = 7),
-        error = function(e2) {
-          tryCatch(
-            gstat::fit.variogram(v, gstat::vgm(0.1, "Exp", 50e3, 0.01), fit.method = 7),
-            error = function(e3) NULL
-          )
-        }
-      )
-    }
-  )
-  if (is.null(fit) || !is.data.frame(fit) || nrow(fit) < 2 ||
-    (length(fit$range) >= 2 && fit$range[2] <= 0)) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  sill_tot <- sum(fit$psill, na.rm = TRUE)
-  if (sill_tot > 0 && fit$psill[1] < 1e-6 * sill_tot) fit$psill[1] <- 1e-6 * sill_tot
-  pred <- tryCatch(
-    gstat::krige(form, locations = train_sf, newdata = test_sf, model = fit, nmax = nmax),
-    error = function(e) NULL
-  )
-  if (is.null(pred)) {
-    return(list(model = list(variogram = fit), predictions = rep(NA_real_, nrow(test_data))))
-  }
-  list(model = list(variogram = fit), predictions = as.numeric(pred$var1.pred))
-}
-
-#' Fit INLA SPDE (Matérn field) on train data and predict at test locations (for CV).
-#' Requires INLA; returns NA predictions if INLA not installed or fit fails.
-#' @param train_data data frame with median_carbon_density, longitude, latitude, and predictor_vars
-#' @param test_data data frame with longitude, latitude, and predictor_vars
-#' @param predictor_vars character vector of covariate names (fixed effects)
-#' @return list(model = INLA fit or NULL, predictions = vector)
-fit_inla_cv <- function(train_data, test_data, predictor_vars) {
-  if (!requireNamespace("INLA", quietly = TRUE)) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  if (nrow(train_data) < 5 || nrow(test_data) < 1) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  coords <- c("longitude", "latitude")
-  value_var <- "median_carbon_density"
-  loc_obs <- as.matrix(train_data[, coords])
-  loc_pred <- as.matrix(test_data[, coords])
-  y <- as.numeric(train_data[[value_var]])
-  pv <- intersect(if (length(predictor_vars) == 0) character(0) else predictor_vars, names(train_data))
-  pv <- pv[pv %in% names(test_data)]
-  bnd <- try(INLA::inla.nonconvex.hull(loc_obs, convex = -0.05), silent = TRUE)
-  if (inherits(bnd, "try-error")) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  mesh <- try(INLA::inla.mesh.2d(boundary = bnd, max.edge = c(0.5, 2), cutoff = 0.2), silent = TRUE)
-  if (inherits(mesh, "try-error")) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  spde <- INLA::inla.spde2.matern(mesh, alpha = 2)
-  A_obs <- INLA::inla.spde.make.A(mesh, loc = loc_obs)
-  A_pred <- INLA::inla.spde.make.A(mesh, loc = loc_pred)
-  field_idx <- INLA::inla.spde.make.index("field", n.spde = spde$n.spde)
-  n_obs <- length(y)
-  n_pred <- nrow(loc_pred)
-  fixed_est <- list(intercept = rep(1, n_obs))
-  fixed_pred <- list(intercept = rep(1, n_pred))
-  for (v in pv) {
-    fixed_est[[v]] <- as.numeric(train_data[[v]])
-    fixed_pred[[v]] <- as.numeric(test_data[[v]])
-  }
-  s_est <- INLA::inla.stack(data = list(y = y), A = list(A_obs, 1), effects = list(field_idx, fixed_est), tag = "est")
-  s_pred <- INLA::inla.stack(data = list(y = NA), A = list(A_pred, 1), effects = list(field_idx, fixed_pred), tag = "pred")
-  stack <- INLA::inla.stack(s_est, s_pred)
-  formula_str <- "y ~ -1 + intercept"
-  if (length(pv) > 0) formula_str <- paste(formula_str, "+", paste(pv, collapse = " + "))
-  formula_str <- paste(formula_str, "+ f(field, model = spde)")
-  formula <- as.formula(formula_str)
-  fit <- try(INLA::inla(formula, data = INLA::inla.stack.data(stack), control.predictor = list(A = INLA::inla.stack.A(stack), compute = TRUE)), silent = TRUE)
-  if (inherits(fit, "try-error")) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  idx_pred <- INLA::inla.stack.index(stack, "pred")$data
-  pred_vec <- as.numeric(fit$summary.fitted.values$mean[idx_pred])
-  list(model = fit, predictions = pred_vec)
-}
-
-#' Fit GAM with spatial smooth + covariates (same specification as sensitivity analysis)
-#' @param train_data data frame with median_carbon_density, longitude, latitude, and predictor_vars
-#' @param test_data data frame with longitude, latitude, and predictor_vars
-#' @param predictor_vars character vector of covariate names (linear terms)
-#' @param k_spatial basis dimension for spatial smooth (default 80)
-#' @return list(model = gam object or NULL, predictions = vector)
-fit_gam <- function(train_data, test_data, predictor_vars, k_spatial = 80) {
-  if (!requireNamespace("mgcv", quietly = TRUE)) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  y_train <- train_data$median_carbon_density
-  family_used <- if (any(y_train <= 0, na.rm = TRUE)) {
-    gaussian(link = "identity")
-  } else {
-    Gamma(link = "log")
-  }
-  covar_terms <- paste(predictor_vars, collapse = " + ")
-  spatial_term <- paste0("s(longitude, latitude, k = ", k_spatial, ")")
-  form <- as.formula(paste("median_carbon_density ~", spatial_term, "+", covar_terms))
-  fit <- try(
-    mgcv::gam(form, data = train_data, family = family_used, method = "REML"),
-    silent = TRUE
-  )
-  if (inherits(fit, "try-error")) {
-    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
-  }
-  pred <- try(
-    as.numeric(mgcv::predict.gam(fit, newdata = test_data, type = "response")),
-    silent = TRUE
-  )
-  if (inherits(pred, "try-error") || any(is.na(pred))) {
-    pred <- rep(mean(y_train, na.rm = TRUE), nrow(test_data))
-  }
-  list(model = fit, predictions = pred)
-}
-
-#' Create distance-buffered CV folds: test sets chosen so each test point is > buffer_m from training
-#' Tests "Can I fill in gaps between my samples?"
-#' @param core_sf sf object with point geometry (will use st_distance, so CRS in metres or WGS84)
-#' @param n_folds number of folds (test fraction ≈ 1/n_folds)
-#' @param buffer_m minimum distance (m) between test and training points
-#' @return list of length n_folds; folds[[k]] = vector of row indices for test set for fold k
-create_distance_buffered_folds <- function(core_sf, n_folds, buffer_m = 1000) {
-  n <- nrow(core_sf)
-  target_per_fold <- max(1L, floor(n / n_folds))
-  assigned <- rep(FALSE, n)
-  folds <- vector("list", n_folds)
-  order_idx <- sample.int(n)
-  for (f in seq_len(n_folds)) {
-    while (length(folds[[f]]) < target_per_fold) {
-      cand <- which(!assigned)
-      if (length(cand) == 0) break
-      if (length(folds[[f]]) == 0) {
-        pick <- order_idx[order_idx %in% cand][1]
-        folds[[f]] <- c(folds[[f]], pick)
-        assigned[pick] <- TRUE
-        next
-      }
-      dist_to_test <- sf::st_distance(core_sf[cand, ], core_sf[folds[[f]], ])
-      min_dist <- apply(dist_to_test, 1, min)
-      valid <- cand[as.numeric(min_dist) > buffer_m]
-      if (length(valid) == 0) break
-      pick <- order_idx[order_idx %in% valid][1]
-      if (is.na(pick)) break
-      folds[[f]] <- c(folds[[f]], pick)
-      assigned[pick] <- TRUE
-    }
-  }
-  remaining <- which(!assigned)
-  for (i in remaining) {
-    d <- sapply(seq_len(n_folds), function(k) {
-      if (length(folds[[k]]) == 0) {
-        return(Inf)
-      }
-      min(as.numeric(sf::st_distance(core_sf[i, ], core_sf[folds[[k]], ])))
-    })
-    f <- which.max(d)
-    folds[[f]] <- c(folds[[f]], i)
-    assigned[i] <- TRUE
-  }
-  folds
-}
-
-
-#' Clean database in preparation for modelling. Ensures that the carbon density and sediment_mean_depth are both above zero and not NA.
-#'
-#' @param dat data frame containing the data (including the carbon_density_g_c_cm3 and sediment_mean_depth_cm columns)
-#' @return data frame containing the cleaned data
-clean_data <- function(dat) {
-  dat_clean <- dat %>%
-    filter(!is.na(carbon_density_g_c_cm3) & !is.na(sediment_mean_depth_cm) &
-      carbon_density_g_c_cm3 > 0 & sediment_mean_depth_cm >= 0)
-  return(dat_clean)
-}
-
-#' Fit an exponential carbon decay model
-#'
-#' @param dat data frame containing the data
-#' @return list containing the fitted model, cleaned data, prediction data frame, and residuals standard deviation
-fit_exponential_carbon_decay <- function(dat) {
-  # clean data
-  dat_clean <- clean_data(dat) # belt and braces (data passed should already be cleaned)
-  if (nrow(dat_clean) < 3) {
-    warning("Insufficient data points after cleaning for NLS fitting.")
-    return(NULL)
-  }
-
-  # Fit nls model: carbon_density = a * exp(b * depth)
-  nls_model <- tryCatch(
-    {
-      nls(carbon_density_g_c_cm3 ~ a * exp(b * sediment_mean_depth_cm),
-        data = dat_clean,
-        start = list(
-          a = max(dat_clean$carbon_density_g_c_cm3, na.rm = TRUE),
-          b = -0.01
-        )
-      )
-    },
-    error = function(e) {
-      cat("nls fitting failed, trying alternative starting values\n")
-      nls(carbon_density_g_c_cm3 ~ a * exp(b * sediment_mean_depth_cm),
-        data = dat_clean,
-        start = list(
-          a = mean(dat_clean$carbon_density_g_c_cm3, na.rm = TRUE),
-          b = -0.001
-        ),
-        control = nls.control(maxiter = 500, warnOnly = TRUE)
-      )
-    }
-  )
-
-  # Create prediction data frame
-  depth_seq <- seq(min(dat_clean$sediment_mean_depth_cm, na.rm = TRUE),
-    max(dat_clean$sediment_mean_depth_cm, na.rm = TRUE),
-    length.out = 200
-  )
-  pred_df <- data.frame(sediment_mean_depth_cm = depth_seq)
-  pred_df$carbon_density_fit <- predict(nls_model, newdata = pred_df)
-
-  # Calculate approximate confidence intervals based on residual standard error
-  residuals_sd <- sd(residuals(nls_model), na.rm = TRUE)
-  pred_df$carbon_density_se <- residuals_sd
-  pred_df$carbon_density_lower <- pred_df$carbon_density_fit - 1.96 * pred_df$carbon_density_se
-  pred_df$carbon_density_upper <- pred_df$carbon_density_fit + 1.96 * pred_df$carbon_density_se
-
-  return(list(
-    nls_model = nls_model,
-    dat_clean = dat_clean,
-    pred_df = pred_df,
-    residuals_sd = residuals_sd
-  ))
-}
-
-#' Fit an exponential carbon decay model per species
-#'
-#' @param dat_clean data frame containing the data
-#' @param spec character string specifying the species
-#' @return list containing the fitted model and prediction data frame
-fit_species <- function(dat, spec) {
-  species_dat <- dat %>% filter(seagrass_species == spec)
-  if (nrow(species_dat) < 3) {
-    return(NULL)
-  }
-  fit <- tryCatch(
-    {
-      nls(carbon_density_g_c_cm3 ~ a * exp(b * sediment_mean_depth_cm),
-        data = species_dat,
-        start = list(
-          a = max(species_dat$carbon_density_g_c_cm3, na.rm = TRUE),
-          b = -0.01
-        )
-      )
-    },
-    error = function(e) {
-      nls(carbon_density_g_c_cm3 ~ a * exp(b * sediment_mean_depth_cm),
-        data = species_dat,
-        start = list(
-          a = mean(species_dat$carbon_density_g_c_cm3, na.rm = TRUE),
-          b = -0.001
-        ),
-        control = nls.control(maxiter = 500, warnOnly = TRUE)
-      )
-    }
-  )
-  # predictions
-  depth_seq <- seq(
-    min(species_dat$sediment_mean_depth_cm, na.rm = TRUE),
-    max(species_dat$sediment_mean_depth_cm, na.rm = TRUE),
-    length.out = 200
-  )
-  pred_df <- data.frame(
-    seagrass_species = spec,
-    sediment_mean_depth_cm = depth_seq
-  )
-  pred_df$carbon_density_fit <- predict(fit, newdata = pred_df)
-  # approx CI
-  residuals_sd <- sd(residuals(fit), na.rm = TRUE)
-  pred_df$carbon_density_se <- residuals_sd
-  pred_df$carbon_density_lower <- pred_df$carbon_density_fit - 1.96 * residuals_sd
-  pred_df$carbon_density_upper <- pred_df$carbon_density_fit + 1.96 * residuals_sd
-  list(fit = fit, pred_df = pred_df)
-}
-
-
-#' Compare different depth profile models
-#'
-#' Tests multiple functional forms: exponential, power law, linear, GAM
-#' with and without species interactions. Also tests normalization by core aggregate.
-#'
-#' @param dat_clean data frame containing the data
-#' @param normalise_by_core logical, whether to normalize carbon density by core aggregate
-#' @param aggregate_fun function to calculate per-core aggregate (default: median of top 5 cm)
-#' @return a list containing fitted models and comparison table
-compare_depth_profile_models <- function(dat_clean,
-                                         normalise_by_core = FALSE,
-                                         aggregate_fun = calculate_core_aggregate) {
-  # prepare data
-  dat_sub <- dat_clean %>%
-    filter(!is.na(carbon_density_g_c_cm3) & !is.na(sediment_mean_depth_cm) &
-      !is.na(seagrass_species))
-
-  # normalize if requested
-  if (normalise_by_core) {
-    core_aggregates <- aggregate_fun(dat_sub)
-    dat_sub <- dat_sub %>%
-      left_join(core_aggregates, by = "random_core_variable") %>%
-      mutate(carbon_density_g_c_cm3 = carbon_density_g_c_cm3 / aggregate_carbon_density) %>%
-      select(-aggregate_carbon_density)
-  }
-
-  species_fac <- as.factor(dat_sub$seagrass_species)
-  depth <- dat_sub$sediment_mean_depth_cm
-  carbon <- dat_sub$carbon_density_g_c_cm3
-
-  models <- list()
-  model_comparison <- data.frame()
-
-  print("Exponential decay: c = a * exp(b * depth) - no interaction")
-  # 1. exponential decay: c = a * exp(b * depth) - no interaction
-  models$exp_null <- tryCatch(
-    {
-      nls(carbon ~ a * exp(b * depth),
-        data = dat_sub,
-        start = list(a = max(carbon, na.rm = TRUE), b = -0.01),
-        control = nls.control(maxiter = 500, warnOnly = TRUE)
-      )
-    },
-    error = function(e) NULL
-  )
-
-  if (!is.null(models$exp_null)) {
-    aic_val <- AIC(models$exp_null)
-    bic_val <- BIC(models$exp_null)
-    model_comparison <- rbind(
-      model_comparison,
-      data.frame(
-        model = "exp_null", aic = aic_val, bic = bic_val,
-        n_params = 2, has_species_interaction = FALSE
-      )
-    )
-  }
-
-  print("Exponential decay: c = a * exp(b * depth) - species interaction")
-  # 2. exponential decay with species interaction
-  species_list <- unique(species_fac)
-  exp_species_models <- list()
-  aic_total <- 0
-  n_params_total <- 0
-  n_successful <- 0
-
-  for (sp in species_list) {
-    idx <- species_fac == sp
-    if (sum(idx) >= 5) {
-      carbon_subset <- carbon[idx]
-      depth_subset <- depth[idx]
-      valid_data <- !is.na(carbon_subset) & !is.na(depth_subset) & carbon_subset > 0
-
-      if (sum(valid_data) >= 5) {
-        m <- tryCatch(
-          {
-            nls(carbon_subset[valid_data] ~ a * exp(b * depth_subset[valid_data]),
-              start = list(a = max(carbon_subset[valid_data], na.rm = TRUE), b = -0.01),
-              control = nls.control(maxiter = 500, warnOnly = TRUE)
-            )
-          },
-          error = function(e) NULL
-        )
-
-        if (!is.null(m)) {
-          exp_species_models[[as.character(sp)]] <- m
-          aic_total <- aic_total + AIC(m)
-          n_params_total <- n_params_total + 2
-          n_successful <- n_successful + 1
-        }
-      }
-    }
-  }
-
-  if (n_successful > 0) {
-    models$exp_species <- exp_species_models
-    # approximate bic: aic + k * log(n) where k is number of parameters
-    n_obs <- sum(sapply(exp_species_models, function(m) length(residuals(m))))
-    bic_total <- aic_total + n_params_total * log(n_obs)
-    model_comparison <- rbind(
-      model_comparison,
-      data.frame(
-        model = "exp_species", aic = aic_total, bic = bic_total,
-        n_params = n_params_total, has_species_interaction = TRUE
-      )
-    )
-  }
-
-  # 3. power law: c = a * depth^b - no interaction
-  print("Power law: c = a * depth^b - species interaction")
-  models$power_null <- tryCatch(
-    {
-      nls(carbon ~ a * depth^b,
-        data = dat_sub,
-        start = list(a = max(carbon, na.rm = TRUE), b = -0.5),
-        control = nls.control(maxiter = 500, warnOnly = TRUE)
-      )
-    },
-    error = function(e) NULL
-  )
-
-  if (!is.null(models$power_null)) {
-    aic_val <- AIC(models$power_null)
-    bic_val <- BIC(models$power_null)
-    model_comparison <- rbind(
-      model_comparison,
-      data.frame(
-        model = "power_null", aic = aic_val, bic = bic_val,
-        n_params = 2, has_species_interaction = FALSE
-      )
-    )
-  }
-
-  # 4. power law with species interaction
-  print("Power law: c = a * depth^b - species interaction")
-  power_species_models <- list()
-  aic_total <- 0
-  n_params_total <- 0
-  n_successful <- 0
-
-  for (sp in species_list) {
-    idx <- species_fac == sp
-    if (sum(idx) >= 5) {
-      carbon_subset <- carbon[idx]
-      depth_subset <- depth[idx]
-      valid_data <- !is.na(carbon_subset) & !is.na(depth_subset) & carbon_subset > 0
-
-      if (sum(valid_data) >= 5) {
-        m <- tryCatch(
-          {
-            nls(carbon_subset[valid_data] ~ a * depth_subset[valid_data]^b,
-              start = list(a = max(carbon_subset[valid_data], na.rm = TRUE), b = -0.5),
-              control = nls.control(maxiter = 500, warnOnly = TRUE)
-            )
-          },
-          error = function(e) NULL
-        )
-
-        if (!is.null(m)) {
-          power_species_models[[as.character(sp)]] <- m
-          aic_total <- aic_total + AIC(m)
-          n_params_total <- n_params_total + 2
-          n_successful <- n_successful + 1
-        }
-      }
-    }
-  }
-
-  if (n_successful > 0) {
-    models$power_species <- power_species_models
-    n_obs <- sum(sapply(power_species_models, function(m) length(residuals(m))))
-    bic_total <- aic_total + n_params_total * log(n_obs)
-    model_comparison <- rbind(
-      model_comparison,
-      data.frame(
-        model = "power_species", aic = aic_total, bic = bic_total,
-        n_params = n_params_total, has_species_interaction = TRUE
-      )
-    )
-  }
-
-  # 5. linear: c = a + b * depth - no interaction
-  print("Linear: c = a + b * depth - no interaction")
-  models$linear_null <- tryCatch(
-    {
-      lm(carbon ~ depth, data = dat_sub)
-    },
-    error = function(e) NULL
-  )
-
-  if (!is.null(models$linear_null)) {
-    aic_val <- AIC(models$linear_null)
-    bic_val <- BIC(models$linear_null)
-    model_comparison <- rbind(
-      model_comparison,
-      data.frame(
-        model = "linear_null", aic = aic_val, bic = bic_val,
-        n_params = 2, has_species_interaction = FALSE
-      )
-    )
-  }
-
-  # 6. linear with species interaction
-  print("Linear: c = a + b * depth - species interaction")
-  models$linear_species <- tryCatch(
-    {
-      lm(carbon ~ depth * species_fac, data = dat_sub)
-    },
-    error = function(e) NULL
-  )
-
-  if (!is.null(models$linear_species)) {
-    aic_val <- AIC(models$linear_species)
-    bic_val <- BIC(models$linear_species)
-    n_params <- length(coef(models$linear_species))
-    model_comparison <- rbind(
-      model_comparison,
-      data.frame(
-        model = "linear_species", aic = aic_val, bic = bic_val,
-        n_params = n_params, has_species_interaction = TRUE
-      )
-    )
-  }
-
-  # 7. GAM without species interaction
-  print("GAM: c = a * exp(b * depth) - no interaction")
-  models$gam_null <- tryCatch(
-    {
-      gam(carbon ~ s(depth, k = 5), data = dat_sub, method = "REML")
-    },
-    error = function(e) NULL
-  )
-
-  if (!is.null(models$gam_null)) {
-    aic_val <- AIC(models$gam_null)
-    bic_val <- BIC(models$gam_null)
-    n_params <- length(coef(models$gam_null))
-    model_comparison <- rbind(
-      model_comparison,
-      data.frame(
-        model = "gam_null", aic = aic_val, bic = bic_val,
-        n_params = n_params, has_species_interaction = FALSE
-      )
-    )
-  }
-
-  # 8. GAM with species interaction (by smooth)
-  print("GAM: c = a * exp(b * depth) - species interaction (by smooth)")
-  models$gam_species_by <- tryCatch(
-    {
-      gam(carbon ~ s(depth, by = species_fac, k = 5) + species_fac,
-        data = dat_sub, method = "REML"
-      )
-    },
-    error = function(e) NULL
-  )
-
-  if (!is.null(models$gam_species_by)) {
-    aic_val <- AIC(models$gam_species_by)
-    bic_val <- BIC(models$gam_species_by)
-    n_params <- length(coef(models$gam_species_by))
-    model_comparison <- rbind(
-      model_comparison,
-      data.frame(
-        model = "gam_species_by", aic = aic_val, bic = bic_val,
-        n_params = n_params, has_species_interaction = TRUE
-      )
-    )
-  }
-
-  # 9. GAM with tensor product (allows interaction)
-  print("GAM: c = a * exp(b * depth) - species interaction (by tensor product)")
-  models$gam_tensor <- tryCatch(
-    {
-      gam(carbon ~ te(depth, species_fac, k = c(5, 3)), data = dat_sub, method = "REML")
-    },
-    error = function(e) NULL
-  )
-
-  if (!is.null(models$gam_tensor)) {
-    aic_val <- AIC(models$gam_tensor)
-    bic_val <- BIC(models$gam_tensor)
-    n_params <- length(coef(models$gam_tensor))
-    model_comparison <- rbind(
-      model_comparison,
-      data.frame(
-        model = "gam_tensor", aic = aic_val, bic = bic_val,
-        n_params = n_params, has_species_interaction = TRUE
-      )
-    )
-  }
-
-  # 10. GAM with unique core random effect
-  # print("GAM: c = a * exp(b * depth) - no interaction (with unique core random effect)")
-  # models$gam_core_re <- tryCatch({
-  #   gam(carbon ~ s(depth) + s(random_core_variable, bs = "re"), data = dat_sub, method = "REML")
-  # }, error = function(e) NULL)
-
-  # if (!is.null(models$gam_core_re)) {
-  #   aic_val <- AIC(models$gam_core_re)
-  #   bic_val <- BIC(models$gam_core_re)
-  #   n_params <- length(coef(models$gam_core_re))
-  #   model_comparison <- rbind(model_comparison,
-  #     data.frame(model = "gam_core_re", aic = aic_val, bic = bic_val,
-  #                n_params = n_params, has_species_interaction = FALSE))
-  # }
-
-  # # 11. GAM with unique core random effect and tensor product interaction
-  # print("GAM: c = a * exp(b * depth) - species interaction (by tensor product) (with unique core random effect)")
-  # models$gam_core_re_tensor <- tryCatch({
-  #   gam(carbon ~ te(depth, random_core_variable, bs = "re", k = c(5, 3)), data = dat_sub, method = "REML")
-  # }, error = function(e) NULL)
-
-  # if (!is.null(models$gam_core_re_tensor)) {
-  #   aic_val <- AIC(models$gam_core_re_tensor)
-  #   bic_val <- BIC(models$gam_core_re_tensor)
-  #   n_params <- length(coef(models$gam_core_re_tensor))
-  #   model_comparison <- rbind(model_comparison,
-  #     data.frame(model = "gam_core_re_tensor", aic = aic_val, bic = bic_val,
-  #                n_params = n_params, has_species_interaction = TRUE))
-  # }
-
-  # # 12. GAM with unique core random effect and species interaction
-  # print("GAM: c = a * exp(b * depth) - species interaction (with unique core random effect)")
-  # models$gam_core_re_species <- tryCatch({
-  #   gam(carbon ~ s(depth) + s(random_core_variable, bs = "re") + species_fac, data = dat_sub, method = "REML")
-  # }, error = function(e) NULL)
-
-  # if (!is.null(models$gam_core_re_species)) {
-  #   aic_val <- AIC(models$gam_core_re_species)
-  #   bic_val <- BIC(models$gam_core_re_species)
-  #   n_params <- length(coef(models$gam_core_re_species))
-  #   model_comparison <- rbind(model_comparison,
-  #     data.frame(model = "gam_core_re_species", aic = aic_val, bic = bic_val,
-  #                n_params = n_params, has_species_interaction = TRUE))
-  # }
-
-  # calculate delta aic and bic
-  if (nrow(model_comparison) > 0) {
-    model_comparison <- model_comparison %>%
-      arrange(aic) %>%
-      mutate(
-        delta_aic = aic - min(aic, na.rm = TRUE),
-        delta_bic = bic - min(bic, na.rm = TRUE)
-      )
-  }
-
-  return(list(
-    models = models,
-    comparison = model_comparison,
-    dat_sub = dat_sub,
-    normalised = normalise_by_core
-  ))
-}
-
-#' Run comprehensive depth profile model investigation
-#'
-#' Compares models with and without normalization, and with/without species interactions
-#'
-#' @param dat_clean data frame containing the data
-#' @param aggregate_fun function to calculate per-core aggregate
-#' @return a list containing all comparison results
-investigate_depth_profile_models <- function(dat_clean,
-                                             aggregate_fun = calculate_core_aggregate) {
-  cat("\n=== COMPREHENSIVE DEPTH PROFILE MODEL INVESTIGATION ===\n\n")
-
-  # 1. models without normalization
-  cat("1. MODELS WITHOUT NORMALIZATION\n")
-  cat("   -----------------------------\n")
-  results_not_norm <- compare_depth_profile_models(
-    dat_clean,
-    normalise_by_core = FALSE,
-    aggregate_fun = aggregate_fun
-  )
-
-  cat("\n   Model comparison (AIC, lower is better):\n")
-  print(results_not_norm$comparison %>%
-    select(model, aic, delta_aic, has_species_interaction) %>%
-    arrange(delta_aic))
-
-  # 2. models with normalization
-  cat("\n2. MODELS WITH NORMALIZATION (by core aggregate)\n")
-  cat("   ------------------------------------------------\n")
-  results_norm <- compare_depth_profile_models(
-    dat_clean,
-    normalise_by_core = TRUE,
-    aggregate_fun = aggregate_fun
-  )
-
-  cat("\n   Model comparison (AIC, lower is better):\n")
-  print(results_norm$comparison %>%
-    select(model, aic, delta_aic, has_species_interaction) %>%
-    arrange(delta_aic))
-
-  # 3. compare best models with and without normalization
-  cat("\n3. COMPARING NORMALIZATION EFFECT\n")
-  cat("   --------------------------------\n")
-
-  best_not_norm <- results_not_norm$comparison$model[1]
-  best_norm <- results_norm$comparison$model[1]
-
-  cat("   Best model without normalization:", best_not_norm, "\n")
-  cat("   Best model with normalization:", best_norm, "\n")
-
-  aic_not_norm <- results_not_norm$comparison$aic[1]
-  aic_norm <- results_norm$comparison$aic[1]
-
-  cat("   AIC (not normalized):", round(aic_not_norm, 2), "\n")
-  cat("   AIC (normalized):", round(aic_norm, 2), "\n")
-  cat("   Delta AIC:", round(aic_norm - aic_not_norm, 2), "\n")
-
-  if (aic_norm < aic_not_norm) {
-    cat("   -> Normalization improves model fit\n")
-  } else {
-    cat("   -> No normalization provides better fit\n")
-  }
-
-  # 4. test species interaction significance
-  cat("\n4. TESTING SPECIES INTERACTION SIGNIFICANCE\n")
-  cat("   ------------------------------------------\n")
-
-  # compare best model with vs without species interaction (for normalized data)
-  if (nrow(results_norm$comparison) > 0) {
-    best_with_interaction <- results_norm$comparison %>%
-      filter(has_species_interaction == TRUE) %>%
-      arrange(delta_aic) %>%
-      slice(1)
-
-    best_without_interaction <- results_norm$comparison %>%
-      filter(has_species_interaction == FALSE) %>%
-      arrange(delta_aic) %>%
-      slice(1)
-
-    if (nrow(best_with_interaction) > 0 && nrow(best_without_interaction) > 0) {
-      delta_aic_interaction <- best_with_interaction$aic - best_without_interaction$aic
-
-      cat(
-        "   Best model without species interaction:", best_without_interaction$model,
-        "(AIC =", round(best_without_interaction$aic, 2), ")\n"
-      )
-      cat(
-        "   Best model with species interaction:", best_with_interaction$model,
-        "(AIC =", round(best_with_interaction$aic, 2), ")\n"
-      )
-      cat("   Delta AIC:", round(delta_aic_interaction, 2), "\n")
-
-      if (delta_aic_interaction < -10) {
-        cat("   -> Strong evidence for species-specific depth profiles\n")
-      } else if (delta_aic_interaction < -5) {
-        cat("   -> Moderate evidence for species-specific depth profiles\n")
-      } else if (delta_aic_interaction < 0) {
-        cat("   -> Weak evidence for species-specific depth profiles\n")
-      } else {
-        cat("   -> No evidence for species-specific depth profiles\n")
-      }
-    }
-  }
-
-  # create comparison plots
-  p1 <- plot_model_comparison(results_not_norm)
-  p2 <- plot_model_comparison(results_norm)
-
-  return(list(
-    results_not_normalised = results_not_norm,
-    results_normalised = results_norm,
-    plot_not_normalised = p1,
-    plot_normalised = p2
-  ))
-}
-
 
 # ================================ HYPERPARAMETER TUNING ================================
+
+#' Unified function to tune hyperparameters for different model types
+#'
+#' @param model_type character string specifying model type: "rf", "xgb", or "nn"
+#' @param train_data training data frame containing predictor variables and response
+#' @param predictor_vars character vector of predictor variable names
+#' @param n_folds number of folds for cross-validation during tuning (default: 3)
+#' @param verbose whether to print detailed tuning progress (default: false)
+#' @param fold_indices optional integer vector of fold IDs; if NULL, random folds
+#' @param block_size optional block size (m) for spatial CV
+#' @param cache_tag tag for spatial fold cache
+#' @param exclude_regions passed to get_cached_spatial_folds when block_size is used
+#' @return list of best hyperparameters for the specified model type
+tune_hyperparameters <- function(model_type, train_data, predictor_vars, n_folds = 3, verbose = FALSE,
+                                 fold_indices = NULL, block_size = NULL, cache_tag = NULL,
+                                 exclude_regions = character(0)) {
+  cat("Tuning", model_type, "hyperparameters...\n")
+  tag <- cache_tag %||% paste0("tune_", model_type)
+  if (model_type == "rf" || model_type == "random_forest") {
+    return(tune_rf(train_data, predictor_vars, n_folds, verbose, fold_indices, block_size, tag, exclude_regions))
+  } else if (model_type == "xgb" || model_type == "xgboost") {
+    return(tune_xgboost(train_data, predictor_vars, n_folds, verbose, fold_indices, block_size, tag, exclude_regions))
+  } else if (model_type == "nn" || model_type == "neural_network") {
+    return(tune_nn(train_data, predictor_vars, n_folds, verbose, fold_indices, block_size, tag, exclude_regions))
+  } else {
+    stop("Unknown model type. Use 'rf', 'xgb', or 'nn'")
+  }
+}
+
+#' Resolve fold indices: use provided, or spatial (block_size), or random.
+#' @return integer vector of fold IDs, length = nrow(dat)
+resolve_fold_indices <- function(dat, n_folds, fold_indices = NULL, block_size = NULL,
+                                  cache_tag = "tune", exclude_regions = character(0)) {
+  if (!is.null(fold_indices)) {
+    if (is.list(fold_indices)) {
+      fv <- integer(nrow(dat))
+      for (k in seq_along(fold_indices)) fv[fold_indices[[k]]] <- k
+      return(fv)
+    }
+    return(as.integer(fold_indices))
+  }
+  if (!is.null(block_size) && all(c("longitude", "latitude") %in% names(dat))) {
+    fi <- get_cached_spatial_folds(dat, block_size, n_folds, cache_tag, exclude_regions, progress = FALSE)
+    return(fi$fold_indices)
+  }
+  sample(rep(seq_len(n_folds), length.out = nrow(dat)))
+}
 
 #' Tune random forest hyperparameters using cross-validation
 #'
@@ -1436,18 +755,25 @@ investigate_depth_profile_models <- function(dat_clean,
 #' @param predictor_vars character vector of predictor variable names
 #' @param n_folds number of folds for cross-validation during tuning (default: 3)
 #' @param verbose whether to print detailed tuning progress (default: false)
+#' @param fold_indices optional integer vector of fold IDs (length = nrow(train_data)); if NULL, random folds
+#' @param block_size optional block size (m) for spatial CV; if set with lon/lat in data, uses get_cached_spatial_folds
+#' @param cache_tag tag for spatial fold cache (default: "tune")
+#' @param exclude_regions passed to get_cached_spatial_folds when block_size is used
 #' @return list of best hyperparameters (mtry, ntree, nodesize)
-tune_rf <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE) {
+tune_rf <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
+                    fold_indices = NULL, block_size = NULL, cache_tag = "tune_rf",
+                    exclude_regions = character(0)) {
   formula_str <- paste("median_carbon_density ~", paste(predictor_vars, collapse = " + "))
   formula_obj <- as.formula(formula_str)
 
-  # parameter grid
   mtry_vals <- c(2, 4, 6, floor(sqrt(length(predictor_vars))), length(predictor_vars))
   ntree_vals <- c(300, 500, 700)
   nodesize_vals <- c(5, 10, 20)
 
   best_rmse <- Inf
   best_params <- NULL
+  folds <- resolve_fold_indices(train_data, n_folds, fold_indices, block_size, cache_tag, exclude_regions)
+  n_folds <- max(folds)
 
   pb <- progress_bar(
     total = length(mtry_vals) * length(ntree_vals) * length(nodesize_vals)
@@ -1455,11 +781,8 @@ tune_rf <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE) {
   for (mtry in mtry_vals) {
     for (ntree in ntree_vals) {
       for (nodesize in nodesize_vals) {
-        # simple cv
         cv_rmse <- c()
-        folds <- sample(rep(1:n_folds, length.out = nrow(train_data)))
-
-        for (fold in 1:n_folds) {
+        for (fold in seq_len(n_folds)) {
           train_fold <- train_data[folds != fold, ]
           val_fold <- train_data[folds == fold, ]
 
@@ -1493,12 +816,17 @@ tune_rf <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE) {
 #' @param predictor_vars character vector of predictor variable names
 #' @param n_folds number of folds for cross-validation during tuning (default: 3)
 #' @param verbose whether to print detailed tuning progress (default: false)
+#' @param fold_indices optional integer vector of fold IDs; if NULL, random folds
+#' @param block_size optional block size (m) for spatial CV
+#' @param cache_tag tag for spatial fold cache (default: "tune_xgboost")
+#' @param exclude_regions passed to get_cached_spatial_folds when block_size is used
 #' @return list of best hyperparameters (max_depth, learning_rate, subsample, colsample_bytree, nrounds)
-tune_xgboost <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE) {
+tune_xgboost <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
+                         fold_indices = NULL, block_size = NULL, cache_tag = "tune_xgboost",
+                         exclude_regions = character(0)) {
   X_train <- as.matrix(train_data[, predictor_vars])
   y_train <- train_data$median_carbon_density
 
-  # parameter grid (reduced for speed)
   max_depth_vals <- c(3, 6, 9)
   learning_rate_vals <- c(0.1, 0.3)
   subsample_vals <- c(0.8, 1.0)
@@ -1507,8 +835,8 @@ tune_xgboost <- function(train_data, predictor_vars, n_folds = 3, verbose = FALS
 
   best_rmse <- Inf
   best_params <- NULL
-
-  folds <- sample(rep(1:n_folds, length.out = nrow(train_data)))
+  folds <- resolve_fold_indices(train_data, n_folds, fold_indices, block_size, cache_tag, exclude_regions)
+  n_folds <- max(folds)
 
   total_combos <- length(max_depth_vals) * length(learning_rate_vals) * length(subsample_vals) *
     length(colsample_bytree_vals) * length(nrounds_vals)
@@ -1522,7 +850,7 @@ tune_xgboost <- function(train_data, predictor_vars, n_folds = 3, verbose = FALS
           for (nrounds in nrounds_vals) {
             cv_rmse <- c()
 
-            for (fold in 1:n_folds) {
+            for (fold in seq_len(n_folds)) {
               X_fold_train <- X_train[folds != fold, ]
               y_fold_train <- y_train[folds != fold]
               X_fold_val <- X_train[folds == fold, ]
@@ -1565,14 +893,24 @@ tune_xgboost <- function(train_data, predictor_vars, n_folds = 3, verbose = FALS
 #' @param predictor_vars character vector of predictor variable names
 #' @param n_folds number of folds for cross-validation during tuning (default: 3)
 #' @param verbose whether to print detailed tuning progress (default: false)
+#' @param fold_indices optional integer vector of fold IDs; if NULL, random folds
+#' @param block_size optional block size (m) for spatial CV
+#' @param cache_tag tag for spatial fold cache (default: "tune_nn")
+#' @param exclude_regions passed to get_cached_spatial_folds when block_size is used
 #' @return list of best hyperparameters (hidden, learningrate)
-tune_nn <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE) {
+tune_nn <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
+                    fold_indices = NULL, block_size = NULL, cache_tag = "tune_nn",
+                    exclude_regions = character(0)) {
   train_data <- as.data.frame(train_data)
   train_numeric <- train_data %>%
     dplyr::select(dplyr::all_of(predictor_vars), median_carbon_density) %>%
     dplyr::mutate_all(as.numeric) %>%
     as.data.frame()
-  train_numeric <- train_numeric[complete.cases(train_numeric), ]
+  idx <- complete.cases(train_numeric)
+  train_numeric <- train_numeric[idx, ]
+  folds <- resolve_fold_indices(train_data, n_folds, fold_indices, block_size, cache_tag, exclude_regions)
+  folds <- folds[idx]
+  n_folds <- max(folds)
 
   # scale data
   scale_params <- list(
@@ -1600,7 +938,6 @@ tune_nn <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE) {
 
   best_rmse <- Inf
   best_params <- NULL
-  folds <- sample(rep(1:n_folds, length.out = nrow(train_scaled)))
   pb <- progress_bar(
     total = length(hidden_layers) * length(learningrate_vals)
   )
@@ -1608,7 +945,7 @@ tune_nn <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE) {
     for (learningrate in learningrate_vals) {
       cv_rmse <- c()
 
-      for (fold in 1:n_folds) {
+      for (fold in seq_len(n_folds)) {
         train_fold <- train_scaled[folds != fold, ]
         val_fold <- train_scaled[folds == fold, ]
 
@@ -1650,29 +987,119 @@ tune_nn <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE) {
   return(best_params)
 }
 
-#' Unified function to tune hyperparameters for different model types
+#' Tune GPR hyperparameters using cross-validation
 #'
-#' @param model_type character string specifying model type: "rf", "xgb", or "nn"
-#' @param train_data training data frame containing predictor variables and response
+#' @param train_data training data frame containing predictor variables and response (median_carbon_density)
 #' @param predictor_vars character vector of predictor variable names
 #' @param n_folds number of folds for cross-validation during tuning (default: 3)
 #' @param verbose whether to print detailed tuning progress (default: false)
-#' @return list of best hyperparameters for the specified model type
-tune_hyperparameters <- function(model_type, train_data, predictor_vars, n_folds = 3, verbose = FALSE) {
-  cat("Tuning", model_type, "hyperparameters...\n")
-
-  if (model_type == "rf" || model_type == "random_forest") {
-    return(tune_rf(train_data, predictor_vars, n_folds, verbose))
-  } else if (model_type == "xgb" || model_type == "xgboost") {
-    return(tune_xgboost(train_data, predictor_vars, n_folds, verbose))
-  } else if (model_type == "nn" || model_type == "neural_network") {
-    return(tune_nn(train_data, predictor_vars, n_folds, verbose))
-  } else {
-    stop("Unknown model type. Use 'rf', 'xgb', or 'nn'")
+#' @param value_var response column name (default: median_carbon_density)
+#' @param fold_indices optional integer vector of fold IDs; if NULL, random folds
+#' @param block_size optional block size (m) for spatial CV
+#' @param cache_tag tag for spatial fold cache (default: "tune_gpr")
+#' @param exclude_regions passed to get_cached_spatial_folds when block_size is used
+#' @return list of best hyperparameters (kernel, nug.min, nug.max, nug.est) for fit_gpr
+tune_gpr <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
+                     value_var = "median_carbon_density",
+                     fold_indices = NULL, block_size = NULL, cache_tag = "tune_gpr",
+                     exclude_regions = character(0)) {
+  if (!"median_carbon_density" %in% names(train_data) && value_var %in% names(train_data)) {
+    train_data$median_carbon_density <- train_data[[value_var]]
   }
+  need_cols <- c(value_var, predictor_vars)
+  if (!all(need_cols %in% names(train_data))) {
+    stop("tune_gpr: train_data must contain ", paste(need_cols, collapse = ", "))
+  }
+  idx <- complete.cases(train_data[, need_cols, drop = FALSE])
+  dat <- train_data[idx, need_cols, drop = FALSE]
+  if (nrow(dat) < 2L * n_folds) {
+    return(list(kernel = "matern52", nug.min = 1e-8, nug.max = 100, nug.est = TRUE))
+  }
+  folds <- resolve_fold_indices(train_data, n_folds, fold_indices, block_size, cache_tag, exclude_regions)
+  folds <- folds[idx]
+  n_folds <- max(folds)
+  kernels <- c("matern52", "matern32", "gaussian", "exponential")
+  nug_min_vals <- c(1e-8, 1e-6, 1e-4)
+  nug_max_vals <- c(10, 100)
+  best_rmse <- Inf
+  best_params <- list(kernel = "matern52", nug.min = 1e-8, nug.max = 100, nug.est = TRUE)
+  total <- length(kernels) * length(nug_min_vals) * length(nug_max_vals)
+  pb <- progress_bar(total = total)
+  for (kernel in kernels) {
+    for (nug_min in nug_min_vals) {
+      for (nug_max in nug_max_vals) {
+        if (nug_min >= nug_max) next
+        cv_rmse <- numeric(n_folds)
+        for (fold in seq_len(n_folds)) {
+          train_fold <- dat[folds != fold, , drop = FALSE]
+          test_fold <- dat[folds == fold, , drop = FALSE]
+          res <- fit_gpr(train_fold, predictor_vars, value_var = value_var,
+                        test_data = test_fold,
+                        hyperparams = list(kernel = kernel, nug.min = nug_min, nug.max = nug_max))
+          cv_rmse[fold] <- if (!is.null(res$rmse) && is.finite(res$rmse)) res$rmse else NA_real_
+        }
+        mean_rmse <- mean(cv_rmse, na.rm = TRUE)
+        if (verbose) cat(sprintf("  kernel=%s, nug.min=%s, nug.max=%g: RMSE=%.4f\n",
+                                kernel, format(nug_min, scientific = TRUE), nug_max, mean_rmse))
+        if (is.finite(mean_rmse) && mean_rmse < best_rmse) {
+          best_rmse <- mean_rmse
+          best_params <- list(kernel = kernel, nug.min = nug_min, nug.max = nug_max, nug.est = TRUE)
+        }
+        pb$tick()
+      }
+    }
+  }
+  best_params
 }
 
+
+# ================================ FOLD ASSIGNMENTS FOR CV STRATEGIES ================================
+
+folds_to_vector <- function(folds, n) {
+  if (is.list(folds)) {
+    fv <- integer(n)
+    for (k in seq_along(folds)) fv[folds[[k]]] <- k
+    fv
+  } else as.integer(folds)
+}
+method_to_display <- function(m) {
+  if (grepl("^spatial_block_.+m$", m)) {
+    size_str <- sub("^spatial_block_(.+)m$", "\\1", m)
+    size_m <- as.numeric(size_str)
+    size_km <- if (!is.na(size_m) && size_m >= 1000) round(size_m / 1000) else size_m
+    if (!is.na(size_km)) {
+      return(paste("Spatial block", size_km, "km"))
+    }
+  }
+  if (grepl("^distance_buffer_", m)) {
+    km <- sub("distance_buffer_|km", "", m)
+    return(paste("Distance buffer", km, "km"))
+  }
+  switch(m,
+    random_split = "Random split",
+    env_cluster = "Env. cluster",
+    paste0(toupper(substring(m, 1, 1)), substring(m, 2))
+  )
+}
+# Order methods: random first (0), then spatial blocks by ascending size (1km, 5km, ...)
+method_block_size_km <- function(m) {
+  if (m == "random_split") return(0)
+  if (grepl("^spatial_block_.+m$", m)) {
+    size_str <- sub("^spatial_block_(.+)m$", "\\1", m)
+    size_m <- as.numeric(size_str)
+    if (!is.na(size_m)) return(round(size_m / 1000))
+  }
+  NA_real_
+}
+order_methods_by_size <- function(methods) {
+  method_sizes <- vapply(methods, method_block_size_km, numeric(1))
+  order_idx <- order(ifelse(is.na(method_sizes), 999, method_sizes), na.last = TRUE)
+  methods[order_idx]
+}
+
+
 # ================================ CROSS-VALIDATION ================================
+
 #' Run cross-validation for multiple models with optional hyperparameter tuning
 #'
 #' @param cv_method_name character string describing the cv method (e.g., "random_split", "spatial_split")
@@ -1687,1113 +1114,595 @@ tune_hyperparameters <- function(model_type, train_data, predictor_vars, n_folds
 #' @param return_predictions if TRUE, return list(metrics = ..., predictions = ...) with observed/predicted/longitude/latitude per test point
 #' @param skip_inla if TRUE, do not run INLA (avoids slow/hanging fits when INLA is slow or problematic)
 #' @param models optional character vector of model names to run; NULL = all models. Names: "Random Forest", "XGBoost", "SVM", "Neural Network", "GPR", "Ordinary Kriging", "Universal Kriging (env drift)", "GAM", "INLA".
+#' @param predictor_vars_by_model optional named list: model -> character vector of vars; when set, each model uses its own vars instead of predictor_vars
+#' @param log_response if TRUE (default from \code{log_transform_target} in .GlobalEnv), fit on log(response) and back-transform predictions for metrics
 #' @return data frame with performance metrics (r2, rmse, mae, bias) for each model and fold; or list(metrics, predictions) if return_predictions
-run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars, tune_hyperparams = FALSE, nested_tuning = TRUE, verbose = FALSE, buffer_m = NA_real_, core_sf = NULL, return_predictions = FALSE, models = NULL) {
-  all_models <- c("RF", "XGB", "SVM", "NN", "GPR", "OK", "UK", "GAM", "INLA")
-  if (is.null(models)) models <- all_models
-  models <- intersect(models, all_models)
-  if (length(models) == 0) stop("run_cv: no valid models selected")
-  cat("Selected models for CV:", paste(models, collapse = ", "), "\n")
+run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
+                   verbose = FALSE, buffer_m = NA_real_, core_sf = NULL,
+                   return_predictions = FALSE, models = NULL,
+                   tune_hyperparams = FALSE, nested_tuning = FALSE,
+                   predictor_vars_by_model = NULL,
+                   log_response = get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE)) {
+  models <- intersect(models %||% c("GPR", "GAM", "XGB", "RF"),
+                      c("GPR", "GAM", "XGB", "RF"))
+  if (length(models) == 0L) stop("run_cv: no valid models selected")
+  if (!"median_carbon_density" %in% names(core_data))
+    stop("run_cv: core_data must contain 'median_carbon_density' (or set it from target_var before calling)")
 
-  cat("\n=== Running CV:", cv_method_name, if (length(models) < length(all_models)) paste0("(", paste(models, collapse = ", "), ")") else "", "===\n")
-
-  # normalize fold_indices to a simple vector format
-  # blockCV returns folds_ids as a list (one element per fold), so convert if needed
+  # Normalise fold_indices to integer vector
   if (is.list(fold_indices)) {
-    # convert list format to vector: create a vector where each row index gets its fold number
-    n_rows <- nrow(core_data)
-    fold_vector <- integer(n_rows)
-    for (fold_num in seq_along(fold_indices)) {
-      fold_vector[fold_indices[[fold_num]]] <- fold_num
-    }
-    fold_indices <- fold_vector
-  } else if (!is.vector(fold_indices) || !is.numeric(fold_indices)) {
-    # ensure it's a numeric vector
-    fold_indices <- as.numeric(fold_indices)
+    fv <- integer(nrow(core_data))
+    for (k in seq_along(fold_indices)) fv[fold_indices[[k]]] <- k
+    fold_indices <- fv
   }
+  fold_indices <- as.integer(fold_indices)
+  stopifnot(length(fold_indices) == nrow(core_data))
 
-  # ensure fold_indices has the right length
-  if (length(fold_indices) != nrow(core_data)) {
-    stop("fold_indices length (", length(fold_indices), ") does not match core_data nrow (", nrow(core_data), ")")
-  }
-
-  use_buffer <- !is.na(buffer_m) && buffer_m > 0 && !is.null(core_sf) && inherits(core_sf, "sf")
-  if (use_buffer) {
-    cat("  Distance-buffered CV: training points must be >", buffer_m / 1000, "km from test points\n")
-  }
-
-  if (tune_hyperparams && nested_tuning) {
-    cat("  Using NESTED cross-validation for hyperparameter tuning\n")
-    cat("  (Hyperparameters tuned separately for each fold)\n\n")
-  } else if (tune_hyperparams && !nested_tuning) {
-    cat("  Using SINGLE-FOLD hyperparameter tuning\n")
-    cat("  (Hyperparameters tuned once on first fold's training data, used for all folds)\n\n")
-  } else {
-    cat("  Using default hyperparameters\n\n")
-  }
+  use_buffer <- !is.na(buffer_m) && buffer_m > 0 && inherits(core_sf, "sf")
+  cat("=== CV:", cv_method_name, "(", paste(models, collapse = ", "), ") ===\n")
 
   results_list <- list()
-  preds_list <- list()
+  preds_list   <- list()
+  n_folds      <- max(fold_indices)
 
-  # non-nested tuning: tune hyperparameters once on first fold's training data
-  # # these will be used for all folds if nested_tuning = false
-  rf_params <- xgb_params <- nn_params <- NULL
-  # if (tune_hyperparams && !nested_tuning) {
-  #   cat("  Tuning hyperparameters on first fold's training data...\n")
-  #   first_train_indices <- which(fold_indices != 1)
-  #   first_train_data <- core_data[first_train_indices, ] %>% as.data.frame()
-  #   if ("RF" %in% models) rf_params <- tune_hyperparameters("rf", first_train_data, predictor_vars, verbose = verbose)
-  #   if ("XGB" %in% models) xgb_params <- tune_hyperparameters("xgb", first_train_data, predictor_vars, verbose = verbose)
-  #   if ("NN" %in% models) nn_params <- tune_hyperparameters("nn", first_train_data, predictor_vars, verbose = verbose)
-  #   cat("  Using these tuned hyperparameters for all folds\n\n")
-  # }
+  for (fold in seq_len(n_folds)) {
+    test_idx  <- which(fold_indices == fold)
+    train_idx <- which(fold_indices != fold)
+    if (use_buffer && length(test_idx) > 0L && length(train_idx) > 0L) {
+      dists <- sf::st_distance(core_sf[train_idx, ], core_sf[test_idx, ])
+      train_idx <- train_idx[apply(dists, 1, min) > buffer_m]
+    }
+    if (length(test_idx) == 0L || length(train_idx) == 0L) next
 
-  num_folds <- max(fold_indices)
-  for (fold in 1:num_folds) {
-    cat("  Fold", fold, "/", num_folds, "...\n")
-
-    # get train/test split for this fold
-    test_indices <- which(fold_indices == fold)
-    train_indices <- which(fold_indices != fold)
-
-    # distance-buffered: exclude from training any point within buffer_m of a test point
-    if (use_buffer && length(test_indices) > 0 && length(train_indices) > 0) {
-      dist_train_to_test <- sf::st_distance(core_sf[train_indices, ], core_sf[test_indices, ])
-      min_dist_to_test <- apply(dist_train_to_test, 1, min)
-      train_indices <- train_indices[as.numeric(min_dist_to_test) > buffer_m]
+    train_raw <- as.data.frame(core_data[train_idx, ])
+    test_raw  <- as.data.frame(core_data[test_idx, ])
+    observed_orig <- test_raw$median_carbon_density
+    if (log_response) {
+      train_raw <- transform_response(train_raw, "median_carbon_density", log = TRUE)
+      test_raw  <- transform_response(test_raw, "median_carbon_density", log = TRUE)
     }
 
-    # skip if no test data
-    if (length(test_indices) == 0) {
-      cat("    Warning: No test data in fold", fold, "- skipping\n")
-      next
-    }
-
-    if (length(train_indices) == 0) {
-      cat("    Warning: No training data after buffer in fold", fold, "- skipping\n")
-      next
-    }
-
-    train_data <- core_data[train_indices, ] %>% as.data.frame()
-    test_data <- core_data[test_indices, ] %>% as.data.frame()
-
-    # nested tuning: tune hyperparameters separately for each fold
-    # this ensures hyperparameters are optimized on each fold's training data only
-    if (tune_hyperparams && nested_tuning) {
-      cat("    Tuning hyperparameters for this fold...\n")
-      if ("RF" %in% models) rf_params <- tune_hyperparameters("rf", train_data, predictor_vars, verbose = verbose)
-      if ("XGB" %in% models) xgb_params <- tune_hyperparameters("xgb", train_data, predictor_vars, verbose = verbose)
-      if ("NN" %in% models) nn_params <- tune_hyperparameters("nn", train_data, predictor_vars, verbose = verbose)
-    }
-    # if non-nested tuning, rf_params, xgb_params, nn_params are already set above
-    # if no tuning, they remain null (defaults will be used)
-
-    # fit models with tuned hyperparameters (or defaults if tuning disabled)
-    # each model in its own tryCatch so one failure does not skip others
-    if ("RF" %in% models) {
-      tryCatch(
-        {
-          rf_result <- fit_rf(train_data, test_data, predictor_vars, hyperparams = rf_params)
-          rf_metrics <- calculate_metrics(test_data$median_carbon_density, rf_result$predictions)
-          results_list[[paste0("fold_", fold, "_rf")]] <- data.frame(
-            method = cv_method_name,
-            fold = fold,
-            model = "RF",
-            rf_metrics
-          )
-          if (return_predictions) preds_list[[length(preds_list) + 1]] <- data.frame(method = cv_method_name, fold = fold, model = "RF", observed = test_data$median_carbon_density, predicted = rf_result$predictions, longitude = test_data$longitude, latitude = test_data$latitude, stringsAsFactors = FALSE)
-        },
-        error = function(e) {
-          cat("    RF fold", fold, ":", e$message, "\n")
-        }
-      )
-    }
-    if ("XGB" %in% models) {
-      tryCatch(
-        {
-          xgb_result <- fit_xgboost(train_data, test_data, predictor_vars, hyperparams = xgb_params)
-          xgb_metrics <- calculate_metrics(test_data$median_carbon_density, xgb_result$predictions)
-          results_list[[paste0("fold_", fold, "_xgb")]] <- data.frame(
-            method = cv_method_name,
-            fold = fold,
-            model = "XGB",
-            xgb_metrics
-          )
-          if (return_predictions) preds_list[[length(preds_list) + 1]] <- data.frame(method = cv_method_name, fold = fold, model = "XGB", observed = test_data$median_carbon_density, predicted = xgb_result$predictions, longitude = test_data$longitude, latitude = test_data$latitude, stringsAsFactors = FALSE)
-        },
-        error = function(e) {
-          cat("    XGB fold", fold, ":", e$message, "\n")
-        }
-      )
-    }
-    if ("SVM" %in% models) {
-      tryCatch(
-        {
-          svm_result <- fit_svm(train_data, test_data, predictor_vars)
-          svm_metrics <- calculate_metrics(test_data$median_carbon_density, svm_result$predictions)
-          results_list[[paste0("fold_", fold, "_svm")]] <- data.frame(
-            method = cv_method_name,
-            fold = fold,
-            model = "SVM",
-            svm_metrics
-          )
-          if (return_predictions) preds_list[[length(preds_list) + 1]] <- data.frame(method = cv_method_name, fold = fold, model = "SVM", observed = test_data$median_carbon_density, predicted = svm_result$predictions, longitude = test_data$longitude, latitude = test_data$latitude, stringsAsFactors = FALSE)
-        },
-        error = function(e) {
-          cat("    SVM fold", fold, ":", e$message, "\n")
-        }
-      )
-    }
-    if ("NN" %in% models) {
-      tryCatch(
-        {
-          nn_result <- fit_nn(train_data, test_data, predictor_vars, hyperparams = nn_params)
-          nn_metrics <- calculate_metrics(test_data$median_carbon_density, nn_result$predictions)
-          results_list[[paste0("fold_", fold, "_nn")]] <- data.frame(
-            method = cv_method_name,
-            fold = fold,
-            model = "NN",
-            nn_metrics
-          )
-          if (return_predictions) preds_list[[length(preds_list) + 1]] <- data.frame(method = cv_method_name, fold = fold, model = "NN", observed = test_data$median_carbon_density, predicted = nn_result$predictions, longitude = test_data$longitude, latitude = test_data$latitude, stringsAsFactors = FALSE)
-        },
-        error = function(e) {
-          cat("    NN fold", fold, ":", e$message, "\n")
-        }
-      )
-    }
-    if ("GPR" %in% models) {
-      tryCatch(
-        {
-          gpr_result <- fit_gpr(train_data, test_data, predictor_vars)
-          gpr_metrics <- calculate_metrics(test_data$median_carbon_density, gpr_result$predictions)
-          results_list[[paste0("fold_", fold, "_gpr")]] <- data.frame(
-            method = cv_method_name,
-            fold = fold,
-            model = "GPR",
-            gpr_metrics
-          )
-          if (return_predictions) preds_list[[length(preds_list) + 1]] <- data.frame(method = cv_method_name, fold = fold, model = "GPR", observed = test_data$median_carbon_density, predicted = gpr_result$predictions, longitude = test_data$longitude, latitude = test_data$latitude, stringsAsFactors = FALSE)
-        },
-        error = function(e) {
-          cat("    GPR fold", fold, ":", e$message, "\n")
-        }
-      )
-    }
-    if ("OK" %in% models) {
-      tryCatch(
-        {
-          ok_result <- fit_ok(train_data, test_data)
-          ok_metrics <- if (!all(is.na(ok_result$predictions))) {
-            calculate_metrics(test_data$median_carbon_density, ok_result$predictions)
-          } else {
-            data.frame(r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_)
-          }
-          results_list[[paste0("fold_", fold, "_ok")]] <- data.frame(
-            method = cv_method_name,
-            fold = fold,
-            model = "OK",
-            ok_metrics
-          )
-          if (return_predictions && !all(is.na(ok_result$predictions))) preds_list[[length(preds_list) + 1]] <- data.frame(method = cv_method_name, fold = fold, model = "OK", observed = test_data$median_carbon_density, predicted = ok_result$predictions, longitude = test_data$longitude, latitude = test_data$latitude, stringsAsFactors = FALSE)
-        },
-        error = function(e) {
-          cat("    OK fold", fold, ":", e$message, "\n")
-          results_list[[paste0("fold_", fold, "_ok")]] <<- data.frame(
-            method = cv_method_name, fold = fold, model = "OK",
-            r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_
-          )
-        }
-      )
-    }
-    if ("UK" %in% models) {
-      tryCatch(
-        {
-          uk_result <- fit_uk(train_data, test_data, predictor_vars)
-          uk_metrics <- if (!all(is.na(uk_result$predictions))) {
-            calculate_metrics(test_data$median_carbon_density, uk_result$predictions)
-          } else {
-            data.frame(r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_)
-          }
-          results_list[[paste0("fold_", fold, "_uk")]] <- data.frame(
-            method = cv_method_name,
-            fold = fold,
-            model = "UK",
-            uk_metrics
-          )
-          if (return_predictions && !all(is.na(uk_result$predictions))) preds_list[[length(preds_list) + 1]] <- data.frame(method = cv_method_name, fold = fold, model = "UK", observed = test_data$median_carbon_density, predicted = uk_result$predictions, longitude = test_data$longitude, latitude = test_data$latitude, stringsAsFactors = FALSE)
-        },
-        error = function(e) {
-          cat("    UK fold", fold, ":", e$message, "\n")
-          results_list[[paste0("fold_", fold, "_uk")]] <<- data.frame(
-            method = cv_method_name, fold = fold, model = "Universal Kriging (env drift)",
-            r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_
-          )
-        }
-      )
-    }
-    if ("GAM" %in% models) {
-      tryCatch(
-        {
-          gam_result <- fit_gam(train_data, test_data, predictor_vars)
-          if (!all(is.na(gam_result$predictions))) {
-            gam_metrics <- calculate_metrics(test_data$median_carbon_density, gam_result$predictions)
-            results_list[[paste0("fold_", fold, "_gam")]] <- data.frame(
-              method = cv_method_name,
-              fold = fold,
-              model = "GAM",
-              gam_metrics
-            )
-            if (return_predictions) preds_list[[length(preds_list) + 1]] <- data.frame(method = cv_method_name, fold = fold, model = "GAM", observed = test_data$median_carbon_density, predicted = gam_result$predictions, longitude = test_data$longitude, latitude = test_data$latitude, stringsAsFactors = FALSE)
-          }
-        },
-        error = function(e) {
-          cat("    GAM fold", fold, ":", e$message, "\n")
-        }
-      )
-    }
-    if ("INLA" %in% models) {
-      tryCatch(
-        {
-          inla_result <- fit_inla_cv(train_data, test_data, predictor_vars)
-          if (!all(is.na(inla_result$predictions))) {
-            inla_metrics <- calculate_metrics(test_data$median_carbon_density, inla_result$predictions)
-            results_list[[paste0("fold_", fold, "_inla")]] <- data.frame(
-              method = cv_method_name,
-              fold = fold,
-              model = "INLA",
-              inla_metrics
-            )
-            if (return_predictions) preds_list[[length(preds_list) + 1]] <- data.frame(method = cv_method_name, fold = fold, model = "INLA", observed = test_data$median_carbon_density, predicted = inla_result$predictions, longitude = test_data$longitude, latitude = test_data$latitude, stringsAsFactors = FALSE)
-          } else {
-            results_list[[paste0("fold_", fold, "_inla")]] <- data.frame(
-              method = cv_method_name, fold = fold, model = "INLA",
-              r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_
-            )
-          }
-        },
-        error = function(e) {
-          cat("    INLA fold", fold, ":", e$message, "\n")
-          results_list[[paste0("fold_", fold, "_inla")]] <<- data.frame(
-            method = cv_method_name, fold = fold, model = "INLA",
-            r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_
-          )
-        }
-      )
-    }
-    if ("INLA" %in% models) {
-      results_list[[paste0("fold_", fold, "_inla")]] <- data.frame(
-        method = cv_method_name, fold = fold, model = "INLA",
-        r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_
-      )
-    }
-  }
-
-  # combine results
-  results_df <- dplyr::bind_rows(results_list)
-  if (return_predictions && length(preds_list) > 0) {
-    return(list(metrics = results_df, predictions = dplyr::bind_rows(preds_list)))
-  }
-  return(results_df)
-}
-
-
-# ================================ SPATIAL AUTOCORRELATION ANALYSIS ================================
-
-#' Calculate spatial autocorrelation range for a raster
-#'
-#' Uses blockCV's cv_spatial_autocor function to estimate the range of spatial
-#' autocorrelation using variogram analysis.
-#'
-#' @param raster_path Path to the NetCDF raster file
-#' @param varname Variable name within the NetCDF file
-#' @param name Descriptive name for the variable
-#' @param sample_points Optional sf object with sample points
-#' @param plot_variogram Whether to plot the variogram
-#' @return List with autocorrelation range and variogram plot
-calculate_spatial_autocorrelation <- function(raster_path,
-                                              varname = NULL,
-                                              name = "variable",
-                                              num_sample = 5000,
-                                              sample_points = NULL,
-                                              plot_variogram = TRUE) {
-  cat("Processing:", name, "\n")
-  cat("  Loading raster:", raster_path, "\n")
-
-  # Check if file exists
-
-  if (!file.exists(raster_path)) {
-    cat("  ERROR: File not found!\n")
-    return(list(name = name, range_m = NA, error = "File not found"))
-  }
-
-  # Load raster
-  tryCatch(
-    {
-      if (!is.null(varname)) {
-        r <- terra::rast(raster_path, subds = varname)
-      } else {
-        r <- terra::rast(raster_path)
-      }
-
-      # If multiple layers, take first one
-      if (terra::nlyr(r) > 1) {
-        cat("  Multiple layers detected, using first layer\n")
-        r <- r[[1]]
-      }
-      # Display raster information
-      cat("  Raster information:\n")
-      print(r)
-      # Ensure raster has CRS
-      if (is.na(terra::crs(r))) {
-        cat("  Setting CRS to EPSG:4326\n")
-        terra::crs(r) <- "EPSG:4326"
-      }
-
-      # Use cv_spatial_autocor from blockCV to estimate autocorrelation range
-      # This function fits an exponential variogram and estimates the range
-      cat("  Calculating spatial autocorrelation...\n")
-
-      autocor_result <- blockCV::cv_spatial_autocor(
-        r = r,
-        num_sample = min(num_sample, terra::ncell(r)), # Sample points for variogram
-        plot = FALSE,
-        progress = FALSE
-      )
-
-      range_m <- autocor_result$range
-      cat("  Estimated autocorrelation range:", round(range_m / 1000, 2), "km\n")
-
-      # Create variogram plot
-      if (plot_variogram) {
-        variogram_plot <- autocor_result$plot +
-          labs(
-            title = name,
-            subtitle = paste("Range:", round(range_m / 1000, 2), "km")
-          ) +
-          theme_minimal() +
-          theme(
-            plot.title = element_text(size = 10, face = "bold"),
-            plot.subtitle = element_text(size = 9)
-          )
-      } else {
-        variogram_plot <- NULL
-      }
-
-      return(list(
-        name = name,
-        range_m = range_m,
-        range_km = range_m / 1000,
-        variogram_plot = variogram_plot,
-        autocor_object = autocor_result
-      ))
-    },
-    error = function(e) {
-      cat("  ERROR:", e$message, "\n")
-      return(list(name = name, range_m = NA, error = e$message))
-    }
-  )
-}
-
-
-# ================================ PLOTTING ================================
-#' Custom function for scatter plots with continuous color using turbo colormap
-#' turbo colormap is from viridisLite package (dependency of ggplot2)
-#'
-#' @param data data frame containing the data
-#' @param mapping ggplot mapping
-#' @param ... additional arguments to pass to ggplot
-#' @return a ggplot object
-scatter_with_color <- function(data, mapping, ...) {
-  # add color aesthetic to the mapping by combining with existing mapping
-  # use aes() to create new mapping that includes color
-  new_mapping <- aes(
-    x = !!mapping$x,
-    y = !!mapping$y,
-    color = carbon_density_g_c_cm3
-  )
-
-  ggplot(data = data, mapping = new_mapping) +
-    geom_point(alpha = 0.5, ...) +
-    scale_color_gradientn(
-      colors = viridisLite::turbo(256),
-      name = "Carbon density\n(gC cm^-3)",
-      guide = guide_colorbar(
-        barwidth = 1,
-        barheight = 10,
-        title.position = "right",
-        title.hjust = 0.5
-      )
-    ) +
-    theme(legend.position = "right")
-}
-
-#' Define turbo colormap for categorical or integer variables and return a named vector of colors
-#'
-#' If the supplied variable is a factor or character, one color is assigned per unique value.
-#' If it is an integer or can be converted to integer, assigns a color for each integer from min to max,
-#' and names the vector with those integer values (normalized so that the largest integer is mapped to the last color).
-#'
-#' @param data Data frame containing the variable to color by
-#' @param color_var Name of the variable (column) to use for coloring (as string)
-#' @return Named vector of hex color codes with names corresponding to unique values (factor/char) or integer labels
-define_turbo_colors <- function(data, color_var) {
-  values <- data[[color_var]]
-
-  # Check for integer type or integer-like variable
-  if (is.integer(values) || (is.numeric(values) && all(!is.na(values)) && all(values == as.integer(values)))) {
-    values_int <- as.integer(values)
-    # Normalise to the largest integer
-    int_range <- sort(unique(values_int))
-    if (length(int_range) == 1) {
-      turbo_colors <- viridisLite::turbo(1)
-      names(turbo_colors) <- int_range
-      return(turbo_colors)
-    }
-    max_int <- max(int_range)
-    # assign one color for each integer from smallest to max
-    color_vals <- min(int_range):max_int
-    n_colors <- length(color_vals)
-    turbo_colors <- viridisLite::turbo(n_colors)
-    names(turbo_colors) <- color_vals
-    return(turbo_colors)
-  } else {
-    # treat as categorical (factor or character)
-    categories <- unique(values)
-    n_colors <- length(categories)
-    turbo_colors <- viridisLite::turbo(n_colors)
-    names(turbo_colors) <- categories
-    return(turbo_colors)
-  }
-}
-
-#' Get consistent color mapping for seagrass species
-#'
-#' Returns a named vector of colors for seagrass species that can be used
-#' consistently across all plots. Uses a curated palette for visual distinction.
-#'
-#' @return Named vector of hex color codes for each species
-#' @export
-get_species_colors <- function() {
-  c(
-    "Cymodocea nodosa" = "#3366CC", # blue
-    "Halophila stipulacea" = "#FF9900", # orange
-    "Posidonia oceanica" = "#00CED1", # dark cyan
-    "Zostera marina" = "#32CD32", # lime green
-    "Zostera noltei" = "#CCCC00", # yellow-green
-    "Zostera marina and Zostera noltei" = "#006400", # dark green
-    "Zostera marina and Cymodocea nodosa" = "#8B0000", # dark red
-    "Unspecified" = "#808080" # gray
-  )
-}
-
-#' Get consistent color mapping for regions
-#'
-#' Returns a named vector of colors for regions that can be used
-#' consistently across all plots. Uses a curated palette for visual distinction.
-#'
-#' @return Named vector of hex color codes for each region
-#' @export
-get_region_colors <- function() {
-  c(
-    "Mediterranean Sea"       = "#1E90FF", # dodger blue
-    "North European Atlantic" = "#228B22", # forest green
-    "South European Atlantic" = "#60cc32", # lime green
-    "Baltic Sea"              = "#FFD700", # gold
-    "Black Sea"               = "#2F4F4F" # dark slate gray
-  )
-}
-
-#' Get colors for a specific grouping variable
-#'
-#' Convenience function that returns appropriate colors based on the group type.
-#' Falls back to turbo palette if group type is unknown.
-#'
-#' @param group_type Either "species" or "region"
-#' @param data Optional data frame to extract unique values from (for fallback)
-#' @param group_var Optional column name (for fallback)
-#' @return Named vector of hex color codes
-#' @export
-get_group_colors <- function(group_type, data = NULL, group_var = NULL) {
-  if (group_type == "species") {
-    return(get_species_colors())
-  } else if (group_type == "region") {
-    return(get_region_colors())
-  } else if (!is.null(data) && !is.null(group_var)) {
-    return(define_turbo_colors(data, group_var))
-  } else {
-    stop("Unknown group_type. Use 'species' or 'region', or provide data and group_var for fallback.")
-  }
-}
-
-#' Plot a pairs plot of specified variables with a continuous variable as the color
-#' and save it with a combined colorbar legend.
-#'
-#' @param data The input data frame
-#' @param env_vars Character vector of variable names to plot on axes (must be columns in data)
-#' @param color_var The variable name to use as the color aesthetic (must be in data)
-#' @param output_file Filename to save the figure (png)
-#' @param width Width of output image in inches (default 15)
-#' @param height Height of output image in inches (default 15)
-#' @param dpi Dots per inch for png output (default 300)
-#' @return NULL (saves output to file; displays plot)
-plot_env_pairs <- function(data, env_vars, color_var, output_file = "environmental_variables_pairs.png",
-                           width = 15, height = 15, dpi = 300) {
-  require(GGally)
-  require(ggplot2)
-  require(dplyr)
-  require(cowplot)
-
-  # Prepare data so color_var is present
-  dat_pairs <- data %>%
-    dplyr::select(dplyr::all_of(c(env_vars, color_var)))
-
-  # Use a custom wrapper for scatter plots that knows to color by color_var
-  pairs_plot <- ggpairs(
-    dat_pairs,
-    columns = env_vars,
-    lower = list(continuous = wrap(scatter_with_color)), # assumes scatter_with_color uses color_var
-    upper = list(continuous = wrap("cor", size = 3)),
-    diag = list(continuous = "densityDiag")
-  ) +
-    theme_minimal()
-
-  # Extract the colorbar legend from one of the lower triangle plots
-  first_lower_plot <- getPlot(pairs_plot, 2, 1)
-  colorbar_legend <- cowplot::get_legend(first_lower_plot)
-
-  # Create combined plot with pairs plot and colorbar
-  if (!is.null(colorbar_legend)) {
-    library(grid)
-    library(gridExtra)
-
-    png(output_file, width = width + 1, height = height, units = "in", res = dpi)
-    grid.newpage()
-    pushViewport(viewport(layout = grid.layout(1, 2, widths = unit(c(10, 1), "null"))))
-
-    pushViewport(viewport(layout.pos.col = 1))
-    print(pairs_plot, newpage = FALSE)
-    popViewport()
-
-    pushViewport(viewport(layout.pos.col = 2))
-    grid.draw(colorbar_legend)
-    popViewport()
-
-    dev.off()
-
-    # also print to screen
-    grid.newpage()
-    pushViewport(viewport(layout = grid.layout(1, 2, widths = unit(c(10, 1), "null"))))
-    pushViewport(viewport(layout.pos.col = 1))
-    print(pairs_plot, newpage = FALSE)
-    popViewport()
-    pushViewport(viewport(layout.pos.col = 2))
-    grid.draw(colorbar_legend)
-    popViewport()
-  } else {
-    # Just plot and save if legend extraction fails
-    print(pairs_plot)
-    ggsave(output_file, plot = pairs_plot, width = width, height = height, dpi = dpi)
-  }
-  invisible(NULL)
-}
-
-#' Plot depth relationships by group (rotated axes: depth on y, C-density on x)
-#'
-#' @param results list containing the results of the model fitting
-#' @param group_name the name of the group variable
-#' @param xlim optional limits for the x-axis
-#' @param use_facets whether to use faceted plots (default TRUE, auto-enabled if >6 groups)
-#' @param colors optional named vector of colors (use get_species_colors() or get_region_colors())
-#' @return a ggplot object
-plot_depth_by_group <- function(results, group_name, xlim = NULL, use_facets = TRUE, colors = NULL) {
-  if (is.null(results)) {
-    return(NULL)
-  }
-
-  dat_sub <- results$dat_sub
-  group_var <- results$group_var
-  group_coefs <- results$group_coefs
-  group_models <- results$group_models
-
-  # depth sequence for predictions
-  depth_seq <- seq(min(dat_sub$sediment_mean_depth_cm, na.rm = TRUE),
-    max(dat_sub$sediment_mean_depth_cm, na.rm = TRUE),
-    length.out = 100
-  )
-
-  # auto-enable facets for many groups
-  n_groups <- length(unique(dat_sub[[group_var]]))
-  use_facets <- use_facets || n_groups > 6
-
-  # build predictions for each group using delta method for CIs
-  build_group_predictions <- function(i) {
-    g <- group_coefs$group[i]
-    g_char <- as.character(g)
-
-    if (!is.null(group_models) && g_char %in% names(group_models)) {
-      model_g <- group_models[[g_char]]
-
-      pred_result <- tryCatch(
-        {
-          pred_fit <- predict(model_g, newdata = data.frame(sediment_mean_depth_cm = depth_seq))
-          vcov_mat <- vcov(model_g)
-          coefs <- coef(model_g)
-          a <- coefs[["a"]]
-          b <- coefs[["b"]]
-
-          # delta method: gradient = [exp(b*d), a*d*exp(b*d)]
-          se_vec <- sapply(depth_seq, function(d) {
-            grad <- c(exp(b * d), a * d * exp(b * d))
-            sqrt(t(grad) %*% vcov_mat %*% grad)
-          })
-
-          list(fit = pred_fit, lower = pred_fit - 1.96 * se_vec, upper = pred_fit + 1.96 * se_vec)
-        },
-        error = function(e) NULL
-      )
-
-      if (!is.null(pred_result)) {
-        return(data.frame(
-          sediment_mean_depth_cm = depth_seq,
-          group = g,
-          carbon_density_fit = pred_result$fit,
-          carbon_density_lower = pred_result$lower,
-          carbon_density_upper = pred_result$upper
-        ))
-      }
-    }
-
-    # fallback: simple prediction without CIs
-    data.frame(
-      sediment_mean_depth_cm = depth_seq,
-      group = g,
-      carbon_density_fit = group_coefs$a[i] * exp(group_coefs$b[i] * depth_seq),
-      carbon_density_lower = NA,
-      carbon_density_upper = NA
-    )
-  }
-
-  # build predictions and filter for valid CIs
-  preds_df <- bind_rows(lapply(seq_len(nrow(group_coefs)), build_group_predictions))
-  preds_df[[group_var]] <- preds_df$group
-
-  # set up colors: use provided colors or fall back to turbo palette
-  if (is.null(colors)) {
-    group_colors <- define_turbo_colors(dat_sub, group_var)
-  } else {
-    group_colors <- colors
-  }
-
-  # build plot: points -> ribbons -> lines
-  p <- ggplot() +
-    geom_point(
-      data = dat_sub,
-      aes(x = carbon_density_g_c_cm3, y = sediment_mean_depth_cm, color = !!sym(group_var)),
-      alpha = 0.5
-    )
-
-  # add confidence ribbons if available
-  ribbon_df <- preds_df %>% filter(!is.na(carbon_density_lower))
-  if (nrow(ribbon_df) > 0) {
-    p <- p +
-      geom_ribbon(
-        data = ribbon_df,
-        aes(
-          y = sediment_mean_depth_cm,
-          xmin = carbon_density_lower,
-          xmax = carbon_density_upper,
-          fill = !!sym(group_var)
-        ),
-        alpha = 0.18,
-        show.legend = FALSE
-      )
-  }
-
-  # add fitted lines
-  p <- p +
-    geom_line(
-      data = preds_df,
-      aes(x = carbon_density_fit, y = sediment_mean_depth_cm, color = !!sym(group_var)),
-      linewidth = 1.5
-    ) +
-    scale_y_reverse() +
-    scale_color_manual(name = group_name, values = group_colors) +
-    scale_fill_manual(values = group_colors) +
-    labs(
-      y = "Depth (cm)",
-      x = expression("Carbon density (gC cm"^
-        {
-          -3
-        } * ")"),
-      title = paste("Depth-Carbon density relationship by", group_name),
-      subtitle = paste("Delta AIC:", round(results$delta_aic, 2))
-    ) +
-    theme_minimal() +
-    theme(legend.position = "bottom")
-
-  if (!is.null(xlim)) {
-    p <- p + scale_x_continuous(limits = xlim)
-  }
-
-  if (use_facets) {
-    p <- p + facet_wrap(as.formula(paste("~", group_var)), scales = "free_y")
-  }
-
-  print(p)
-  return(p)
-}
-
-
-#' Plot model comparison results
-#'
-#' @param comparison_results list from compare_depth_profile_models
-#' @return a ggplot object
-plot_model_comparison <- function(comparison_results) {
-  comp <- comparison_results$comparison
-
-  if (nrow(comp) == 0) {
-    cat("No models to compare\n")
-    return(NULL)
-  }
-
-  # create a long format for plotting
-  comp_long <- comp %>%
-    select(model, delta_aic, delta_bic, has_species_interaction) %>%
-    pivot_longer(
-      cols = c(delta_aic, delta_bic),
-      names_to = "criterion",
-      values_to = "delta"
-    ) %>%
-    mutate(criterion = ifelse(criterion == "delta_aic", "Delta AIC", "Delta BIC"))
-
-  p <- ggplot(comp_long, aes(
-    x = reorder(model, delta), y = delta,
-    fill = has_species_interaction
-  )) +
-    geom_bar(stat = "identity") +
-    facet_wrap(~criterion, scales = "free_y") +
-    coord_flip() +
-    scale_fill_manual(
-      values = c("FALSE" = "lightblue", "TRUE" = "lightcoral"),
-      name = "Species\ninteraction"
-    ) +
-    labs(
-      x = "Model", y = "Delta (relative to best model)",
-      title = "Model comparison: depth profile functional forms"
-    ) +
-    theme_minimal()
-
-  return(p)
-}
-
-
-#' Plot raster stack as grid of subplots with individual colorbars
-#'
-#' @param raster_stack SpatRaster object with multiple layers
-#' @param sample_points Optional data.frame with longitude, latitude columns
-#' @param point_color Optional: either a color string (e.g., "red") or column name from sample_points
-#' @param raster_info Optional list with descriptions for layer names (for better labels)
-#' @param ncol Number of columns in the grid
-#' @param color_scale Color scale for rasters (default: "viridis")
-#' @return Combined plot object (patchwork)
-plot_raster_stack <- function(raster_stack,
-                              sample_points = NULL,
-                              point_color = NULL,
-                              raster_info = NULL,
-                              ncol = 3,
-                              color_scale = "viridis") {
-  # Convert raster stack to data frame
-  raster_df <- terra::as.data.frame(raster_stack, xy = TRUE)
-
-  # Get layer names
-  layer_names <- names(raster_stack)
-  n_layers <- length(layer_names)
-
-  # Determine point color range if using a column
-  point_color_range <- NULL
-  if (!is.null(sample_points) && !is.null(point_color) && point_color %in% names(sample_points)) {
-    point_color_range <- range(sample_points[[point_color]], na.rm = TRUE)
-  }
-
-  # Create individual plots for each layer
-  plot_list <- list()
-
-  for (i in seq_along(layer_names)) {
-    layer_name <- layer_names[i]
-
-    # Get description if available
-    if (!is.null(raster_info) && layer_name %in% names(raster_info)) {
-      title <- paste0(raster_info[[layer_name]]$description, "\n(", layer_name, ")")
-    } else {
-      title <- layer_name
-    }
-
-    # Prepare data for this layer
-    layer_data <- raster_df %>%
-      dplyr::select(x, y, !!sym(layer_name)) %>%
-      dplyr::rename(value = !!sym(layer_name))
-
-    # Create base plot for this layer
-    p <- ggplot(layer_data, aes(x = x, y = y, fill = value)) +
-      geom_raster() +
-      scale_fill_viridis_c(
-        option = color_scale,
-        na.value = "transparent",
-        name = NULL,
-        guide = guide_colorbar(
-          title.position = "right",
-          title.hjust = 0.5,
-          barwidth = 0.5,
-          barheight = 3
+    for (m in models) {
+      pvars <- if (is.list(predictor_vars_by_model) && m %in% names(predictor_vars_by_model))
+        predictor_vars_by_model[[m]] else predictor_vars
+      res <- tryCatch({
+        prep <- prepare_data_for_model(m, train_raw, test_raw, pvars)
+        fit <- switch(m,
+          GPR = fit_gpr(prep$train, prep$predictor_vars, test_data = prep$test),
+          RF  = fit_rf(prep$train, prep$test, prep$predictor_vars),
+          XGB = fit_xgboost(prep$train, prep$test, prep$predictor_vars),
+          GAM = fit_gam(prep$train, prep$test, prep$predictor_vars),
+          stop("Unsupported model: ", m)
         )
-      ) +
-      labs(
-        title = title,
-      ) +
-      theme_minimal() +
-      theme(
-        plot.title = element_text(size = 9, face = "bold", hjust = 0.5),
-        axis.text = element_text(size = 5),
-        axis.title = element_text(size = 6),
-        legend.position = "right",
-        legend.title = element_text(size = 6),
-        legend.text = element_text(size = 6),
-      ) +
-      coord_fixed()
-    # label entire x axis Latitude, entire y axis Longitude
-    p <- p + labs(x = "Latitude", y = "Longitude") +
-      theme(axis.text.x = element_text(angle = 90, hjust = 1))
-
-
-    # Add sample points if provided
-    if (!is.null(sample_points) && !is.null(point_color)) {
-      # Check if point_color is a column name or a color string
-      if (point_color %in% names(sample_points)) {
-        # It's a column - use continuous color scale with shared range
-        points_df <- sample_points %>%
-          dplyr::select(longitude, latitude, !!sym(point_color)) %>%
-          dplyr::rename(point_value = !!sym(point_color))
-
-        # Only add colorbar to first plot if using column
-        if (i == 1) {
-          p <- p +
-            geom_point(
-              data = points_df,
-              aes(x = longitude, y = latitude, color = point_value),
-              inherit.aes = FALSE,
-              size = 0.8,
-              alpha = 0.7,
-              stroke = 0
-            ) +
-            scale_color_viridis_c(
-              option = "plasma",
-              name = point_color,
-              limits = point_color_range,
-              guide = guide_colorbar(
-                title.position = "right",
-                title.hjust = 0.5,
-                barwidth = 0.5,
-                barheight = 8,
-                order = 2
-              )
-            )
-        } else {
-          # Other plots: just points, no colorbar
-          p <- p +
-            geom_point(
-              data = points_df,
-              aes(x = longitude, y = latitude, color = point_value),
-              inherit.aes = FALSE,
-              size = 0.8,
-              alpha = 0.7,
-              stroke = 0,
-              show.legend = FALSE
-            ) +
-            scale_color_viridis_c(
-              option = "plasma",
-              limits = point_color_range,
-              guide = "none"
-            )
-        }
-      } else {
-        # It's a color string - same for all plots
-        points_df <- sample_points %>%
-          dplyr::select(longitude, latitude)
-
-        p <- p +
-          geom_point(
-            data = points_df,
-            aes(x = longitude, y = latitude),
-            inherit.aes = FALSE,
-            color = point_color,
-            size = 0.8,
-            alpha = 0.7
+        if (all(is.na(fit$predictions))) return(NULL)
+        pred <- fit$predictions
+        if (log_response) pred <- inverse_response_transform(pred, log = TRUE)
+        keep <- test_rows_with_factors_in_train(train_raw, test_raw, intersect(pvars, c("seagrass_species", "region")))
+        obs_sub <- observed_orig[keep]
+        pred_sub <- pred[keep]
+        metrics <- if (sum(keep) < 2L) data.frame(r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_) else calculate_metrics(obs_sub, pred_sub)
+        list(
+          metrics = data.frame(method = cv_method_name, fold = fold, model = m, metrics),
+          preds   = if (return_predictions) data.frame(
+            method = cv_method_name, fold = fold, model = m,
+            observed = observed_orig, predicted = pred,
+            longitude = test_raw$longitude, latitude = test_raw$latitude,
+            stringsAsFactors = FALSE
           )
-      }
+        )
+      }, error = function(e) {
+        cat("    ", m, " fold ", fold, ": ", e$message, "\n", sep = "")
+        NULL
+      })
+      if (is.null(res)) next
+      results_list[[length(results_list) + 1]] <- res$metrics
+      if (!is.null(res$preds)) preds_list[[length(preds_list) + 1]] <- res$preds
     }
-
-    # add on geographical features (country outlines)
-    p <- p +
-      geom_polygon(
-        data = world, aes(x = long, y = lat, group = group),
-        fill = "#eeeeee", color = "#a5a5a5", linewidth = 0.1
-      ) +
-      coord_fixed()
-    # set extent to the extent of the plot
-    p <- p + coord_cartesian(
-      xlim = c(min(layer_data$x), max(layer_data$x)),
-      ylim = c(min(layer_data$y), max(layer_data$y))
-    )
-
-    plot_list[[i]] <- p
   }
 
-  # Combine plots using patchwork
-  combined_plot <- wrap_plots(plot_list, ncol = ncol)
-
-  return(combined_plot)
+  results_df <- dplyr::bind_rows(results_list)
+  if (return_predictions && length(preds_list) > 0)
+    return(list(metrics = results_df, predictions = dplyr::bind_rows(preds_list)))
+  results_df
 }
 
+# ================================ APPLICABILITY DOMAIN ================================
 
-## ================================ DEPRECATED FUNCTIONS ================================
-# #' Function to fit and compare models with/without interaction
-# #'
-# #' @param dat_clean data frame containing the data
-# #' @param group_var the variable to group by
-# #' @param group_name the name of the group variable
-# #' @param normalise_by_core logical, whether to normalize carbon density by core aggregate
-# #' @param aggregate_fun function to calculate per-core aggregate (default: median of top 5 cm)
-# #' @return a list containing the results of the model fitting
-# # function to fit and compare models with/without interaction
-# compare_depth_relationships <- function(dat_clean, group_var, group_name,
-#                                         normalise_by_core = FALSE,
-#                                         aggregate_fun = calculate_core_aggregate) {
-#   cat("\n=== testing variation by", group_name, "===\n")
+#' Compute environmental similarity scores between prediction locations and training data.
+#'
+#' @param training_data Data frame with training observations and predictor variables.
+#' @param prediction_data Data frame with prediction locations and predictor variables.
+#' @param predictor_vars Character vector of predictor variable names.
+#' @param method Similarity metric: "euclidean" (scaled), "mahalanobis", or "range_overlap".
+#' @param verbose If TRUE, print diagnostic information.
+#' @return List with similarity scores (vector), flag_outside_range (logical vector), and summary statistics.
+compute_environmental_similarity <- function(training_data, prediction_data, predictor_vars,
+                                            method = "euclidean", verbose = FALSE) {
+  # Get common predictors
+  pv <- intersect(predictor_vars, names(training_data))
+  pv <- intersect(pv, names(prediction_data))
+  
+  if (length(pv) == 0) {
+    warning("No common predictor variables found")
+    return(list(similarity_scores = NULL, flag_outside_range = NULL, summary = NULL))
+  }
+  
+  # Extract predictor matrices
+  X_train <- as.matrix(training_data[, pv, drop = FALSE])
+  X_pred <- as.matrix(prediction_data[, pv, drop = FALSE])
+  
+  # Check for non-finite values and replace with NA
+  X_train[!is.finite(X_train)] <- NA_real_
+  X_pred[!is.finite(X_pred)] <- NA_real_
+  
+  # For training data, we need complete cases to compute statistics
+  train_complete <- stats::complete.cases(X_train)
+  n_train_complete <- sum(train_complete)
+  
+  if (verbose) {
+    cat("Environmental similarity computation:\n")
+    cat("  Training data: ", nrow(training_data), " rows, ", n_train_complete, " complete cases\n", sep = "")
+    cat("  Prediction data: ", nrow(prediction_data), " rows\n", sep = "")
+    cat("  Predictor variables: ", length(pv), " (", paste(pv, collapse = ", "), ")\n", sep = "")
+    
+    # Check missing data patterns in prediction grid
+    pred_missing <- colSums(is.na(X_pred))
+    cat("  Missing values in prediction grid per variable:\n")
+    for (i in seq_along(pv)) {
+      cat("    ", pv[i], ": ", pred_missing[i], " (", round(100 * pred_missing[i] / nrow(X_pred), 1), "%)\n", sep = "")
+    }
+  }
+  
+  if (n_train_complete == 0) {
+    warning("No complete cases in training data for similarity computation")
+    return(list(similarity_scores = rep(NA_real_, nrow(prediction_data)), 
+                flag_outside_range = rep(FALSE, nrow(prediction_data)), 
+                summary = NULL))
+  }
+  
+  # Use only complete training cases for computing statistics
+  X_train_complete <- X_train[train_complete, , drop = FALSE]
+  
+  # Remove columns that are all NA in training data
+  train_cols_valid <- colSums(!is.na(X_train_complete)) > 0
+  if (sum(train_cols_valid) == 0) {
+    warning("No valid predictor columns in training data")
+    return(list(similarity_scores = rep(NA_real_, nrow(prediction_data)), 
+                flag_outside_range = rep(FALSE, nrow(prediction_data)), 
+                summary = NULL))
+  }
+  
+  X_train_complete <- X_train_complete[, train_cols_valid, drop = FALSE]
+  pv_valid <- pv[train_cols_valid]
+  
+  if (verbose) {
+    cat("  Using ", length(pv_valid), " predictors with valid training data\n", sep = "")
+  }
+  
+  # Compute similarity based on method
+  if (method == "euclidean") {
+    # Scale by training data standard deviations
+    train_mean <- colMeans(X_train, na.rm = TRUE)
+    train_sd <- apply(X_train, 2, sd, na.rm = TRUE)
+    train_sd[train_sd == 0 | !is.finite(train_sd)] <- 1  # Avoid division by zero or Inf/NaN
+    
+    # Check for Inf/NaN in means
+    train_mean[!is.finite(train_mean)] <- 0
+    
+    # Scale training dataset
+    X_train_scaled <- scale(X_train_complete, center = train_mean, scale = train_sd)
+    X_train_scaled[!is.finite(X_train_scaled)] <- 0
+    
+    # Compute minimum distance from each prediction point to training data
+    # Handle missing values by computing distance only on available predictors per point
+    similarity_scores <- apply(X_pred, 1, function(x) {
+      # Find which predictors are available (finite) for this prediction point
+      x_valid <- is.finite(x)
+      
+      if (sum(x_valid) == 0) {
+        # No valid predictors for this point
+        return(NA_real_)
+      }
+      
+      # Use only available predictors for this point
+      x_available <- x[x_valid]
+      train_mean_available <- train_mean[x_valid]
+      train_sd_available <- train_sd[x_valid]
+      
+      # Scale this point using available predictors only
+      x_scaled <- (x_available - train_mean_available) / train_sd_available
+      x_scaled[!is.finite(x_scaled)] <- 0
+      
+      # Compute distances to training data using only the available predictors
+      train_scaled_available <- X_train_scaled[, x_valid, drop = FALSE]
+      diff_mat <- train_scaled_available - matrix(x_scaled, nrow = nrow(train_scaled_available), 
+                                                   ncol = length(x_scaled), byrow = TRUE)
+      diff_mat[!is.finite(diff_mat)] <- 0
+      dists <- sqrt(rowSums(diff_mat^2))
+      dists <- dists[is.finite(dists)]
+      
+      if (length(dists) == 0) {
+        return(NA_real_)
+      }
+      
+      # Return minimum distance (will normalize later)
+      min(dists, na.rm = TRUE)
+    })
+    
+    # Remove NA values before computing max_dist
+    valid_scores <- similarity_scores[is.finite(similarity_scores)]
+    if (verbose) {
+      cat("  Euclidean distances computed: ", length(valid_scores), " finite out of ", length(similarity_scores), "\n", sep = "")
+    }
+    if (length(valid_scores) == 0) {
+      warning("All similarity scores are non-finite after distance computation")
+      similarity_scores[] <- NA_real_
+    } else {
+      # Lower score = more similar (closer to training data)
+      # Convert to similarity (higher = more similar)
+      max_dist <- max(valid_scores, na.rm = TRUE)
+      if (verbose) {
+        cat("  Max distance: ", max_dist, "\n", sep = "")
+      }
+      if (!is.finite(max_dist) || max_dist <= 0) {
+        # If max_dist is not valid, set all to NA or use a default
+        warning("max_dist is not finite or <= 0, setting similarity scores to NA")
+        similarity_scores[] <- NA_real_
+      } else {
+        # Only convert finite scores
+        finite_idx <- is.finite(similarity_scores)
+        similarity_scores[finite_idx] <- 1 - (similarity_scores[finite_idx] / (max_dist + 1e-10))
+        # Ensure similarity scores are in [0, 1]
+        similarity_scores[finite_idx] <- pmax(0, pmin(1, similarity_scores[finite_idx]))
+        if (verbose) {
+          cat("  Similarity scores range: ", min(similarity_scores[finite_idx], na.rm = TRUE), 
+              " to ", max(similarity_scores[finite_idx], na.rm = TRUE), "\n", sep = "")
+        }
+      }
+    }
+    
+  } else if (method == "mahalanobis") {
+    # Compute Mahalanobis distance (using only valid predictors)
+    train_cov <- cov(X_train_complete, use = "complete.obs")
+    train_mean <- colMeans(X_train_complete, na.rm = TRUE)
+    
+    # Check for non-finite values
+    train_mean[!is.finite(train_mean)] <- 0
+    train_cov[!is.finite(train_cov)] <- 0
+    
+    # Check if covariance matrix is invertible
+    if (det(train_cov) < 1e-10 || !is.finite(det(train_cov))) {
+      warning("Covariance matrix near-singular or non-finite, using euclidean method instead")
+      return(compute_environmental_similarity(training_data, prediction_data, predictor_vars, "euclidean", verbose))
+    }
+    
+    # Compute Mahalanobis distance handling missing values per prediction point
+    similarity_scores <- apply(X_pred, 1, function(x) {
+      # Find which predictors are available
+      x_valid <- is.finite(x)
+      if (sum(x_valid) == 0) {
+        return(NA_real_)
+      }
+      
+      # Use only available predictors
+      x_available <- x[x_valid]
+      train_mean_available <- train_mean[x_valid]
+      train_cov_available <- train_cov[x_valid, x_valid, drop = FALSE]
+      
+      diff <- x_available - train_mean_available
+      if (any(!is.finite(diff))) {
+        return(NA_real_)
+      }
+      tryCatch({
+        dist_val <- sqrt(t(diff) %*% solve(train_cov_available) %*% diff)
+        if (is.finite(dist_val)) dist_val else NA_real_
+      }, error = function(e) NA_real_)
+    })
+    
+    # Convert distance to similarity
+    valid_scores <- similarity_scores[is.finite(similarity_scores)]
+    if (length(valid_scores) == 0) {
+      warning("All Mahalanobis distances are non-finite")
+      similarity_scores[] <- NA_real_
+    } else {
+      max_dist <- max(valid_scores, na.rm = TRUE)
+      if (!is.finite(max_dist) || max_dist <= 0) {
+        warning("max_dist is not finite or <= 0 for Mahalanobis, setting similarity scores to NA")
+        similarity_scores[] <- NA_real_
+      } else {
+        finite_idx <- is.finite(similarity_scores)
+        similarity_scores[finite_idx] <- 1 - (similarity_scores[finite_idx] / (max_dist + 1e-10))
+        similarity_scores[finite_idx] <- pmax(0, pmin(1, similarity_scores[finite_idx]))
+      }
+    }
+    
+  } else if (method == "range_overlap") {
+    # Compute fraction of predictors within training range (using only valid predictors)
+    train_ranges <- apply(X_train_complete, 2, range, na.rm = TRUE)
+    
+    # Check for non-finite ranges
+    train_ranges[!is.finite(train_ranges)] <- 0
+    
+    similarity_scores <- apply(X_pred, 1, function(x) {
+      # Find which predictors are available
+      x_valid <- is.finite(x)
+      if (sum(x_valid) == 0) {
+        return(NA_real_)
+      }
+      
+      # Use only available predictors
+      x_available <- x[x_valid]
+      train_ranges_available <- train_ranges[, x_valid, drop = FALSE]
+      
+      in_range <- (x_available >= train_ranges_available[1, ]) & (x_available <= train_ranges_available[2, ])
+      mean(in_range, na.rm = TRUE)  # Fraction of available predictors in range
+    })
+    
+    # Ensure scores are finite
+    similarity_scores[!is.finite(similarity_scores)] <- NA_real_
+  } else {
+    stop("Unknown method: ", method)
+  }
+  
+  # Ensure similarity_scores has correct length (should match nrow(prediction_data))
+  if (length(similarity_scores) != nrow(prediction_data)) {
+    warning("Length mismatch: similarity_scores (", length(similarity_scores), 
+            ") != nrow(prediction_data) (", nrow(prediction_data), ")")
+    # This shouldn't happen, but handle it gracefully
+    if (length(similarity_scores) > nrow(prediction_data)) {
+      similarity_scores <- similarity_scores[1:nrow(prediction_data)]
+    } else {
+      similarity_scores <- c(similarity_scores, rep(NA_real_, nrow(prediction_data) - length(similarity_scores)))
+    }
+  }
+  
+  # Flag predictions outside training range
+  flag_outside_range <- rep(FALSE, nrow(prediction_data))
+  finite_scores <- is.finite(similarity_scores)
+  if (any(finite_scores)) {
+    flag_outside_range[finite_scores] <- similarity_scores[finite_scores] < 0.5
+  }
+  
+  # Compute summary statistics (only on finite scores)
+  finite_scores <- is.finite(similarity_scores)
+  n_finite <- sum(finite_scores)
+  
+  if (n_finite > 0) {
+    summary_stats <- list(
+      mean_similarity = mean(similarity_scores[finite_scores], na.rm = TRUE),
+      min_similarity = min(similarity_scores[finite_scores], na.rm = TRUE),
+      max_similarity = max(similarity_scores[finite_scores], na.rm = TRUE),
+      n_outside_range = sum(flag_outside_range, na.rm = TRUE),
+      pct_outside_range = 100 * mean(flag_outside_range, na.rm = TRUE),
+      n_finite_scores = n_finite,
+      n_total_pred = nrow(prediction_data),
+      pct_finite = 100 * n_finite / nrow(prediction_data)
+    )
+  } else {
+    summary_stats <- list(
+      mean_similarity = NA_real_,
+      min_similarity = NA_real_,
+      max_similarity = NA_real_,
+      n_outside_range = 0,
+      pct_outside_range = 0,
+      n_finite_scores = 0,
+      n_total_pred = nrow(prediction_data),
+      pct_finite = 0
+    )
+  }
+  
+  # similarity_scores already has length matching prediction_data
+  similarity_full <- similarity_scores
+  
+  list(
+    similarity_scores = similarity_full,
+    flag_outside_range = flag_outside_range,
+    summary = summary_stats,
+    method = method
+  )
+}
 
-#   # remove missing values for this grouping variable
-#   dat_sub <- dat_clean %>%
-#     filter(!is.na(!!sym(group_var)) & !is.na(carbon_density_g_c_cm3) &
-#            !is.na(sediment_mean_depth_cm))
+#' Flag predictions where covariates are outside training range (values are more extreme than any in training data)
+#'
+#' @param training_data Data frame with training observations.
+#' @param prediction_data Data frame with prediction locations.
+#' @param predictor_vars Character vector of predictor variable names.
+#' @param strict If TRUE, flag if ANY predictor is outside range; if FALSE, flag if >50% are outside.
+#' @return Logical vector indicating which predictions are outside applicability domain.
+flag_outside_applicability_domain <- function(training_data, prediction_data, predictor_vars,
+                                             strict = FALSE) {
+  pv <- intersect(predictor_vars, names(training_data))
+  pv <- intersect(pv, names(prediction_data))
+  
+  if (length(pv) == 0) {
+    return(rep(FALSE, nrow(prediction_data)))
+  }
+  
+  # Compute training ranges
+  train_ranges <- lapply(pv, function(v) {
+    range(training_data[[v]], na.rm = TRUE)
+  })
+  names(train_ranges) <- pv
+  
+  # Check each prediction location
+  flags <- logical(nrow(prediction_data))
+  
+  for (i in seq_len(nrow(prediction_data))) {
+    outside_count <- 0
+    for (v in pv) {
+      pred_val <- prediction_data[[v]][i]
+      if (!is.na(pred_val)) {
+        if (pred_val < train_ranges[[v]][1] || pred_val > train_ranges[[v]][2]) {
+          outside_count <- outside_count + 1
+        }
+      }
+    }
+    
+    if (strict) {
+      flags[i] <- outside_count > 0  # Any predictor outside range
+    } else {
+      flags[i] <- outside_count > length(pv) * 0.5  # >50% outside range
+    }
+  }
+  
+  flags
+}
 
-#   if (normalise_by_core) {
-#     # calculate aggregate value per core using the provided function
-#     core_aggregates <- aggregate_fun(dat_sub)
+#' Create applicability domain map.
+#'
+#' @param prediction_grid Data frame with coordinates.
+#' @param similarity_scores Vector of similarity scores (or NULL).
+#' @param flag_outside Logical vector indicating outside-domain locations.
+#' @param coords Character vector of coordinate names.
+#' @param world Optional world map data.
+#' @param use_raster If TRUE, use geom_raster(); if FALSE, use geom_point() (default FALSE to avoid NaN issues with irregular grids).
+#' @param point_size Size of points when use_raster = FALSE (default 0.3).
+#' @param xlim Optional x-axis limits.
+#' @param ylim Optional y-axis limits.
+#' @return ggplot object with applicability domain map.
+plot_applicability_domain <- function(prediction_grid, similarity_scores = NULL, plot_data_points = FALSE, dat = NULL,
+                                     flag_outside = NULL, 
+                                     coords = c("longitude", "latitude"),
+                                     world = NULL,
+                                     use_raster = FALSE,
+                                     point_size = 0.3,
+                                     xlim = NULL,
+                                     ylim = NULL) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package ggplot2 is required.")
+  }
+  
+  # Prepare data
+  df <- data.frame(
+    prediction_grid[, coords, drop = FALSE],
+    stringsAsFactors = FALSE
+  )
+  
+  if (!is.null(similarity_scores)) {
+    df$similarity <- similarity_scores
+  }
+  
+  if (!is.null(flag_outside)) {
+    df$outside_domain <- flag_outside
+  }
+  
+  # Get world map if not provided
+  if (is.null(world)) {
+    if (requireNamespace("maps", quietly = TRUE)) {
+      world <- ggplot2::map_data("world")
+    }
+  }
+  
+  # Filter out NA/NaN/Inf values before plotting
+  if (!is.null(similarity_scores)) {
+    df <- df[is.finite(df$similarity), , drop = FALSE]
+  }
+  if (!is.null(flag_outside)) {
+    df <- df[!is.na(df$outside_domain), , drop = FALSE]
+  }
+  
+  # Create base plot
+  p <- ggplot2::ggplot()
 
-#     # normalize by dividing by the aggregate value
-#     dat_sub <- dat_sub %>%
-#       left_join(core_aggregates, by = "random_core_variable") %>%
-#       mutate(carbon_density_g_c_cm3 = carbon_density_g_c_cm3 / aggregate_carbon_density) %>%
-#       select(-aggregate_carbon_density)  # remove the aggregate column
-#   }
+  
+  # Create plot with similarity scores or flags
+  if (!is.null(similarity_scores) && nrow(df) > 0) {
+    if (use_raster) {
+      p <- p + ggplot2::geom_raster(
+        data = df,
+        ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]], fill = similarity),
+        na.rm = TRUE
+      ) +
+      ggplot2::scale_fill_viridis_c(
+        option = "plasma",
+        name = "Similarity",
+        na.value = "transparent"
+      )
+    } else {
+      p <- p + ggplot2::geom_point(
+        data = df,
+        ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]], color = similarity),
+        size = point_size,
+        alpha = 0.7,
+        na.rm = TRUE
+      ) +
+      ggplot2::scale_color_viridis_c(
+        option = "plasma",
+        name = "Similarity",
+        na.value = "transparent"
+      )
+    }
+    p <- p + ggplot2::labs(
+      x = "Longitude",
+      y = "Latitude",
+      title = "Environmental similarity to training data"
+    )
+  } else if (!is.null(flag_outside) && nrow(df) > 0) {
+    if (use_raster) {
+      p <- p + ggplot2::geom_raster(
+        data = df,
+        ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]], fill = outside_domain),
+        na.rm = TRUE
+      ) +
+      ggplot2::scale_fill_manual(
+        values = c("FALSE" = "green", "TRUE" = "red"),
+        name = "Outside\nDomain",
+        na.value = "transparent"
+      )
+    } else {
+      p <- p + ggplot2::geom_point(
+        data = df,
+        ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]], color = outside_domain),
+        size = point_size,
+        alpha = 0.7,
+        na.rm = TRUE
+      ) +
+      ggplot2::scale_color_manual(
+        values = c("FALSE" = "green", "TRUE" = "red"),
+        name = "Outside\nDomain",
+        na.value = "transparent"
+      )
+    }
+    p <- p + ggplot2::labs(
+      x = "Longitude",
+      y = "Latitude",
+      title = "Applicability domain (red = outside training range)"
+    )
+  } else {
+    stop("Must provide either similarity_scores or flag_outside, and data must have valid values")
+  }
 
-#   # check if enough data
-#   n_groups <- length(unique(dat_sub[[group_var]]))
-#   if (n_groups < 2) {
-#     cat("insufficient groups (", n_groups, "), skipping\n")
-#     return(NULL)
-#   }
+  # Add world map first (so it's behind the data)
+  if (!is.null(world)) {
+    p <- p + ggplot2::geom_polygon(
+      data = world,
+      ggplot2::aes(x = long, y = lat, group = group),
+      fill = "grey90", color = "grey70", alpha = 0.3, inherit.aes = FALSE
+    )
+  }
 
-#   # null model: exponential decay with no interaction (same relationship for all groups)
-#   model_null <- tryCatch({
-#     nls(carbon_density_g_c_cm3 ~ a * exp(b * sediment_mean_depth_cm),
-#         data = dat_sub,
-#         start = list(a = max(dat_sub$carbon_density_g_c_cm3, na.rm = TRUE),
-#                      b = -0.01),
-#         control = nls.control(maxiter = 500, warnOnly = TRUE))
-#   }, error = function(e) NULL)
 
-#   if (is.null(model_null)) {
-#     cat("failed to fit null model\n")
-#     return(NULL)
-#   }
+  if (plot_data_points && !is.null(dat)) {
+    p <- p + ggplot2::geom_point(
+      data = dat,
+      ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]]),
+      size = point_size,
+      alpha = 0.7,
+      na.rm = TRUE
+    )
+  }
 
-#   # interaction model: exponential decay with different relationship per group
-#   # fit separate models per group and combine
-#   groups <- unique(dat_sub[[group_var]])
-#   group_models <- list()
-#   group_coefs <- data.frame()
+  # Add coordinate limits if provided
+  if (!is.null(xlim) && !is.null(ylim)) {
+    p <- p + ggplot2::coord_cartesian(xlim = xlim, ylim = ylim)
+  } else if (!is.null(xlim)) {
+    p <- p + ggplot2::coord_cartesian(xlim = xlim)
+  } else if (!is.null(ylim)) {
+    p <- p + ggplot2::coord_cartesian(ylim = ylim)
+  }
+  
+  p <- p + ggplot2::theme_minimal()
+  
+  p
+}
 
-#   for (g in groups) {
-#     dat_g <- dat_sub %>% filter(!!sym(group_var) == g)
-#     if (nrow(dat_g) < 5) next  # need minimum data points
-
-#     model_g <- tryCatch({
-#       nls(carbon_density_g_c_cm3 ~ a * exp(b * sediment_mean_depth_cm),
-#           data = dat_g,
-#           start = list(a = max(dat_g$carbon_density_g_c_cm3, na.rm = TRUE),
-#                        b = -0.01),
-#           control = nls.control(maxiter = 500, warnOnly = TRUE))
-#     }, error = function(e) NULL)
-
-#     if (!is.null(model_g)) {
-#       group_models[[as.character(g)]] <- model_g
-#       coefs <- coef(model_g)
-#       coef_se <- summary(model_g)$coefficients[, "Std. Error"]
-#       group_coefs <- rbind(group_coefs,
-#                            data.frame(group = g, a = coefs[["a"]], b = coefs[["b"]],
-#                                       a_se = coef_se[["a"]], b_se = coef_se[["b"]],
-#                                       aic = AIC(model_g), n = nrow(dat_g)))
-#     }
-#   }
-
-#   if (nrow(group_coefs) == 0) {
-#     cat("failed to fit group-specific models\n")
-#     return(NULL)
-#   }
-
-#   # compare models using aic
-#   aic_null <- AIC(model_null)
-#   aic_interaction <- sum(group_coefs$aic)
-#   delta_aic <- aic_interaction - aic_null
-
-#   cat("null model (no interaction) aic:", round(aic_null, 2), "\n")
-#   cat("interaction model (group-specific) aic:", round(aic_interaction, 2), "\n")
-#   cat("delta aic:", round(delta_aic, 2), "\n")
-#   if (delta_aic < -10) {
-#     cat("strong evidence for group-specific relationships\n")
-#   } else if (delta_aic < -5) {
-#     cat("moderate evidence for group-specific relationships\n")
-#   } else if (delta_aic < 0) {
-#     cat("weak evidence for group-specific relationships\n")
-#   } else {
-#     cat("no evidence for group-specific relationships (null model preferred)\n")
-#   }
-
-#   # also test using gam with smooth interaction
-#   gam_null <- tryCatch({
-#     gam(carbon_density_g_c_cm3 ~ s(sediment_mean_depth_cm, k = 5),
-#         data = dat_sub, method = "REML")
-#   }, error = function(e) NULL)
-
-#   # create formula for gam interaction model
-#   group_fac <- as.factor(dat_sub[[group_var]])
-#   gam_interaction <- tryCatch({
-#     gam(carbon_density_g_c_cm3 ~ s(sediment_mean_depth_cm, by = group_fac, k = 5) + group_fac,
-#         data = dat_sub, method = "REML")
-#   }, error = function(e) NULL)
-
-#   if (!is.null(gam_null) && !is.null(gam_interaction)) {
-#     gam_compare <- anova(gam_null, gam_interaction, test = "F")
-#     cat("\ngam comparison (f-test):\n")
-#     print(gam_compare)
-#     if (gam_compare$`Pr(>F)`[2] < 0.05) {
-#       cat("gam: significant interaction (p < 0.05)\n")
-#     } else {
-#       cat("gam: no significant interaction (p >= 0.05)\n")
-#     }
-#   }
-
-#   # return results for plotting
-#   return(list(
-#     group_var = group_var,
-#     group_name = group_name,
-#     model_null = model_null,
-#     group_models = group_models,
-#     group_coefs = group_coefs,
-#     dat_sub = dat_sub,
-#     delta_aic = delta_aic,
-#     gam_null = gam_null,
-#     gam_interaction = gam_interaction
-#   ))
-# }

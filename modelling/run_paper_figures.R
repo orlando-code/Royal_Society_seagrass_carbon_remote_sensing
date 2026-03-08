@@ -2,63 +2,100 @@
 # Paper pipeline driver: exploration, variable choice, prediction, supplement
 #
 # Runs the full pipeline in order to regenerate all paper and supplement figures.
-# Uses cached data where possible (spatial folds, tuning results) to avoid
-# re-running heavy steps. All outputs go to figures/cv_pipeline_output,
-# figures/interpolation, and figures/supplement.
+# Uses cached data where possible (spatial folds, prediction grids) in output/cache.
+# All outputs go under output/: cache, covariate_selection, cv_pipeline,
+# final_models, predictions, supplement.
 #
 # Usage: setwd(project_root); source("modelling/run_paper_figures.R")
 #        Or: Rscript modelling/run_paper_figures.R
 # =============================================================================
 
-if (!requireNamespace("here", quietly = TRUE)) install.packages("here", quiet = TRUE)
 setwd(here::here())
-set.seed(42)
+set.seed(42)  # globally
 
 cat("\n")
 cat(paste(rep("=", 70), collapse = ""), "\n")
-cat("PAPER PIPELINE: EXPLORATION -> CHOICE -> PREDICTION -> SUPPLEMENT\n")
+cat("PAPER PIPELINE: CONFIGURE -> PRUNING -> TUNING -> CV -> IMPORTANCE -> PREDICTION -> SUPPLEMENT\n")
 cat(paste(rep("=", 70), collapse = ""), "\n\n")
 
 # -----------------------------------------------------------------------------
-# -1.
+# -1. Configuring pipeline
 # -----------------------------------------------------------------------------
 cat("\t\tStep -1: Configuring paper pipeline ...\n")
 
-# Formatting
+# Plotting configuration
 dpi <- 150
 show_titles <- TRUE
 assign("dpi", dpi, envir = .GlobalEnv)
 assign("show_titles", show_titles, envir = .GlobalEnv)
 
+
+target_var <- "median_carbon_density_100cm"
+log_transform_target <- TRUE
+# Region exclusion: set to character(0) to include all regions, or e.g. c("Black Sea") to exclude
+# Black Sea has anomalously high carbon density that leaks to eastern Mediterranean predictions
+# exclude_regions <- character(0)
+exclude_regions <- c("Black Sea")
+
 # Pruning configuration (run before CV pipeline)
-use_correlation_filter <- TRUE
+use_correlation_filter       <- TRUE
 correlation_filter_threshold <- 0.8
-use_nested_selection <- FALSE
-nested_selection_max_vars <- 15
-model_list <- c("GPR", "GAM", "XGB") # Quick test: only GPR, GAM, XGBoost
-n_folds <- 5
+permutation_max_vars         <- 15L   # max vars retained after permutation importance
+n_permutations              <- 1L # increase
+permutation_coverage         <- 0.99  # cumulative importance coverage threshold
+use_shap_per_model           <- TRUE  # per-model covariate sets via iml SHAP
 
-assign("model_list", model_list, envir = .GlobalEnv)
-assign("use_correlation_filter", use_correlation_filter, envir = .GlobalEnv)
-assign("correlation_filter_threshold", correlation_filter_threshold, envir = .GlobalEnv)
-assign("use_nested_selection", use_nested_selection, envir = .GlobalEnv)
-assign("nested_selection_max_vars", nested_selection_max_vars, envir = .GlobalEnv)
-assign("n_folds", n_folds, envir = .GlobalEnv)
-if (exists("raster_covariates")) assign("raster_covariates", raster_covariates, envir = .GlobalEnv)
+model_list    <- c("GPR", "GAM", "XGB")
+n_folds       <- 5L
+cv_type       <- "spatial"  # "spatial" or "random"
+cv_blocksize <- 5000L  # metres for spatial CV
+cv_blocksize_scan <- c(1000L, 5000L, 10000L, 20000L, 50000L, 100000L)
 
-# generate the raster dir information and ensure globals
+# Assign all globals for sourced sub-scripts
+for (nm in c("target_var", "log_transform_target", "exclude_regions", "model_list",
+             "use_correlation_filter", "correlation_filter_threshold",
+             "permutation_max_vars", "permutation_coverage", "n_permutations",
+             "use_shap_per_model", "n_folds", "cv_type", "cv_blocksize", "cv_blocksize_scan")) {
+  assign(nm, get(nm), envir = .GlobalEnv)
+}
+
+# Output and cache directories (all pipeline outputs under output/; cache under output/cache).
+# If you previously used "figures/" or caches in output/cv_pipeline or data/, move
+# *_folds.rds and prediction_grid_cache_*.rds into output/cache/ to avoid recomputing.
+for (d in c("output", "output/cache", "output/covariate_selection", "output/cv_pipeline",
+            "output/final_models", "output/predictions", "output/supplement")) {
+  dir.create(d, recursive = TRUE, showWarnings = FALSE)
+}
+
 source("modelling/R/extract_covariates_from_rasters.R")
+if (exists("raster_covariates"))
+  assign("raster_covariates", raster_covariates, envir = .GlobalEnv)
+
 cat("\n")
-cat("  use_correlation_filter:", use_correlation_filter, "\n")
-cat("  use_nested_selection:", use_nested_selection, "\n")
+cat("  target_var:                  ", target_var, "\n")
+cat("  log_transform_target:        ", log_transform_target, "\n")
+cat("  exclude_regions:             ",
+    if (length(exclude_regions) == 0) "none" else paste(exclude_regions, collapse = ", "), "\n")
+cat("  use_correlation_filter:      ", use_correlation_filter, "\n")
 cat("  correlation_filter_threshold:", correlation_filter_threshold, "\n")
-cat("  nested_selection_max_vars:", nested_selection_max_vars, "\n")
-cat("  model_list:", paste(model_list, collapse = ", "), "\n")
-cat("  n_folds:", n_folds, "\n")
-cat("  dpi:", dpi, "\n")
-cat("  show_titles:", show_titles, "\n")
+cat("  permutation_max_vars:        ", permutation_max_vars, "\n")
+cat("  n_permutations:              ", n_permutations, "\n")
+cat("  use_shap_per_model:          ", use_shap_per_model, "\n")
+cat("  model_list:                  ", paste(model_list, collapse = ", "), "\n")
+cat("  n_folds:                     ", n_folds, "\n")
+cat("  cv_type:                     ", cv_type, "\n")
+cat("  cv_blocksize:               ", cv_blocksize, "\n")
+cat("  cv_blocksize_scan:          ", if (length(cv_blocksize_scan)) paste(cv_blocksize_scan, collapse = ", ") else "none", "\n")
+cat("  dpi:                         ", dpi, "\n")
 cat("\n")
 
+
+# # -----------------------------------------------------------------------------
+# # -1b. Pipeline diagram -> output/pipeline_diagram.png
+# # -----------------------------------------------------------------------------
+# cat("\t\tStep -1b: Generating pipeline diagram\n")
+# source("modelling/plots/plot_pipeline_diagram.R")
+# cat("\n")
 
 # -----------------------------------------------------------------------------
 # 0. Data (build if missing)
@@ -71,84 +108,78 @@ if (!file.exists("data/all_extracted_new.rds")) {
   cat("\t\tStep 0: Using existing data/all_extracted_new.rds\n\n")
 }
 
-
 # -----------------------------------------------------------------------------
 # 1. Covariate pruning (correlation and/or nested selection)
 # -----------------------------------------------------------------------------
 cat("\t\tStep 1: Covariate pruning (correlation and/or nested selection)\n")
 source("modelling/pipeline/covariate_pruning_pipeline.R")
 cat("\n")
-# TODO: look further into model-specific and/or generic pruning methods to allow direct comparison between model performance
 
 # -----------------------------------------------------------------------------
-# 2. CV pipeline (folds, CV results, inline plots) -> figures/cv_pipeline_output
+# 2. CV pipeline (folds, CV results, inline plots) -> output/cv_pipeline
 # -----------------------------------------------------------------------------
 cat("\t\tStep 2: CV pipeline (spatial folds, comparison, results)\n")
 source("modelling/pipeline/cv_pipeline.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# 3. GPR hyperparameter tuning -> figures/cv_pipeline_output
+# 2b. Spatial / lat-lon / region effect (all models) -> output/cv_pipeline
 # -----------------------------------------------------------------------------
-cat("\t\tStep 3: GPR hyperparameter tuning\n")
-source("modelling/pipeline/gpr_hyperparameter_tuning.R")
+cat("\t\tStep 2b: Spatial and categorical effect (lat, lon, region) for all models\n")
+source("modelling/plots/spatial_categorical_effect_all_models.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# 4. GPR categorical and spatial investigations (feed into parameter summary plot)
+# 3. Hyperparameter tuning (all models; cv_type; progress) -> output/cv_pipeline
 # -----------------------------------------------------------------------------
-cat("\t\tStep 4a: GPR categorical investigation (species/region)\n")
-source("modelling/gpr/gpr_categorical_investigation.R")
-cat("\n")
-cat("\t\tStep 4b: GPR spatial terms investigation (lat/lon, region)\n")
-source("modelling/gpr/gpr_spatial_investigation.R")
-cat("\n")
-cat("\t\tStep 4c: GPR parameter search summary (tuning plot)\n")
-source("modelling/gpr/gpr_parameter_search_summary.R")
+cat("\t\tStep 3: Hyperparameter tuning (GPR, GAM, XGB)\n")
+source("modelling/pipeline/hyperparameter_tuning_pipeline.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# 5. Plot-only: CV figures and permutation importance figures
+# 3b. Permutation and SHAP importance (best config + best vars per model)
 # -----------------------------------------------------------------------------
-cat("\t\tStep 5: CV and importance plots\n")
-source("modelling/plots/cv_pipeline_plots.R")
+cat("\t\tStep 3b: Permutation importance (tuned models)\n")
+source("modelling/pipeline/permutation_importance_final.R")
 cat("\n")
-# source("modelling/plots/model_permutation_pruning_plots.R")
-  # cat("\n")# TODO: this will depend on feature pruning regime.
-# -----------------------------------------------------------------------------
-# 6. Best GPR feature importance (standalone plot)
-# -----------------------------------------------------------------------------
-cat("\t\tStep 6: Best GPR feature importance plot\n")
-source("modelling/plots/gpr_feature_importance_plot.R")
+cat("\t\tStep 3c: SHAP importance (tuned models)\n")
+source("modelling/pipeline/shap_importance_final.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# 7. GPR predictions (maps, PDPs, importance) -> figures/interpolation
+# 4. Cross-fold validation
 # -----------------------------------------------------------------------------
-cat("\t\tStep 7: GPR predictions and maps\n")
-source("modelling/gpr/gpr_predictions.R")
+cat("\t\tStep 4: Cross-fold validation\n")
+source("modelling/pipeline/cv_pipeline.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# 8. Region collage (spatial predictions by region) -> figures/interpolation
+# 5. Fit and save final models (all data); XGB, GAM, GPR
 # -----------------------------------------------------------------------------
-cat("\t\tStep 8: GPR region collage\n")
-source("modelling/plots/gpr_region_collages.R") # defines create_gpr_region_collage (may rm ls)
-if (file.exists("figures/interpolation/gpr_prediction_grid.rds")) {
-  pred_grid <- readRDS("figures/interpolation/gpr_prediction_grid.rds")
-  collage <- create_gpr_region_collage(pred_grid)
-  ggplot2::ggsave("figures/interpolation/gpr_region_collage.png", collage, width = 14, height = 10, dpi = dpi)
-  cat("Saved figures/interpolation/gpr_region_collage.png\n")
-} else {
-  cat("  (gpr_prediction_grid.rds not found; run Step 7 first or create collage manually from gpr_result$prediction_grid)\n")
-}
+cat("\t\tStep 5: Fit and save final models\n")
+source("modelling/pipeline/fit_final_models.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# 9. Supplement: region outlines map -> figures/supplement
+# 6. Partial dependence plots for all final models -> output/covariate_selection
 # -----------------------------------------------------------------------------
-cat("Step 9: Supplement – region outlines\n")
-source("modelling/plots/plot_region_outlines.R")
+cat("\t\tStep 6: Partial dependence plots (XGB, GAM, GPR)\n")
+source("modelling/plots/partial_dependence_all_models.R")
+cat("\n")
+
+
+# -----------------------------------------------------------------------------
+# 7. Spatial prediction maps for each model -> output/predictions
+# -----------------------------------------------------------------------------
+cat("\t\tStep 7: Spatial prediction maps (XGB, GAM, GPR)\n")
+source("modelling/plots/spatial_prediction_maps.R")
+cat("\n")
+
+# -----------------------------------------------------------------------------
+# 8. Supplement: region outlines, target histograms, maps, correlation, similarity -> output/supplement
+# -----------------------------------------------------------------------------
+cat("\t\tStep 8: Supplement figures\n")
+source("modelling/plots/supplement.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
@@ -158,8 +189,10 @@ cat(paste(rep("=", 70), collapse = ""), "\n")
 cat("PAPER PIPELINE COMPLETE\n")
 cat(paste(rep("=", 70), collapse = ""), "\n\n")
 cat("Outputs:\n")
-cat("  figures/covariate_selection/ – Covariate pruning results\n")
-cat("  figures/cv_pipeline_output/  – CV results, pruning, tuning, importance plots\n")
-cat("  figures/predictions/       – GPR maps, PDPs, region collage\n")
-cat("  figures/supplement/          – region_shapes.png\n")
+cat("  output/cache/                  – Cached spatial folds and prediction grids\n")
+cat("  output/covariate_selection/    – Covariate pruning results\n")
+cat("  output/cv_pipeline/     – CV results, pruning, tuning, importance plots\n")
+cat("  output/final_models/           – Fitted model RDS (XGB, GAM, GPR)\n")
+cat("  output/predictions/            – Prediction maps, PDPs\n")
+cat("  output/supplement/             – region_shapes, target histograms, maps, correlation, similarity\n")
 cat("\n")

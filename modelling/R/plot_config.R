@@ -1,9 +1,5 @@
 # Plot configuration: human-friendly labels for covariates used in figures.
 # 
-# Usage:
-#   source("modelling/plot_config.R")
-#   label_vars(c("bottomt_mean_daily_c", "wave_height_p95_m"))
-#
 # If a variable is not in VAR_LABELS, label_vars() simply returns the
 # original name, so it is safe to use everywhere.
 
@@ -15,6 +11,19 @@ REGION_COLOURS <- c(
   "Baltic Sea" = "#22bb52",
   "Black Sea" = "#348888"
 )
+
+
+SPECIES_COLOURS <- c(
+    "Cymodocea nodosa" = "#3366CC", # blue
+    "Halophila stipulacea" = "#FF9900", # orange
+    "Posidonia oceanica" = "#00CED1", # dark cyan
+    "Zostera marina" = "#32CD32", # lime green
+    "Zostera noltei" = "#CCCC00", # yellow-green
+    "Zostera marina and Zostera noltei" = "#006400", # dark green
+    "Zostera marina and Cymodocea nodosa" = "#8B0000", # dark red
+    "Unspecified" = "#808080" # gray
+  )
+
 
 MODEL_COLOURS <- c(
   "Ordinary Kriging" = "#08306b", # Dark blue
@@ -129,4 +138,3 @@ label_vars <- function(x) {
   labs[is.na(labs)] <- x[is.na(labs)]
   labs
 }
-
