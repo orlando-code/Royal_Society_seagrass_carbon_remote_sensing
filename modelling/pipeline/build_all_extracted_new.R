@@ -11,9 +11,9 @@
 #   ELSE: it will re-create the file.
 
 setwd(here::here())
-load_packages(c("here", "dplyr", "ggplot2", "maps", "readr"))
-source("modelling/R/extract_covariates_from_rasters.R")
 source("modelling/R/helpers.R")
+source("modelling/R/extract_covariates_from_rasters.R")
+load_packages(c("here", "dplyr", "ggplot2", "maps", "readr"))
 
 # save here
 all_extracted_path <- "data/all_extracted_new.rds"
@@ -33,7 +33,7 @@ cat("BUILDING data/all_extracted_new.rds FOR PAPER PIPELINE\n")
 cat("======================================================================\n\n")
 
 cat("Loading original core-level data...\n")
-dat <- read_rds("data/Updated_df/data/For_modeling_df_v3.rds")
+dat <- read_rds("data/core_data.rds") # previous name: For_modeling_df_v3.rds
 cat("Loaded", nrow(dat), "observations\n\n")
 
 cat("Extracting covariates at point locations with method = 'nearest'...\n")
