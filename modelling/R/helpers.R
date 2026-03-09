@@ -39,7 +39,7 @@ load_packages <- function(packages, optional = NULL) {
       stop("Required package '", pkg, "' could not be loaded.")
     }
   }
-  if (length(loaded) > 0) cat("Loaded packages:", paste(loaded, collapse = ", "), "\n")
+  if (length(loaded) > 0) cat("Loaded package(s):", paste(loaded, collapse = ", "), "\n")
 }
 
 
