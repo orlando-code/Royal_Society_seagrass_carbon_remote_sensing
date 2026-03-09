@@ -1,6 +1,6 @@
 # Pipeline scripts
 
-These scripts are run in sequence by **`run_paper_figures.R`**. Each one expects globals (e.g. `target_var`, `exclude_regions`, `model_list`, `n_folds`, `cv_type`) to be set by the driver; they read from **`data/all_extracted_new.rds`** and write under **`output/`**.
+These scripts are run in sequence by **`run_paper.R`**. Each one expects globals (e.g. `target_var`, `exclude_regions`, `model_list`, `n_folds`, `cv_type`) to be set by the driver; they read from **`data/all_extracted_new.rds`** and write under **`output/`**.
 
 ---
 

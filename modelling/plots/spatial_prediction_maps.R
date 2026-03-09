@@ -7,7 +7,7 @@
 # Requires: fit_final_models.R has been run (XGB_final.rds, GAM_final.rds, GPR_final.rds)
 # Outputs:  output/predictions/{xgb,gam,gpr}_prediction_map.png, gpr_se_map.png
 #
-# Usage: source from run_paper_figures.R (step 7), or run standalone.
+# Usage: source from run_paper.R (step 7), or run standalone.
 
 setwd(here::here())
 set.seed(42)

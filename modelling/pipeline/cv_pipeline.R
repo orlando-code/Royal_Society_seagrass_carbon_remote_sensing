@@ -42,7 +42,7 @@ if (identical(cv_type, "spatial") && length(cv_blocksize_scan) > 0L && is.numeri
 buffer_km <- 1
 buffer_m  <- buffer_km * 1000
 
-# n_folds set from run_paper_figures.R globals (get0 above); do not override
+# n_folds set from run_paper.R globals (get0 above); do not override
 # n_folds <- 5
 
 out_dir <- "output/cv_pipeline"
@@ -124,7 +124,7 @@ light_core_sf <- sf::st_as_sf(
 ) # create a version without all the variables to save memory when calculating spatial folds
 cat("Core-level data:", nrow(complete_dat), "cores,", ncol(complete_dat), "variables.\n")
 
-# CV strategies driven by cv_type (from run_paper_figures.R)
+# CV strategies driven by cv_type (from run_paper.R)
 random_folds <- sample(rep(seq_len(n_folds), length.out = n_cores))
 cv_strategies <- list(
   list(method = "random_split", folds = random_folds, block_size_m = NA)

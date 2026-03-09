@@ -4,7 +4,7 @@
 # pruning exist. All outputs save to output/supplement/.
 #
 # Usage: setwd(project_root); source("modelling/plots/supplement.R")
-#        Or run after run_paper_figures.R (globals set).
+#        Or run after run_paper.R (globals set).
 # =============================================================================
 
 setwd(here::here())
@@ -312,7 +312,7 @@ cat(sprintf("Number of cells in prediction_grid: %d\n", nrow(prediction_grid)))
 cat(sprintf("Number of cells in prediction_grid_masked as a percentage of prediction_grid: %f\n", nrow(prediction_grid_masked) / nrow(prediction_grid)))
 
 # -----------------------------------------------------------------------------
-# Optional helpers: not used by run_paper_figures.R pipeline (commented out).
+# Optional helpers: not used by run_paper.R pipeline (commented out).
 # FLAG: Re-enable plot_raster_stack / plot_env_pairs if needed for ad-hoc raster
 # or pairs figures.
 # -----------------------------------------------------------------------------

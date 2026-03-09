@@ -6,7 +6,7 @@
 # Requires: output/final_models/<model>_final.rds (from fit_final_models.R)
 # Outputs:  output/covariate_selection/pdp_<model>.png
 #
-# Usage: sourced from run_paper_figures.R (step 5b), or run standalone.
+# Usage: sourced from run_paper.R (step 5b), or run standalone.
 
 setwd(here::here())
 source("modelling/R/helpers.R")

@@ -1,6 +1,6 @@
 # Plot scripts
 
-Figure-generation scripts called from `**run_paper_figures.R**` (and can be run standalone if globals and inputs are set). Outputs go to `**output/cv_pipeline/**`, `**output/covariate_selection/**`, `**output/predictions/**`, or `**output/supplement/**` as below.
+Figure-generation scripts called from `**run_paper.R**` (and can be run standalone if globals and inputs are set). Outputs go to `**output/cv_pipeline/**`, `**output/covariate_selection/**`, `**output/predictions/**`, or `**output/supplement/**` as below.
 
 ---
 

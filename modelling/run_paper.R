@@ -6,8 +6,8 @@
 # All outputs go under output/: cache, covariate_selection, cv_pipeline,
 # final_models, predictions, supplement.
 #
-# Usage: setwd(project_root); source("modelling/run_paper_figures.R")
-#        Or: Rscript modelling/run_paper_figures.R
+# Usage: setwd(project_root); source("modelling/run_paper.R")
+#        Or: Rscript modelling/run_paper.R
 # =============================================================================
 
 setwd(here::here())

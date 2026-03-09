@@ -11,7 +11,7 @@
 #   ELSE: it will re-create the file.
 
 setwd(here::here())
-load_packages(c("here", "dplyr", "ggplot2", "maps"))
+load_packages(c("here", "dplyr", "ggplot2", "maps", "readr"))
 source("modelling/R/extract_covariates_from_rasters.R")
 source("modelling/R/helpers.R")
 

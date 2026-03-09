@@ -9,7 +9,7 @@
 #           pruned_model_variables_shap.csv or pruned_model_variables_perm.csv
 # Outputs:  output/cv_pipeline/importance_shap_<model>.csv and .png
 #
-# Usage: source after step 3 in run_paper_figures.R, or run standalone.
+# Usage: source after step 3 in run_paper.R, or run standalone.
 
 project_root <- here::here()
 source(file.path(project_root, "modelling/R/helpers.R"))

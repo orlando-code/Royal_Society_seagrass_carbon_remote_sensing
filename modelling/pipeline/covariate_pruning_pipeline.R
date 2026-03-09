@@ -1,6 +1,6 @@
 # Covariate Pruning Pipeline
 #
-# Global variables (set by run_paper_figures.R):
+# Global variables (set by run_paper.R):
 #   use_correlation_filter, correlation_filter_threshold
 #   permutation_max_vars   – max vars retained after permutation/SHAP importance
 #   permutation_coverage   – cumulative importance coverage threshold
@@ -44,9 +44,6 @@ permutation_max_vars <- get0("permutation_max_vars",  envir = .GlobalEnv, ifnotf
 n_permutations       <- get0("n_permutations",       envir = .GlobalEnv, ifnotfound = 1L) # TODO: increase for paper figures
 use_shap_per_model   <- isTRUE(get0("use_shap_per_model", ifnotfound = FALSE))
 
-n_folds <- 2L
-n_permutations <- 1L
-
 # All predictor candidates (always defined, even if correlation filter is skipped)
 cor_predictor_vars <- setdiff(
   colnames(dat),
@@ -87,7 +84,7 @@ if (length(importance_predictor_vars) > permutation_max_vars) {
   if (length(supported_models) == 0L)
     stop("No supported models for importance ranking.")
 
-  # -- Permutation importance (CV type from run_paper_figures.R: cv_type) ------
+  # -- Permutation importance (CV type from run_paper.R: cv_type) ------
   cat(sprintf(
     "\nPERMUTATION IMPORTANCE (%d var(s), %d fold(s), cv_type = %s%s):\n",
     length(importance_predictor_vars),

@@ -12,14 +12,14 @@ From the project root:
 
 ```r
 # Full paper pipeline (all figures and outputs)
-source("modelling/run_paper_figures.R")
+source("modelling/run_paper.R")
 ```
 
 Everything goes under `**output/**`: cache, covariate selection, CV/tuning results, final models, prediction maps, and supplement. Caches (spatial folds, prediction grids) live in `**output/cache/**` so heavy steps can be skipped on re-runs.
 
 ### Region exclusion
 
-To exclude regions (e.g. Black Sea) from modelling and predictions, set in `run_paper_figures.R` (around line 38):
+To exclude regions (e.g. Black Sea) from modelling and predictions, set in `run_paper.R` (around line 38):
 
 ```r
 exclude_regions <- c("Black Sea")   # exclude Black Sea
@@ -30,7 +30,7 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 
 ---
 
-## Pipeline order (run_paper_figures.R)
+## Pipeline order (run_paper.R)
 
 
 | Step   | What it does                                                                                       | Outputs                                                      |
@@ -62,7 +62,7 @@ seagrass/
 │   ├── ICES_ecoregions/          # Shapefiles from which to assign new points without regions (download online: see below)
 │   └── MEOW/                     # MEOW shapefile for region assignment (download online: see below)
 ├── modelling/
-│   ├── run_paper_figures.R       # Main driver – run this for the full pipeline
+│   ├── run_paper.R       # Main driver – run this for the full pipeline
 │   ├── pipeline/                 # Data build, pruning, CV, tuning, importance, final fits
 │   ├── plots/                    # Figures: PDPs, prediction maps, supplement
 │   ├── R/                        # Shared R helpers, ML, raster extraction, plot config
@@ -84,7 +84,7 @@ See `**modelling/pipeline/README.md**`, `**modelling/plots/README.md**`, and `**
 
 This is a short overview: see the README files in the relevant directories for more information.
 
-[!Flowchart of repository workflow](flowchart.png)
+![Flowchart of repository workflow](flowchart.png)
 
 ---
 
@@ -102,12 +102,16 @@ The pipeline reuses caches where possible. All cache files live under `**output/
 ## Models and methods
 
 - **Models**: GAM, GPR (GauPro), XGBoost. All use the same per-model covariate set from pruning (permutation or SHAP). Where necessary, categorical variables (e.g. seagrass species, region) are encoded as integers.
-- **CV**: Spatial block CV (with configurable block size(s)) or random split; `**n_folds`** and `**cv_type`** are set in `**run_paper_figures.R`**.
+- **CV**: Spatial block CV (with configurable block size(s)) or random split; `**n_folds`** and `**cv_type`** are set in `**run_paper.R`**.
 - **Variable selection**: Correlation filter plus per-model permutation importance (and optionally SHAP); top vars per model are written to `**pruned_model_variables_perm.csv`** / `**pruned_model_variables_shap.csv`**.
+
+## Environmental data
+
+The raster files containing environmental covariates (from remote sensing and re-analysis products) are available at XXX (TODO: EITHER [ZENODO](https://zenodo.org/) OR [GITHUB LARGE FILE STORAGE](https://docs.github.com/en/repositories/working-with-files/managing-large-files/configuring-git-large-file-storage)). This file must be 
 
 ## Regions data
 
-The following directories must be downloaded and copied under the 'Data' repository into directories titled `ICES_ecoregions` and `MEOW` respectively.
+The following directories must be downloaded, unzipped (if necessary), and copied under the 'Data' repository into directories titled `ICES_ecoregions` and `MEOW` respectively.
 
 ### ICES Ecoregions
 

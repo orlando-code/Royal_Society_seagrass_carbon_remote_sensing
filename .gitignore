@@ -11,6 +11,7 @@ spatial_grid_*
 
 # data which is too large to commit
 data/VRE
+data/prediction_grid_cache*.rds
 
 # notes to self
 modelling_issues.md

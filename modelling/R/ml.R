@@ -2,6 +2,7 @@
 # ML models and data preparation for GPR, RF, XGB, GAM.
 # Shared scaling/encoding; fit_*; predict_model (generic); fit_gpr (unified).
 # =============================================================================
+load_packages(c("GauPro", "xgboost", "mgcv", "randomForest"))
 
 #' Null-coalescing operator: returns x if not NULL, otherwise y.
 `%||%` <- function(x, y) {

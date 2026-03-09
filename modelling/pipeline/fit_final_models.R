@@ -16,7 +16,7 @@
 #   $encoding         – categorical encoding (levels) for seagrass_species, region
 #   $encoded_names    – same as predictor_vars (no one-hot expansion)
 #
-# Usage: sourced from run_paper_figures.R (step 5), or run standalone.
+# Usage: sourced from run_paper.R (step 5), or run standalone.
 
 # rm(list = ls())
 setwd(here::here())

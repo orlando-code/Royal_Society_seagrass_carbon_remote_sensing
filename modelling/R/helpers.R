@@ -1,5 +1,4 @@
 # ================================ UTILITY FUNCTIONS ================================
-source("modelling/R/ml.R")
 
 #' Install packages if not already installed
 #'
@@ -1706,3 +1705,5 @@ plot_applicability_domain <- function(prediction_grid, similarity_scores = NULL,
   p
 }
 
+# Load ML helpers after all utility functions are defined (avoids circular source with ml.R)
+source("modelling/R/ml.R")

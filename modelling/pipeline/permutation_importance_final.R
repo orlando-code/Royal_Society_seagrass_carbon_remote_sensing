@@ -9,7 +9,7 @@
 #           pruned_model_variables_shap.csv or pruned_model_variables_perm.csv
 # Outputs:  output/cv_pipeline/importance_perm_<model>.csv and .png
 #
-# Usage: source after step 3 in run_paper_figures.R, or run standalone.
+# Usage: source after step 3 in run_paper.R, or run standalone.
 
 setwd(here::here())
 set.seed(42)

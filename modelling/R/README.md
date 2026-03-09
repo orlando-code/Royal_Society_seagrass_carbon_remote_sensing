@@ -42,7 +42,7 @@ Raster and grid handling:
 - **Extraction at points**: **extract_covariates_at_points()** – extracts raster values at a set of lon/lat points (nearest or bilinear), with optional **use_closest** for filling coastal NAs.
 - **Prediction grid**: **create_prediction_grid_from_rasters()** – builds a regular lon/lat grid, runs extraction for all **raster_covariates**, and optionally caches the result (cache path is passed in by the caller; pipeline uses **`output/cache/prediction_grid_cache_*.rds`**).
 
-Sourced by **run_paper_figures.R** (to set **raster_covariates**), **build_all_extracted_new.R**, **covariate_pruning_pipeline.R**, **cv_pipeline.R**, **spatial_prediction_maps.R**, **supplement.R**, and others that need the grid or the covariate list.
+Sourced by **run_paper.R** (to set **raster_covariates**), **build_all_extracted_new.R**, **covariate_pruning_pipeline.R**, **cv_pipeline.R**, **spatial_prediction_maps.R**, **supplement.R**, and others that need the grid or the covariate list.
 
 ---
 
