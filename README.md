@@ -107,11 +107,13 @@ The pipeline reuses caches where possible. All cache files live under `**output/
 
 ## Environmental data
 
-The raster files containing environmental covariates (from remote sensing and re-analysis products) are available at XXX (TODO: EITHER [ZENODO](https://zenodo.org/) OR [GITHUB LARGE FILE STORAGE](https://docs.github.com/en/repositories/working-with-files/managing-large-files/configuring-git-large-file-storage)). This file must be 
+First, create a directory called 'data' in the main repository.
+
+The raster files containing environmental covariates (from remote sensing and re-analysis products) are available at XXX (TODO: EITHER [ZENODO](https://zenodo.org/) OR [GITHUB LARGE FILE STORAGE](https://docs.github.com/en/repositories/working-with-files/managing-large-files/configuring-git-large-file-storage)). This file must be placed in the data repository and named `env_rasters`.
 
 ## Regions data
 
-The following directories must be downloaded, unzipped (if necessary), and copied under the 'Data' repository into directories titled `ICES_ecoregions` and `MEOW` respectively.
+The following directories must be downloaded, unzipped (if necessary), and copied under the 'data' repository into directories titled `ICES_ecoregions` and `MEOW` respectively.
 
 ### ICES Ecoregions
 
