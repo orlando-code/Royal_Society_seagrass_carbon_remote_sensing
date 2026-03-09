@@ -225,7 +225,8 @@ if (file.exists(file.path(covariate_dir, "pruned_model_variables_shap.csv"))) {
 }
 # Report on variable overlap between methods: Find variables shared by 3 models in both methods, 2 models, etc.
 if (!is.null(perm_pruned_df) && !is.null(shap_pruned_df)) {
-  cat("\nVARIABLE OVERLAP BETWEEN METHODS (variables shared by k models in BOTH methods):\n\n")
+  cat("\nVARIABLE OVERLAP BETWEEN METHODS (variables shared by k models in BOTH methods):")
+  if ("seagrass_species" %in% names(dat)) cat("\nN.B. Species variables are not pruned and are always included.\n\n")
   
   get_shared_vars <- function(overlaps, k) {
     tab <- overlaps[[as.character(k)]]
