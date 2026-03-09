@@ -112,7 +112,6 @@ if (length(importance_predictor_vars) > permutation_max_vars) {
         fold_indices, n_permutations = n_permutations, verbose = FALSE, log_response = log_transform_target
       )
       df$model <- model_name
-      cat("ok\n")
       df
     }, error = function(e) {
       cat("FAILED:", conditionMessage(e), "\n")
