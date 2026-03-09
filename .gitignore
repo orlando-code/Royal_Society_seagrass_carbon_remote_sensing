@@ -27,6 +27,7 @@ MEOW/
 data/MEOW/
 ICES_ecoregions/
 docs/
+scripts/
 
 # ignoring working/unnecessary files
 pipeline_run.log
