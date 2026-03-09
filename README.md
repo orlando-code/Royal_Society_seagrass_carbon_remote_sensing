@@ -105,3 +105,18 @@ The pipeline reuses caches where possible. All cache files live under `**output/
 - **CV**: Spatial block CV (with configurable block size(s)) or random split; `**n_folds`** and `**cv_type`** are set in `**run_paper_figures.R`**.
 - **Variable selection**: Correlation filter plus per-model permutation importance (and optionally SHAP); top vars per model are written to `**pruned_model_variables_perm.csv`** / `**pruned_model_variables_shap.csv`**.
 
+## Regions data
+
+The following directories must be downloaded and copied under the 'Data' repository into directories titled `ICES_ecoregions` and `MEOW` respectively.
+
+### ICES Ecoregions
+
+The International Council for the exploration of the Sea provides ecoregion shapefiles for the ocean around Europe. This data can be accessed at [this page](https://gis.ices.dk/geonetwork/srv/api/records/4745e824-a612-4a1f-bc56-b540772166eb) via [this link](https://gis.ices.dk/shapefiles/ICES_ecoregions.zip).
+
+Persistent identifier: [https://gis.ices.dk/geonetwork/srv/metadata/4745e824-a612-4a1f-bc56-b540772166eb](https://gis.ices.dk/geonetwork/srv/metadata/4745e824-a612-4a1f-bc56-b540772166eb)
+
+### MEOW Ecoregions
+
+The Marine Ecoregions of the World (MEOW) document global ecoregions. These are available via UNEP[](https://data-gis.unep-wcmc.org/portal/home/item.html?id=80567b4443f4457b822f645a2f0d70cf) via [this link](https://data-gis.unep-wcmc.org/portal/home/item.html?id=80567b4443f4457b822f645a2f0d70cf#:~:text=Description-,Download%20Dataset,-This%20dataset%20combines).
+
+Persistent identifier: [https://data-gis.unep-wcmc.org/server/rest/services/Hosted/WCMC036_MEOW_PPOW_2007_2012/FeatureServer](https://data-gis.unep-wcmc.org/server/rest/services/Hosted/WCMC036_MEOW_PPOW_2007_2012/FeatureServer)
