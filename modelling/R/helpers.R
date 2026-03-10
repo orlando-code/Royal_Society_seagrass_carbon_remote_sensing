@@ -1214,291 +1214,134 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
 #' @param predictor_vars Character vector of predictor variable names.
 #' @param method Similarity metric: "euclidean" (scaled), "mahalanobis", or "range_overlap".
 #' @param verbose If TRUE, print diagnostic information.
-#' @return List with similarity scores (vector), flag_outside_range (logical vector), and summary statistics.
+#' @return List with similarity_scores, flag_outside_range, summary, and method.
 compute_environmental_similarity <- function(training_data, prediction_data, predictor_vars,
                                             method = "euclidean", verbose = FALSE) {
-  # Get common predictors
-  pv <- intersect(predictor_vars, names(training_data))
-  pv <- intersect(pv, names(prediction_data))
-  
+  pv <- intersect(intersect(predictor_vars, names(training_data)), names(prediction_data))
   if (length(pv) == 0) {
     warning("No common predictor variables found")
     return(list(similarity_scores = NULL, flag_outside_range = NULL, summary = NULL))
   }
-  
-  # Extract predictor matrices
+
   X_train <- as.matrix(training_data[, pv, drop = FALSE])
   X_pred <- as.matrix(prediction_data[, pv, drop = FALSE])
-  
-  # Check for non-finite values and replace with NA
   X_train[!is.finite(X_train)] <- NA_real_
   X_pred[!is.finite(X_pred)] <- NA_real_
-  
-  # For training data, we need complete cases to compute statistics
+
   train_complete <- stats::complete.cases(X_train)
   n_train_complete <- sum(train_complete)
-  
   if (verbose) {
-    cat("Environmental similarity computation:\n")
-    cat("  Training data: ", nrow(training_data), " rows, ", n_train_complete, " complete cases\n", sep = "")
-    cat("  Prediction data: ", nrow(prediction_data), " rows\n", sep = "")
-    cat("  Predictor variables: ", length(pv), " (", paste(pv, collapse = ", "), ")\n", sep = "")
-    
-    # Check missing data patterns in prediction grid
-    pred_missing <- colSums(is.na(X_pred))
-    cat("  Missing values in prediction grid per variable:\n")
-    for (i in seq_along(pv)) {
-      cat("    ", pv[i], ": ", pred_missing[i], " (", round(100 * pred_missing[i] / nrow(X_pred), 1), "%)\n", sep = "")
-    }
+    cat("Environmental similarity: ", nrow(training_data), " train (", n_train_complete, " complete), ",
+        nrow(prediction_data), " pred, ", length(pv), " predictors\n", sep = "")
   }
-  
   if (n_train_complete == 0) {
     warning("No complete cases in training data for similarity computation")
-    return(list(similarity_scores = rep(NA_real_, nrow(prediction_data)), 
-                flag_outside_range = rep(FALSE, nrow(prediction_data)), 
-                summary = NULL))
+    n_pred <- nrow(prediction_data)
+    return(list(similarity_scores = rep(NA_real_, n_pred), flag_outside_range = rep(FALSE, n_pred), summary = NULL))
   }
-  
-  # Use only complete training cases for computing statistics
+
   X_train_complete <- X_train[train_complete, , drop = FALSE]
-  
-  # Remove columns that are all NA in training data
   train_cols_valid <- colSums(!is.na(X_train_complete)) > 0
   if (sum(train_cols_valid) == 0) {
     warning("No valid predictor columns in training data")
-    return(list(similarity_scores = rep(NA_real_, nrow(prediction_data)), 
-                flag_outside_range = rep(FALSE, nrow(prediction_data)), 
-                summary = NULL))
+    n_pred <- nrow(prediction_data)
+    return(list(similarity_scores = rep(NA_real_, n_pred), flag_outside_range = rep(FALSE, n_pred), summary = NULL))
   }
-  
   X_train_complete <- X_train_complete[, train_cols_valid, drop = FALSE]
-  pv_valid <- pv[train_cols_valid]
-  
-  if (verbose) {
-    cat("  Using ", length(pv_valid), " predictors with valid training data\n", sep = "")
+  X_pred <- X_pred[, train_cols_valid, drop = FALSE]
+  n_train <- nrow(X_train_complete)
+  n_pred <- nrow(X_pred)
+
+  # Helper: convert distance vector to similarity in [0,1]
+  dist_to_sim <- function(d) {
+    finite <- is.finite(d)
+    if (!any(finite)) return(list(scores = rep(NA_real_, length(d)), finite = finite))
+    max_d <- max(d[finite], na.rm = TRUE)
+    if (!is.finite(max_d) || max_d <= 0) return(list(scores = rep(NA_real_, length(d)), finite = finite))
+    s <- rep(NA_real_, length(d))
+    s[finite] <- pmax(0, pmin(1, 1 - (d[finite] / (max_d + 1e-10))))
+    list(scores = s, finite = finite)
   }
-  
-  # Compute similarity based on method
+
+  # Chunk size: avoid large matrices. D_sq is chunk_size * n_train * 8 bytes; keep ~50MB max per chunk.
+  chunk_size <- min(5000L, max(1000L, as.integer(5e7 / (n_train * 8L))))
+
   if (method == "euclidean") {
-    # Scale by training data standard deviations
-    train_mean <- colMeans(X_train, na.rm = TRUE)
-    train_sd <- apply(X_train, 2, sd, na.rm = TRUE)
-    train_sd[train_sd == 0 | !is.finite(train_sd)] <- 1  # Avoid division by zero or Inf/NaN
-    
-    # Check for Inf/NaN in means
+    train_mean <- colMeans(X_train_complete, na.rm = TRUE)
+    train_sd <- apply(X_train_complete, 2, sd, na.rm = TRUE)
+    train_sd[train_sd == 0 | !is.finite(train_sd)] <- 1
     train_mean[!is.finite(train_mean)] <- 0
-    
-    # Scale training dataset
     X_train_scaled <- scale(X_train_complete, center = train_mean, scale = train_sd)
     X_train_scaled[!is.finite(X_train_scaled)] <- 0
-    
-    # Compute minimum distance from each prediction point to training data
-    # Handle missing values by computing distance only on available predictors per point
-    similarity_scores <- apply(X_pred, 1, function(x) {
-      # Find which predictors are available (finite) for this prediction point
-      x_valid <- is.finite(x)
-      
-      if (sum(x_valid) == 0) {
-        # No valid predictors for this point
-        return(NA_real_)
-      }
-      
-      # Use only available predictors for this point
-      x_available <- x[x_valid]
-      train_mean_available <- train_mean[x_valid]
-      train_sd_available <- train_sd[x_valid]
-      
-      # Scale this point using available predictors only
-      x_scaled <- (x_available - train_mean_available) / train_sd_available
-      x_scaled[!is.finite(x_scaled)] <- 0
-      
-      # Compute distances to training data using only the available predictors
-      train_scaled_available <- X_train_scaled[, x_valid, drop = FALSE]
-      diff_mat <- train_scaled_available - matrix(x_scaled, nrow = nrow(train_scaled_available), 
-                                                   ncol = length(x_scaled), byrow = TRUE)
-      diff_mat[!is.finite(diff_mat)] <- 0
-      dists <- sqrt(rowSums(diff_mat^2))
-      dists <- dists[is.finite(dists)]
-      
-      if (length(dists) == 0) {
-        return(NA_real_)
-      }
-      
-      # Return minimum distance (will normalize later)
-      min(dists, na.rm = TRUE)
-    })
-    
-    # Remove NA values before computing max_dist
-    valid_scores <- similarity_scores[is.finite(similarity_scores)]
-    if (verbose) {
-      cat("  Euclidean distances computed: ", length(valid_scores), " finite out of ", length(similarity_scores), "\n", sep = "")
+    train_sq <- rowSums(X_train_scaled^2)
+    pred_all_na <- rowSums(is.finite(X_pred)) == 0L
+
+    min_dists <- numeric(n_pred)
+    for (start in seq(1L, n_pred, by = chunk_size)) {
+      end <- min(start + chunk_size - 1L, n_pred)
+      P <- scale(X_pred[start:end, , drop = FALSE], center = train_mean, scale = train_sd)
+      P[!is.finite(P)] <- 0
+      D_sq <- rowSums(P^2) + matrix(train_sq, nrow(P), n_train, byrow = TRUE) - 2 * (P %*% t(X_train_scaled))
+      min_dists[start:end] <- sqrt(pmax(apply(D_sq, 1L, min, na.rm = TRUE), 0))
     }
-    if (length(valid_scores) == 0) {
-      warning("All similarity scores are non-finite after distance computation")
-      similarity_scores[] <- NA_real_
-    } else {
-      # Lower score = more similar (closer to training data)
-      # Convert to similarity (higher = more similar)
-      max_dist <- max(valid_scores, na.rm = TRUE)
-      if (verbose) {
-        cat("  Max distance: ", max_dist, "\n", sep = "")
-      }
-      if (!is.finite(max_dist) || max_dist <= 0) {
-        # If max_dist is not valid, set all to NA or use a default
-        warning("max_dist is not finite or <= 0, setting similarity scores to NA")
-        similarity_scores[] <- NA_real_
-      } else {
-        # Only convert finite scores
-        finite_idx <- is.finite(similarity_scores)
-        similarity_scores[finite_idx] <- 1 - (similarity_scores[finite_idx] / (max_dist + 1e-10))
-        # Ensure similarity scores are in [0, 1]
-        similarity_scores[finite_idx] <- pmax(0, pmin(1, similarity_scores[finite_idx]))
-        if (verbose) {
-          cat("  Similarity scores range: ", min(similarity_scores[finite_idx], na.rm = TRUE), 
-              " to ", max(similarity_scores[finite_idx], na.rm = TRUE), "\n", sep = "")
-        }
-      }
-    }
-    
+    min_dists[pred_all_na] <- NA_real_
+    out <- dist_to_sim(min_dists)
+    similarity_scores <- out$scores
   } else if (method == "mahalanobis") {
-    # Compute Mahalanobis distance (using only valid predictors)
-    train_cov <- cov(X_train_complete, use = "complete.obs")
     train_mean <- colMeans(X_train_complete, na.rm = TRUE)
-    
-    # Check for non-finite values
+    train_cov <- cov(X_train_complete, use = "complete.obs")
     train_mean[!is.finite(train_mean)] <- 0
     train_cov[!is.finite(train_cov)] <- 0
-    
-    # Check if covariance matrix is invertible
     if (det(train_cov) < 1e-10 || !is.finite(det(train_cov))) {
-      warning("Covariance matrix near-singular or non-finite, using euclidean method instead")
+      if (verbose) cat("  Covariance singular, falling back to euclidean\n")
       return(compute_environmental_similarity(training_data, prediction_data, predictor_vars, "euclidean", verbose))
     }
-    
-    # Compute Mahalanobis distance handling missing values per prediction point
-    similarity_scores <- apply(X_pred, 1, function(x) {
-      # Find which predictors are available
-      x_valid <- is.finite(x)
-      if (sum(x_valid) == 0) {
-        return(NA_real_)
-      }
-      
-      # Use only available predictors
-      x_available <- x[x_valid]
-      train_mean_available <- train_mean[x_valid]
-      train_cov_available <- train_cov[x_valid, x_valid, drop = FALSE]
-      
-      diff <- x_available - train_mean_available
-      if (any(!is.finite(diff))) {
-        return(NA_real_)
-      }
-      tryCatch({
-        dist_val <- sqrt(t(diff) %*% solve(train_cov_available) %*% diff)
-        if (is.finite(dist_val)) dist_val else NA_real_
-      }, error = function(e) NA_real_)
-    })
-    
-    # Convert distance to similarity
-    valid_scores <- similarity_scores[is.finite(similarity_scores)]
-    if (length(valid_scores) == 0) {
-      warning("All Mahalanobis distances are non-finite")
-      similarity_scores[] <- NA_real_
-    } else {
-      max_dist <- max(valid_scores, na.rm = TRUE)
-      if (!is.finite(max_dist) || max_dist <= 0) {
-        warning("max_dist is not finite or <= 0 for Mahalanobis, setting similarity scores to NA")
-        similarity_scores[] <- NA_real_
-      } else {
-        finite_idx <- is.finite(similarity_scores)
-        similarity_scores[finite_idx] <- 1 - (similarity_scores[finite_idx] / (max_dist + 1e-10))
-        similarity_scores[finite_idx] <- pmax(0, pmin(1, similarity_scores[finite_idx]))
-      }
+    Sigma_inv <- solve(train_cov)
+    d_sq <- numeric(n_pred)
+    for (start in seq(1L, n_pred, by = chunk_size)) {
+      end <- min(start + chunk_size - 1L, n_pred)
+      X_chunk <- X_pred[start:end, , drop = FALSE]
+      X_cent <- sweep(X_chunk, 2L, train_mean, "-")
+      X_cent[!is.finite(X_cent)] <- 0
+      d_sq[start:end] <- rowSums((X_cent %*% Sigma_inv) * X_cent)
     }
-    
+    similarity_scores <- dist_to_sim(sqrt(pmax(d_sq, 0)))$scores
   } else if (method == "range_overlap") {
-    # Compute fraction of predictors within training range (using only valid predictors)
-    train_ranges <- apply(X_train_complete, 2, range, na.rm = TRUE)
-    
-    # Check for non-finite ranges
+    train_ranges <- apply(X_train_complete, 2L, range, na.rm = TRUE)
     train_ranges[!is.finite(train_ranges)] <- 0
-    
-    similarity_scores <- apply(X_pred, 1, function(x) {
-      # Find which predictors are available
-      x_valid <- is.finite(x)
-      if (sum(x_valid) == 0) {
-        return(NA_real_)
-      }
-      
-      # Use only available predictors
-      x_available <- x[x_valid]
-      train_ranges_available <- train_ranges[, x_valid, drop = FALSE]
-      
-      in_range <- (x_available >= train_ranges_available[1, ]) & (x_available <= train_ranges_available[2, ])
-      mean(in_range, na.rm = TRUE)  # Fraction of available predictors in range
-    })
-    
-    # Ensure scores are finite
-    similarity_scores[!is.finite(similarity_scores)] <- NA_real_
+    similarity_scores <- numeric(n_pred)
+    for (start in seq(1L, n_pred, by = chunk_size)) {
+      end <- min(start + chunk_size - 1L, n_pred)
+      X_chunk <- X_pred[start:end, , drop = FALSE]
+      in_range <- (X_chunk >= train_ranges[1, ]) & (X_chunk <= train_ranges[2, ])
+      n_valid <- rowSums(is.finite(X_chunk))
+      vec <- rowSums(in_range & is.finite(X_chunk), na.rm = TRUE) / pmax(n_valid, 1L)
+      vec[n_valid == 0L] <- NA_real_
+      similarity_scores[start:end] <- vec
+    }
   } else {
     stop("Unknown method: ", method)
   }
-  
-  # Ensure similarity_scores has correct length (should match nrow(prediction_data))
-  if (length(similarity_scores) != nrow(prediction_data)) {
-    warning("Length mismatch: similarity_scores (", length(similarity_scores), 
-            ") != nrow(prediction_data) (", nrow(prediction_data), ")")
-    # This shouldn't happen, but handle it gracefully
-    if (length(similarity_scores) > nrow(prediction_data)) {
-      similarity_scores <- similarity_scores[1:nrow(prediction_data)]
-    } else {
-      similarity_scores <- c(similarity_scores, rep(NA_real_, nrow(prediction_data) - length(similarity_scores)))
-    }
-  }
-  
-  # Flag predictions outside training range
-  flag_outside_range <- rep(FALSE, nrow(prediction_data))
+
   finite_scores <- is.finite(similarity_scores)
-  if (any(finite_scores)) {
-    flag_outside_range[finite_scores] <- similarity_scores[finite_scores] < 0.5
-  }
-  
-  # Compute summary statistics (only on finite scores)
-  finite_scores <- is.finite(similarity_scores)
+  flag_outside_range <- finite_scores & (similarity_scores < 0.5)
   n_finite <- sum(finite_scores)
-  
-  if (n_finite > 0) {
-    summary_stats <- list(
-      mean_similarity = mean(similarity_scores[finite_scores], na.rm = TRUE),
-      min_similarity = min(similarity_scores[finite_scores], na.rm = TRUE),
-      max_similarity = max(similarity_scores[finite_scores], na.rm = TRUE),
-      n_outside_range = sum(flag_outside_range, na.rm = TRUE),
-      pct_outside_range = 100 * mean(flag_outside_range, na.rm = TRUE),
-      n_finite_scores = n_finite,
-      n_total_pred = nrow(prediction_data),
-      pct_finite = 100 * n_finite / nrow(prediction_data)
-    )
-  } else {
-    summary_stats <- list(
-      mean_similarity = NA_real_,
-      min_similarity = NA_real_,
-      max_similarity = NA_real_,
-      n_outside_range = 0,
-      pct_outside_range = 0,
-      n_finite_scores = 0,
-      n_total_pred = nrow(prediction_data),
-      pct_finite = 0
-    )
-  }
-  
-  # similarity_scores already has length matching prediction_data
-  similarity_full <- similarity_scores
-  
-  list(
-    similarity_scores = similarity_full,
-    flag_outside_range = flag_outside_range,
-    summary = summary_stats,
-    method = method
+  summary_stats <- list(
+    mean_similarity = if (n_finite > 0) mean(similarity_scores[finite_scores], na.rm = TRUE) else NA_real_,
+    min_similarity = if (n_finite > 0) min(similarity_scores[finite_scores], na.rm = TRUE) else NA_real_,
+    max_similarity = if (n_finite > 0) max(similarity_scores[finite_scores], na.rm = TRUE) else NA_real_,
+    n_outside_range = sum(flag_outside_range, na.rm = TRUE),
+    pct_outside_range = 100 * mean(flag_outside_range, na.rm = TRUE),
+    n_finite_scores = n_finite,
+    n_total_pred = n_pred,
+    pct_finite = 100 * n_finite / n_pred
   )
+  if (verbose && n_finite > 0) {
+    cat("  Similarity range: ", round(summary_stats$min_similarity, 3), " - ", round(summary_stats$max_similarity, 3),
+        ", ", summary_stats$n_outside_range, " outside range\n", sep = "")
+  }
+  list(similarity_scores = similarity_scores, flag_outside_range = flag_outside_range,
+       summary = summary_stats, method = method)
 }
 
 #' Flag predictions where covariates are outside training range (values are more extreme than any in training data)
