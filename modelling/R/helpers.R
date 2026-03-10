@@ -1214,13 +1214,14 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
 #' @param predictor_vars Character vector of predictor variable names.
 #' @param method Similarity metric: "euclidean" (scaled), "mahalanobis", or "range_overlap".
 #' @param verbose If TRUE, print diagnostic information.
-#' @return List with similarity_scores, flag_outside_range, summary, and method.
+#' @return List with similarity_scores, flag_outside_range, summary, method, and data_similarity_scores.
 compute_environmental_similarity <- function(training_data, prediction_data, predictor_vars,
                                             method = "euclidean", verbose = FALSE) {
   pv <- intersect(intersect(predictor_vars, names(training_data)), names(prediction_data))
   if (length(pv) == 0) {
     warning("No common predictor variables found")
-    return(list(similarity_scores = NULL, flag_outside_range = NULL, summary = NULL))
+    return(list(similarity_scores = NULL, flag_outside_range = NULL, summary = NULL,
+                data_similarity_scores = NULL))
   }
 
   X_train <- as.matrix(training_data[, pv, drop = FALSE])
@@ -1237,7 +1238,8 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
   if (n_train_complete == 0) {
     warning("No complete cases in training data for similarity computation")
     n_pred <- nrow(prediction_data)
-    return(list(similarity_scores = rep(NA_real_, n_pred), flag_outside_range = rep(FALSE, n_pred), summary = NULL))
+    return(list(similarity_scores = rep(NA_real_, n_pred), flag_outside_range = rep(FALSE, n_pred), summary = NULL,
+                data_similarity_scores = rep(NA_real_, n_train_complete)))
   }
 
   X_train_complete <- X_train[train_complete, , drop = FALSE]
@@ -1245,7 +1247,8 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
   if (sum(train_cols_valid) == 0) {
     warning("No valid predictor columns in training data")
     n_pred <- nrow(prediction_data)
-    return(list(similarity_scores = rep(NA_real_, n_pred), flag_outside_range = rep(FALSE, n_pred), summary = NULL))
+    return(list(similarity_scores = rep(NA_real_, n_pred), flag_outside_range = rep(FALSE, n_pred), summary = NULL,
+                data_similarity_scores = rep(NA_real_, nrow(X_train_complete))))
   }
   X_train_complete <- X_train_complete[, train_cols_valid, drop = FALSE]
   X_pred <- X_pred[, train_cols_valid, drop = FALSE]
@@ -1266,6 +1269,9 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
   # Chunk size: avoid large matrices. D_sq is chunk_size * n_train * 8 bytes; keep ~50MB max per chunk.
   chunk_size <- min(5000L, max(1000L, as.integer(5e7 / (n_train * 8L))))
 
+  similarity_scores <- NULL
+  data_similarity_scores <- NULL
+
   if (method == "euclidean") {
     train_mean <- colMeans(X_train_complete, na.rm = TRUE)
     train_sd <- apply(X_train_complete, 2, sd, na.rm = TRUE)
@@ -1276,6 +1282,7 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
     train_sq <- rowSums(X_train_scaled^2)
     pred_all_na <- rowSums(is.finite(X_pred)) == 0L
 
+    # For predictions
     min_dists <- numeric(n_pred)
     for (start in seq(1L, n_pred, by = chunk_size)) {
       end <- min(start + chunk_size - 1L, n_pred)
@@ -1287,6 +1294,25 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
     min_dists[pred_all_na] <- NA_real_
     out <- dist_to_sim(min_dists)
     similarity_scores <- out$scores
+
+    # For training data points (self-similarity / environmental similarity to other data points)
+    # Compute for each train point the minimum distance to any other (leave-one-out)
+    train_min_dists <- numeric(n_train)
+    if (n_train > 1) {
+      # Precompute full distance matrix (can chunk if n_train too big)
+      Dtt_sq <- matrix(NA_real_, n_train, n_train)
+      for (i in seq(1L, n_train, by = chunk_size)) {
+        i_end <- min(i + chunk_size - 1L, n_train)
+        x1 <- X_train_scaled[i:i_end, , drop = FALSE]
+        D_chunk <- rowSums(x1^2) + matrix(train_sq, nrow(x1), n_train, byrow = TRUE) - 2 * (x1 %*% t(X_train_scaled))
+        diag(D_chunk) <- Inf # exclude self
+        train_min_dists[i:i_end] <- sqrt(pmax(apply(D_chunk, 1L, min, na.rm = TRUE), 0))
+      }
+    } else {
+      train_min_dists[] <- NA_real_
+    }
+    train_out <- dist_to_sim(train_min_dists)
+    data_similarity_scores <- train_out$scores
   } else if (method == "mahalanobis") {
     train_mean <- colMeans(X_train_complete, na.rm = TRUE)
     train_cov <- cov(X_train_complete, use = "complete.obs")
@@ -1306,6 +1332,28 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
       d_sq[start:end] <- rowSums((X_cent %*% Sigma_inv) * X_cent)
     }
     similarity_scores <- dist_to_sim(sqrt(pmax(d_sq, 0)))$scores
+
+    # training data similarity (leave-one-out Mahalanobis)
+    train_d_sq <- numeric(n_train)
+    if (n_train > 1) {
+      for (start in seq(1L, n_train, by = chunk_size)) {
+        end <- min(start + chunk_size - 1L, n_train)
+        X_chunk <- X_train_complete[start:end, , drop = FALSE]
+        X_cent <- sweep(X_chunk, 2L, train_mean, "-")
+        X_cent[!is.finite(X_cent)] <- 0
+        # For each row, calculate Mahalanobis to all others and take min (but exclude self)
+        D_chunk <- matrix(NA_real_, nrow(X_chunk), n_train)
+        for (j in seq_len(nrow(X_chunk))) {
+          diffs <- t(X_train_complete) - X_chunk[j, ]
+          D_chunk[j, ] <- sqrt(colSums((Sigma_inv %*% diffs) * diffs))
+          D_chunk[j, start + j - 1L] <- Inf # exclude self
+        }
+        train_d_sq[start:end] <- apply(D_chunk, 1L, min, na.rm = TRUE)
+      }
+    } else {
+      train_d_sq[] <- NA_real_
+    }
+    data_similarity_scores <- dist_to_sim(train_d_sq)$scores
   } else if (method == "range_overlap") {
     train_ranges <- apply(X_train_complete, 2L, range, na.rm = TRUE)
     train_ranges[!is.finite(train_ranges)] <- 0
@@ -1319,6 +1367,9 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
       vec[n_valid == 0L] <- NA_real_
       similarity_scores[start:end] <- vec
     }
+    # For training data, all should be in range, so set to 1 if finite
+    data_similarity_scores <- rep(1, nrow(X_train_complete))
+    data_similarity_scores[!is.finite(rowSums(X_train_complete))] <- NA_real_
   } else {
     stop("Unknown method: ", method)
   }
@@ -1340,8 +1391,13 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
     cat("  Similarity range: ", round(summary_stats$min_similarity, 3), " - ", round(summary_stats$max_similarity, 3),
         ", ", summary_stats$n_outside_range, " outside range\n", sep = "")
   }
-  list(similarity_scores = similarity_scores, flag_outside_range = flag_outside_range,
-       summary = summary_stats, method = method)
+  list(
+    similarity_scores = similarity_scores,
+    flag_outside_range = flag_outside_range,
+    summary = summary_stats,
+    method = method,
+    data_similarity_scores = data_similarity_scores
+  )
 }
 
 #' Flag predictions where covariates are outside training range (values are more extreme than any in training data)
@@ -1394,89 +1450,80 @@ flag_outside_applicability_domain <- function(training_data, prediction_data, pr
 #'
 #' @param prediction_grid Data frame with coordinates.
 #' @param similarity_scores Vector of similarity scores (or NULL).
-#' @param flag_outside Logical vector indicating outside-domain locations.
-#' @param coords Character vector of coordinate names.
-#' @param world Optional world map data.
-#' @param use_raster If TRUE, use geom_raster(); if FALSE, use geom_point() (default FALSE to avoid NaN issues with irregular grids).
+#' @param plot_data_points If TRUE, plot original data points (optional).
+#' @param dat Optional data frame with training data points to overlay.
+#' @param flag_outside Logical vector indicating outside-domain locations (optional).
+#' @param coords Character vector for coordinate columns (default c("longitude", "latitude")).
+#' @param world Optional world map data. If NULL, map is retrieved.
+#' @param use_raster If TRUE, use geom_raster; else use geom_point.
 #' @param point_size Size of points when use_raster = FALSE (default 0.3).
-#' @param xlim Optional x-axis limits.
-#' @param ylim Optional y-axis limits.
-#' @return ggplot object with applicability domain map.
-plot_applicability_domain <- function(prediction_grid, similarity_scores = NULL, plot_data_points = FALSE, dat = NULL,
-                                     flag_outside = NULL, 
-                                     coords = c("longitude", "latitude"),
-                                     world = NULL,
-                                     use_raster = FALSE,
-                                     point_size = 0.3,
-                                     xlim = NULL,
-                                     ylim = NULL) {
-  if (!requireNamespace("ggplot2", quietly = TRUE)) {
-    stop("Package ggplot2 is required.")
+#' @param xlim, ylim Optional axis limits.
+#' @return ggplot2 object showing environmental similarity or applicability domain.
+plot_applicability_domain <- function(
+  prediction_grid,
+  similarity_scores = NULL,
+  flag_outside = NULL,
+  plot_data_points = FALSE,
+  dat = NULL,
+  data_similarity_scores = NULL,
+  coords = c("longitude", "latitude"),
+  world = NULL,
+  use_raster = FALSE,
+  point_size = 0.3,
+  xlim = NULL,
+  ylim = NULL
+) {
+  stopifnot(requireNamespace("ggplot2", quietly = TRUE))
+
+  # Ensure world map is a plain data frame; if we can't coerce safely, drop it
+  if (is.null(world) && requireNamespace("maps", quietly = TRUE)) {
+    world <- ggplot2::map_data("world")
   }
-  
-  # Prepare data
-  df <- data.frame(
-    prediction_grid[, coords, drop = FALSE],
-    stringsAsFactors = FALSE
-  )
-  
-  if (!is.null(similarity_scores)) {
-    df$similarity <- similarity_scores
-  }
-  
-  if (!is.null(flag_outside)) {
-    df$outside_domain <- flag_outside
-  }
-  
-  # Get world map if not provided
-  if (is.null(world)) {
-    if (requireNamespace("maps", quietly = TRUE)) {
-      world <- ggplot2::map_data("world")
+  if (!is.null(world)) {
+    world_df <- tryCatch(as.data.frame(world), error = function(e) NULL)
+    if (is.null(world_df) || length(dim(world_df)) != 2L) {
+      warning("world object is not data.frame-like; skipping background polygons.")
+      world <- NULL
+    } else {
+      world <- world_df
     }
   }
-  
-  # Filter out NA/NaN/Inf values before plotting
-  if (!is.null(similarity_scores)) {
-    df <- df[is.finite(df$similarity), , drop = FALSE]
-  }
-  if (!is.null(flag_outside)) {
-    df <- df[!is.na(df$outside_domain), , drop = FALSE]
-  }
-  
-  # Create base plot
+
+  df <- data.frame(prediction_grid[, coords, drop = FALSE], stringsAsFactors = FALSE)
+
+  if (!is.null(similarity_scores)) df$similarity <- similarity_scores
+  if (!is.null(flag_outside)) df$outside_domain <- flag_outside
+
+  # Filter for finite/defined values
+  if (!is.null(similarity_scores)) df <- df[is.finite(df$similarity), , drop = FALSE]
+  if (!is.null(flag_outside)) df <- df[!is.na(df$outside_domain), , drop = FALSE]
+
   p <- ggplot2::ggplot()
 
-  
-  # Create plot with similarity scores or flags
+  # 1) Prediction-grid similarity or applicability domain
   if (!is.null(similarity_scores) && nrow(df) > 0) {
     if (use_raster) {
       p <- p + ggplot2::geom_raster(
         data = df,
         ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]], fill = similarity),
         na.rm = TRUE
-      ) +
-      ggplot2::scale_fill_viridis_c(
-        option = "plasma",
-        name = "Similarity",
-        na.value = "transparent"
       )
     } else {
       p <- p + ggplot2::geom_point(
         data = df,
-        ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]], color = similarity),
+        ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]], fill = similarity),
+        shape = 21,
+        colour = "black",
+        stroke = 0.2,
         size = point_size,
         alpha = 0.7,
         na.rm = TRUE
-      ) +
-      ggplot2::scale_color_viridis_c(
-        option = "plasma",
-        name = "Similarity",
-        na.value = "transparent"
       )
     }
+    # Single shared colour scale for similarity (raster + data points)
+    p <- p + ggplot2::scale_fill_viridis_c(option = "plasma", name = "Similarity", na.value = "transparent")
     p <- p + ggplot2::labs(
-      x = "Longitude",
-      y = "Latitude",
+      x = coords[1], y = coords[2],
       title = "Environmental similarity to training data"
     )
   } else if (!is.null(flag_outside) && nrow(df) > 0) {
@@ -1486,67 +1533,84 @@ plot_applicability_domain <- function(prediction_grid, similarity_scores = NULL,
         ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]], fill = outside_domain),
         na.rm = TRUE
       ) +
-      ggplot2::scale_fill_manual(
-        values = c("FALSE" = "green", "TRUE" = "red"),
-        name = "Outside\nDomain",
-        na.value = "transparent"
-      )
+        ggplot2::scale_fill_manual(
+          values = c("FALSE" = "green", "TRUE" = "red"),
+          name = "Outside\nDomain", na.value = "transparent"
+        )
     } else {
       p <- p + ggplot2::geom_point(
         data = df,
         ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]], color = outside_domain),
-        size = point_size,
-        alpha = 0.7,
-        na.rm = TRUE
+        size = point_size, alpha = 0.7, na.rm = TRUE
       ) +
-      ggplot2::scale_color_manual(
-        values = c("FALSE" = "green", "TRUE" = "red"),
-        name = "Outside\nDomain",
-        na.value = "transparent"
-      )
+        ggplot2::scale_color_manual(
+          values = c("FALSE" = "green", "TRUE" = "red"),
+          name = "Outside\nDomain", na.value = "transparent"
+        )
     }
     p <- p + ggplot2::labs(
-      x = "Longitude",
-      y = "Latitude",
+      x = coords[1], y = coords[2],
       title = "Applicability domain (red = outside training range)"
     )
   } else {
-    stop("Must provide either similarity_scores or flag_outside, and data must have valid values")
+    stop("Provide either similarity_scores or flag_outside with valid values.")
   }
 
-  # Add world map first (so it's behind the data)
-  if (!is.null(world)) {
+  # plot worldmap
+  required_cols <- c("long", "lat", "group")
+  if (!is.null(world) && all(required_cols %in% names(world))) {
     p <- p + ggplot2::geom_polygon(
       data = world,
       ggplot2::aes(x = long, y = lat, group = group),
-      fill = "grey90", color = "grey70", alpha = 0.3, inherit.aes = FALSE
+      fill = "grey90", color = "grey70", alpha = 1, inherit.aes = FALSE
     )
   }
 
 
+  # overlay original data points (training data), coloured by their similarity
   if (plot_data_points && !is.null(dat)) {
-    p <- p + ggplot2::geom_point(
-      data = dat,
-      ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]]),
-      size = point_size,
-      alpha = 0.7,
-      na.rm = TRUE
-    )
+    df_dat <- data.frame(dat[, coords, drop = FALSE], stringsAsFactors = FALSE)
+    if (!is.null(data_similarity_scores)) {
+      # Align length defensively
+      if (length(data_similarity_scores) != nrow(df_dat)) {
+        len <- min(length(data_similarity_scores), nrow(df_dat))
+        df_dat <- df_dat[seq_len(len), , drop = FALSE]
+        data_similarity_scores <- data_similarity_scores[seq_len(len)]
+      }
+      df_dat$similarity <- data_similarity_scores
+      df_dat <- df_dat[is.finite(df_dat$similarity), , drop = FALSE]
+      if (nrow(df_dat) > 0) {
+        p <- p + ggplot2::geom_point(
+          data = df_dat,
+          ggplot2::aes(
+            x = .data[[coords[1]]],
+            y = .data[[coords[2]]],
+            fill = similarity
+          ),
+          shape = 21,
+          colour = "black",
+          stroke = 0.2,
+          size = point_size * 1.8,
+          alpha = 0.9,
+          na.rm = TRUE
+        )
+      }
+    } else {
+      # Fallback: uncoloured points if no similarity for data was supplied
+      p <- p + ggplot2::geom_point(
+        data = df_dat,
+        ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]]),
+        color = "black", size = point_size * 1.5, alpha = 0.7, na.rm = TRUE
+      )
+    }
   }
 
-  # Add coordinate limits if provided
-  if (!is.null(xlim) && !is.null(ylim)) {
+  # Axis limits
+  if (!is.null(xlim) || !is.null(ylim)) {
     p <- p + ggplot2::coord_cartesian(xlim = xlim, ylim = ylim)
-  } else if (!is.null(xlim)) {
-    p <- p + ggplot2::coord_cartesian(xlim = xlim)
-  } else if (!is.null(ylim)) {
-    p <- p + ggplot2::coord_cartesian(ylim = ylim)
   }
-  
-  p <- p + ggplot2::theme_minimal()
-  
-  p
-}
 
+  p + ggplot2::theme_minimal()
+}
 # Load ML helpers after all utility functions are defined (avoids circular source with ml.R)
 source("modelling/R/ml.R")

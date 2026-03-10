@@ -289,74 +289,34 @@ if (!is.null(similarity$summary)) {
 flags <- flag_outside_applicability_domain(
   dat, prediction_grid, raster_covariates, strict=FALSE
 )
-
+source("modelling/R/helpers.R")
 p <- plot_applicability_domain(
-  prediction_grid, similarity$similarity_scores, flags, world = world, xlim = c(lon_min, lon_max), ylim = c(lat_min, lat_max), use_raster = TRUE, plot_data_points = TRUE, dat = dat
+  prediction_grid,
+  similarity_scores = similarity$similarity_scores,
+  flag_outside = flags,
+  plot_data_points = TRUE,
+  dat = dat,
+  data_similarity_scores = similarity$data_similarity_scores,
+  world = world,
+  xlim = c(lon_min, lon_max),
+  ylim = c(lat_min, lat_max),
+  use_raster = TRUE
 )
 print(p)
 
 
+# calculate the 5th percentile similarity score in data
+percentile_similarity_score_cutoff <- quantile(similarity$data_similarity_scores, 0.05, na.rm = TRUE)
+
 # plot a histogram of the similarity scores
 p <- ggplot(data.frame(similarity_scores = similarity$similarity_scores), aes(x = similarity_scores)) +
   geom_histogram(binwidth = 0.01, fill = "steelblue", color = "black", alpha = 0.7) +
-  geom_vline(xintercept = 0.99, linetype = "dashed", color = "red", linewidth = 1) +
+  geom_vline(xintercept = percentile_similarity_score_cutoff, linetype = "dashed", color = "red", linewidth = 1) +
   labs(x = "Similarity Score", y = "Count", title = "Histogram of similarity scores") +
   theme_minimal()
 print(p)
 ggsave(file.path(OUT_DIR, "similarity_scores_histogram.png"), p, width = 8, height = 6)
 
-# mask prediction_grid so only values remain which are have a similarity score greater than 0.99
-prediction_grid_masked <- prediction_grid[similarity$similarity_scores > 0.9, ]
-cat(sprintf("Number of cells in prediction_grid_masked: %d\n", nrow(prediction_grid_masked)))
-cat(sprintf("Number of cells in prediction_grid: %d\n", nrow(prediction_grid)))
-cat(sprintf("Number of cells in prediction_grid_masked as a percentage of prediction_grid: %f\n", nrow(prediction_grid_masked) / nrow(prediction_grid)))
-
-# -----------------------------------------------------------------------------
-# Optional helpers: not used by run_paper.R pipeline (commented out).
-# FLAG: Re-enable plot_raster_stack / plot_env_pairs if needed for ad-hoc raster
-# or pairs figures.
-# -----------------------------------------------------------------------------
-# #' Plot raster stack as grid of subplots with individual colorbars
-# plot_raster_stack <- function(raster_stack, sample_points = NULL, point_color = NULL,
-#                               raster_info = NULL, ncol = 3, color_scale = "viridis") {
-#   raster_df <- terra::as.data.frame(raster_stack, xy = TRUE)
-#   layer_names <- names(raster_stack)
-#   plot_list <- lapply(seq_along(layer_names), function(i) {
-#     ln <- layer_names[i]
-#     title <- if (!is.null(raster_info) && ln %in% names(raster_info))
-#       paste0(raster_info[[ln]]$description, "\n(", ln, ")") else ln
-#     ld <- raster_df %>% dplyr::select(x, y, value = !!sym(ln))
-#     p <- ggplot(ld, aes(x = x, y = y, fill = value)) +
-#       geom_raster() +
-#       scale_fill_viridis_c(option = color_scale, na.value = "transparent", name = NULL,
-#         guide = guide_colorbar(barwidth = 0.5, barheight = 3)) +
-#       labs(title = title, x = "Longitude", y = "Latitude") +
-#       theme_supplement(9) + coord_fixed()
-#     if (!is.null(sample_points) && !is.null(point_color)) {
-#       pts <- sample_points %>% dplyr::select(longitude, latitude, !!sym(point_color))
-#       p <- p + geom_point(data = pts, aes(x = longitude, y = latitude, colour = .data[[point_color]]),
-#                           inherit.aes = FALSE, size = 0.8, alpha = 0.7)
-#     }
-#     p
-#   })
-#   wrap_plots(plot_list, ncol = ncol)
-# }
-#
-# #' Pairs plot of env vars coloured by a continuous variable (requires GGally)
-# plot_env_pairs <- function(data, env_vars, color_var, output_file = "environmental_variables_pairs.png",
-#                            width = 15, height = 15, dpi = 300) {
-#   if (!requireNamespace("GGally", quietly = TRUE)) {
-#     warning("GGally not installed; skipping plot_env_pairs")
-#     return(invisible(NULL))
-#   }
-#   dat_pairs <- data %>% dplyr::select(dplyr::all_of(c(env_vars, color_var)))
-#   pairs_plot <- GGally::ggpairs(dat_pairs, columns = env_vars,
-#     lower = list(continuous = GGally::wrap("points", alpha = 0.4)),
-#     upper = list(continuous = GGally::wrap("cor", size = 3)),
-#     diag = list(continuous = "densityDiag")) +
-#     theme_supplement()
-#   ggsave(file.path(OUT_DIR, output_file), pairs_plot, width = width, height = height, dpi = dpi)
-#   invisible(NULL)
-# }
+# TODO: this could be used to mask prediction grid so that only cells with a high-enough similarity score are used for prediction
 
 cat("\nSupplement figures complete. Outputs in", OUT_DIR, "\n")
