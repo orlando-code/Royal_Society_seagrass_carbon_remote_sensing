@@ -482,10 +482,9 @@ compute_shap_importance <- function(core_data, target_var, predictor_vars,
       return(NULL)
     }
     pred_fun  <- function(m, newdata) {
-      Xn    <- as.data.frame(newdata[, predictor_vars, drop = FALSE])
-      Xn_sc <- as.matrix(prepare_predictors_new(Xn, predictor_vars, prep$scale_params, prep$encoding)[, predictor_vars, drop = FALSE])
-      storage.mode(Xn_sc) <- "double"
-      as.numeric(m$pred(Xn_sc, se.fit = FALSE))
+      Xn <- as.matrix(newdata[, predictor_vars, drop = FALSE])
+      storage.mode(Xn) <- "double"
+      as.numeric(m$pred(Xn, se.fit = FALSE))
     }
     y <- y_gpr
   } else {
@@ -530,8 +529,10 @@ compute_shap_importance <- function(core_data, target_var, predictor_vars,
       }
     }
   }
-  if (n_ok == 0L)
-    warning("SHAP: no Shapley computations succeeded for ", model_name, "; importance will be zero.")
+  if (n_ok == 0L) {
+    warning("SHAP: no Shapley computations succeeded for ", model_name, "; returning NULL.")
+    return(NULL)
+  }
   imp <- colMeans(shap_mat, na.rm = TRUE)
   data.frame(variable = names(imp), shap_importance = as.numeric(imp), stringsAsFactors = FALSE)[order(-imp), , drop = FALSE]
 }
