@@ -14,9 +14,9 @@ setwd(here::here())
 set.seed(42)  # globally
 
 cat("\n")
-cat(paste(rep("=", 70), collapse = ""), "\n")
+cat(paste(rep("=", 94), collapse = ""), "\n")
 cat("PAPER PIPELINE: CONFIGURE -> PRUNING -> TUNING -> CV -> IMPORTANCE -> PREDICTION -> SUPPLEMENT\n")
-cat(paste(rep("=", 70), collapse = ""), "\n\n")
+cat(paste(rep("=", 94), collapse = ""), "\n\n")
 
 # -----------------------------------------------------------------------------
 # -1. Configuring pipeline
@@ -30,6 +30,7 @@ assign("dpi", dpi, envir = .GlobalEnv)
 assign("show_titles", show_titles, envir = .GlobalEnv)
 
 
+
 target_var <- "median_carbon_density_100cm"
 log_transform_target <- TRUE
 # Region exclusion: set to character(0) to include all regions, or e.g. c("Black Sea") to exclude
@@ -41,21 +42,23 @@ exclude_regions <- c("Black Sea")
 use_correlation_filter       <- TRUE
 correlation_filter_threshold <- 0.8
 permutation_max_vars         <- 15L   # max vars retained after permutation importance
-n_permutations              <- 1L # increase
+n_permutations              <- 1L # increase for paper run
 permutation_coverage         <- 0.99  # cumulative importance coverage threshold
 use_shap_per_model           <- TRUE  # per-model covariate sets via iml SHAP
+do_cv_on_defaults <- TRUE  # whether to run Step 2 (default CV) + Step 2b
 
 model_list    <- c("GPR", "GAM", "XGB")
 n_folds       <- 5L
 cv_type       <- "spatial"  # "spatial" or "random"
-cv_blocksize <- 5000L  # metres for spatial CV
+cv_blocksize <- 5000L  # metres for spatial CV to tune models on (set by desired application)
 cv_blocksize_scan <- c(1000L, 5000L, 10000L, 20000L, 50000L, 100000L)
 
 # Assign all globals for sourced sub-scripts
 for (nm in c("target_var", "log_transform_target", "exclude_regions", "model_list",
              "use_correlation_filter", "correlation_filter_threshold",
              "permutation_max_vars", "permutation_coverage", "n_permutations",
-             "use_shap_per_model", "n_folds", "cv_type", "cv_blocksize", "cv_blocksize_scan")) {
+             "use_shap_per_model", "n_folds", "cv_type", "cv_blocksize", "cv_blocksize_scan",
+             "do_cv_on_defaults")) {
   assign(nm, get(nm), envir = .GlobalEnv)
 }
 
@@ -66,6 +69,10 @@ for (d in c("output", "output/cache", "output/covariate_selection", "output/cv_p
             "output/final_models", "output/predictions", "output/supplement")) {
   dir.create(d, recursive = TRUE, showWarnings = FALSE)
 }
+
+# Flag to distinguish pre- vs post-tuning CV in cv_pipeline.R
+post_tuning_validation <- FALSE
+assign("post_tuning_validation", post_tuning_validation, envir = .GlobalEnv)
 
 source("modelling/R/extract_covariates_from_rasters.R")
 if (exists("raster_covariates"))
@@ -83,19 +90,13 @@ cat("  n_permutations:              ", n_permutations, "\n")
 cat("  use_shap_per_model:          ", use_shap_per_model, "\n")
 cat("  model_list:                  ", paste(model_list, collapse = ", "), "\n")
 cat("  n_folds:                     ", n_folds, "\n")
+cat("  do_cv_on_defaults:          ", do_cv_on_defaults, "\n")
 cat("  cv_type:                     ", cv_type, "\n")
 cat("  cv_blocksize:               ", cv_blocksize, "\n")
 cat("  cv_blocksize_scan:          ", if (length(cv_blocksize_scan)) paste(cv_blocksize_scan, collapse = ", ") else "none", "\n")
 cat("  dpi:                         ", dpi, "\n")
 cat("\n")
 
-
-# # -----------------------------------------------------------------------------
-# # -1b. Pipeline diagram -> output/pipeline_diagram.png
-# # -----------------------------------------------------------------------------
-# cat("\t\tStep -1b: Generating pipeline diagram\n")
-# source("modelling/plots/plot_pipeline_diagram.R")
-# cat("\n")
 
 # -----------------------------------------------------------------------------
 # 0. Data (build if missing)
@@ -118,16 +119,20 @@ cat("\n")
 # -----------------------------------------------------------------------------
 # 2. CV pipeline (folds, CV results, inline plots) -> output/cv_pipeline
 # -----------------------------------------------------------------------------
-cat("\t\tStep 2: CV pipeline (spatial folds, comparison, results)\n")
-source("modelling/pipeline/cv_pipeline.R")
-cat("\n")
+if (isTRUE(get0("do_cv_on_defaults", envir = .GlobalEnv, ifnotfound = TRUE))) {
+  cat("\t\tStep 2: CV pipeline (spatial folds, comparison, results)\n")
+  source("modelling/pipeline/cv_pipeline.R")
+  cat("\n")
 
-# -----------------------------------------------------------------------------
-# 2b. Spatial / lat-lon / region effect (all models) -> output/cv_pipeline
-# -----------------------------------------------------------------------------
-cat("\t\tStep 2b: Spatial and categorical effect (lat, lon, region) for all models\n")
-source("modelling/plots/spatial_categorical_effect_all_models.R")
-cat("\n")
+  # -----------------------------------------------------------------------------
+  # 2b. Spatial / lat-lon / region effect (all models) -> output/cv_pipeline
+  # -----------------------------------------------------------------------------
+  cat("\t\tStep 2b: Spatial and categorical effect (lat, lon, region) for all models (default hyperparams)\n")
+  source("modelling/plots/spatial_categorical_effect_all_models.R")
+  cat("\n")
+} else {
+  cat("\t\tStep 2: Skipping default CV pipeline (do_cv_on_defaults=FALSE)\n\n")
+}
 
 # -----------------------------------------------------------------------------
 # 3. Hyperparameter tuning (all models; cv_type; progress) -> output/cv_pipeline
@@ -147,10 +152,21 @@ source("modelling/pipeline/shap_importance_final.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# 4. Cross-fold validation
+# 4. Cross-fold validation (tuned models and pruned covariates)
 # -----------------------------------------------------------------------------
-cat("\t\tStep 4: Cross-fold validation\n")
+post_tuning_validation <- TRUE
+assign("post_tuning_validation", post_tuning_validation, envir = .GlobalEnv)
+cat("\t\tStep 4: Cross-fold validation (tuned models)\n")
 source("modelling/pipeline/cv_pipeline.R")
+cat("\n")
+
+# -----------------------------------------------------------------------------
+# 4b. Spatial / lat-lon / region effect (tuned models) -> output/cv_pipeline
+# -----------------------------------------------------------------------------
+categorical_use_tuned <- TRUE
+assign("categorical_use_tuned", categorical_use_tuned, envir = .GlobalEnv)
+cat("\t\tStep 4b: Spatial and categorical effect (lat, lon, region) for all models (tuned hyperparams)\n")
+source("modelling/plots/spatial_categorical_effect_all_models.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
