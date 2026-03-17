@@ -30,6 +30,7 @@ use_hyperparameter_tuning <- FALSE
 nested_tuning <- FALSE
 quick_cv_check <- get0("quick_cv_check", envir = .GlobalEnv, ifnotfound = FALSE)
 model_list <- get0("model_list", envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB"))
+post_tuning_validation <- isTRUE(get0("post_tuning_validation", envir = .GlobalEnv, ifnotfound = FALSE))
 
 # Block sizes: when cv_type == "spatial" use cv_blocksize_scan if set, else cv_blocksize only
 cv_blocksize_scan <- get0("cv_blocksize_scan", envir = .GlobalEnv, ifnotfound = NULL)
@@ -47,6 +48,49 @@ buffer_m  <- buffer_km * 1000
 
 out_dir <- "output/cv_pipeline"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+hyperparams_by_model <- list()
+if (post_tuning_validation) {
+  config_dir <- "output/cv_pipeline"
+  load_best_config <- function(model_name) {
+    base <- file.path(config_dir, "best_config")
+    paths <- switch(model_name,
+      XGB = c(paste0(base, "_xgb.rds"), file.path(config_dir, "xgb_best_config.rds")),
+      GAM = c(paste0(base, "_gam.rds"), file.path(config_dir, "gam_best_config.rds")),
+      GPR = c(paste0(base, "_gpr.rds"), file.path(config_dir, "gpr_best_config.rds")),
+      NULL
+    )
+    if (is.null(paths)) return(NULL)
+    for (p in paths) if (file.exists(p)) return(readRDS(p))
+    NULL
+  }
+  for (m in model_list) {
+    cfg <- load_best_config(m)
+    if (is.null(cfg)) next
+    if (m == "GPR") {
+      hyperparams_by_model[[m]] <- list(
+        kernel = cfg$kernel,
+        nug.min = cfg$nug.min,
+        nug.max = cfg$nug.max,
+        nug.est = TRUE
+      )
+    } else if (m == "XGB") {
+      hyperparams_by_model[[m]] <- list(
+        nrounds = cfg$nrounds,
+        max_depth = cfg$max_depth,
+        learning_rate = cfg$learning_rate %||% 0.1,
+        subsample = cfg$subsample %||% 0.8,
+        colsample_bytree = cfg$colsample_bytree %||% 0.8
+      )
+    } else if (m == "GAM") {
+      hyperparams_by_model[[m]] <- list(
+        k_spatial = cfg$k_spatial %||% 80L
+      )
+    }
+  }
+  cat("Post-tuning validation: using best hyperparameters for models:",
+      paste(names(hyperparams_by_model), collapse = ", "), "\n")
+}
 
 ## ================================ DATA ================================
 cat("\n========================================\n")
@@ -69,8 +113,11 @@ if (length(predictor_vars) == 0) {
 }
 
 # select columns in predictor_vars; ensure median_carbon_density for run_cv
+extra_cols <- c()
+if ("seagrass_species" %in% names(dat)) extra_cols <- c(extra_cols, "seagrass_species")
+if ("region" %in% names(dat)) extra_cols <- c(extra_cols, "region")
 complete_dat <- dat %>%
-  dplyr::select(longitude, latitude, target_var, dplyr::all_of(predictor_vars)) %>%
+  dplyr::select(longitude, latitude, target_var, dplyr::all_of(predictor_vars), dplyr::all_of(extra_cols)) %>%
   dplyr::filter(complete.cases(.))
 complete_dat$median_carbon_density <- complete_dat[[target_var]]
 predictor_vars <- predictor_vars[predictor_vars %in% colnames(complete_dat)]
@@ -195,14 +242,14 @@ cat("========================================\n")
 cat("RUNNING CROSS-VALIDATION\n")
 cat("========================================\n\n")
 
-# Use model-specific SHAP variables when available; else all predictors for all models
+# Use model-specific pruned variables when available; else all predictors for all models
 predictor_sets <- list()
 if (length(predictor_vars_by_model) > 0) {
-  predictor_sets$shap_per_model <- predictor_vars_by_model
-  cat("Using SHAP-retained variables per model.\n")
+  predictor_sets$pruned_per_model <- predictor_vars_by_model
+  cat("Using pruned variables per model from covariate selection.\n")
 } else {
   predictor_sets$all <- predictor_vars
-  cat("No SHAP per-model sets found; using all ", length(predictor_vars), " predictors.\n", sep = "")
+  cat("No per-model pruned sets found; using all ", length(predictor_vars), " predictors.\n", sep = "")
 }
 n_ps <- length(predictor_sets)
 cat("Running CV for ", n_ps, " predictor set(s): ", paste(names(predictor_sets), collapse = ", "), ".\n\n", sep = "")
@@ -236,6 +283,7 @@ for (i in seq_along(cv_strategies)) {
             core_sf = core_sf,
             return_predictions = TRUE,
             models = model_list,
+            hyperparams_by_model = if (post_tuning_validation) hyperparams_by_model else NULL,
             log_response = log_response
           )
         } else {
@@ -251,6 +299,7 @@ for (i in seq_along(cv_strategies)) {
             core_sf = core_sf,
             return_predictions = TRUE,
             models = model_list,
+            hyperparams_by_model = if (post_tuning_validation) hyperparams_by_model else NULL,
             log_response = log_response
           )
         }
@@ -327,9 +376,10 @@ print(summary_by_method_model)
 ## ================================ TABLES AND PLOTS ================================
 
 
+suffix <- if (post_tuning_validation) "post_tuning" else "pre_tuning"
 for (pair in list(
-  list(results_df, "cv_results_detailed.csv"),
-  list(summary_by_method_model, "cv_results_summary.csv")
+  list(results_df, sprintf("%s_cv_results_detailed.csv", suffix)),
+  list(summary_by_method_model, sprintf("%s_cv_results_summary.csv", suffix))
 )) safe_write_csv(pair[[1]], file.path(out_dir, pair[[2]]))
 
 
@@ -359,8 +409,8 @@ p_metrics <- results_df %>%
     legend.position = "bottom",
     plot.title = element_text(hjust = 0.5)
   )
-ggsave(file.path(out_dir, "cv_metrics_by_method_model.png"), p_metrics, width = 12, height = 8, dpi = dpi)
-cat("\nSaved", file.path(out_dir, "cv_metrics_by_method_model.png"), "\n")
+ggsave(file.path(out_dir, sprintf("%s_cv_metrics_by_method_model.png", suffix)), p_metrics, width = 12, height = 8, dpi = dpi)
+cat("\nSaved", file.path(out_dir, sprintf("%s_cv_metrics_by_method_model.png", suffix)), "\n")
 
 # Scatter: observed vs predicted for all methods (one panel per model)
 if (!is.null(predictions_df) && nrow(predictions_df) > 0) {
@@ -374,8 +424,8 @@ if (!is.null(predictions_df) && nrow(predictions_df) > 0) {
       labs(x = "Predicted", y = "Observed", title = if (show_titles) "Observed vs predicted by model (all CV folds)" else NULL) +
       theme_minimal() +
       theme(plot.title = element_text(hjust = 0.5))
-    ggsave(file.path(out_dir, "cv_observed_vs_predicted.png"), p_scatter, width = 12, height = 10, dpi = dpi)
-    cat("Saved", file.path(out_dir, "cv_observed_vs_predicted.png"), "\n")
+    ggsave(file.path(out_dir, sprintf("%s_cv_observed_vs_predicted.png", suffix)), p_scatter, width = 12, height = 10, dpi = dpi)
+    cat("Saved", file.path(out_dir, sprintf("%s_cv_observed_vs_predicted.png", suffix)), "\n")
   }
 }
 
@@ -407,7 +457,7 @@ p_method <- summary_method %>%
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 if (has_ps) p_method <- p_method + facet_wrap(~predictor_set, ncol = 1)
-ggsave(file.path(out_dir, "cv_ensemble_by_method.png"), p_method, width = 10, height = 5, dpi = dpi)
+ggsave(file.path(out_dir, sprintf("%s_cv_ensemble_by_method.png", suffix)), p_method, width = 10, height = 5, dpi = dpi)
 
 # ## ================================ MODEL SELECTION FOR GAP-FILLING ================================
 # # Goal: find a model with good performance at predicting carbon density at points *near* training data,
@@ -463,6 +513,8 @@ ggsave(file.path(out_dir, "cv_ensemble_by_method.png"), p_method, width = 10, he
 #   cat("\nNo results for gap-filling CV methods; skipping model ranking.\n")
 # }
 
+cat("\nTesting performance over block sizes\n")
+
 # 2) Performance over block sizes
 spatial_results <- results_df %>%
   filter(grepl("^spatial_block_", method), !is.na(block_size_m)) %>%
@@ -494,8 +546,8 @@ if (nrow(spatial_results) > 0 && "block_size_m" %in% names(spatial_results)) {
     theme(legend.position = "bottom", plot.title = element_text(size = 10, hjust = 0.5))
   if (n_blocks > 1) p_block_rmse <- p_block_rmse + geom_line(linewidth = 1)
   p_block_combined <- p_block_r2 + p_block_rmse + plot_layout(ncol = 1) + plot_annotation(title = if (show_titles) "Performance over spatial block sizes" else NULL)
-  ggsave(file.path(out_dir, "cv_performance_over_block_sizes.png"), p_block_combined, width = 9, height = 7, dpi = dpi)
-  cat("Saved", file.path(out_dir, "cv_performance_over_block_sizes.png"), "\n")
+  ggsave(file.path(out_dir, sprintf("%s_cv_performance_over_block_sizes.png", suffix)), p_block_combined, width = 9, height = 7, dpi = dpi)
+  cat("Saved", file.path(out_dir, sprintf("%s_cv_performance_over_block_sizes.png", suffix)), "\n")
 }
 
 
@@ -554,10 +606,10 @@ if (length(block_illustration_data) > 0) {
       title = if (show_titles) "Spatial blocks (1, 5, 25, 50, 100 km) superposed on data points (fold 1 = test)" else NULL,
       theme = theme(plot.title = element_text(hjust = 0.5, size = 12))
     )
-  ggsave(file.path(out_dir, "cv_spatial_blocks_and_points.png"), p_blocks_illustration,
+  ggsave(file.path(out_dir, sprintf("%s_cv_spatial_blocks_and_points.png", suffix)), p_blocks_illustration,
     width = 10, height = max(5, 2.5 * ceiling(n_panels / 2)), dpi = dpi
   )
-  cat("Saved", file.path(out_dir, "cv_spatial_blocks_and_points.png"), "\n")
+  cat("Saved", file.path(out_dir, sprintf("%s_cv_spatial_blocks_and_points.png", suffix)), "\n")
 }
 
 ## ================================ NOTES ================================
