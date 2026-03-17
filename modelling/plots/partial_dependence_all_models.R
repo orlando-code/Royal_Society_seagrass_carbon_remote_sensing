@@ -10,7 +10,6 @@
 
 setwd(here::here())
 source("modelling/R/helpers.R")
-# source("modelling/R/gpr_funs.R")
 source("modelling/R/extract_covariates_from_rasters.R")
 source("modelling/R/assign_region_from_latlon.R")
 load_packages(c("here", "dplyr", "ggplot2", "patchwork"))
@@ -18,10 +17,10 @@ if (!requireNamespace("iml", quietly = TRUE))
   stop("Package 'iml' is required; install with install.packages('iml').")
 
 # ---------------------------------------------------------------------------
-# Rebuild core_data (same logic as fit_final_models.R)
+# Rebuild core_data (align with fit_final_models.R)
 # ---------------------------------------------------------------------------
 dat <- readr::read_rds("data/all_extracted_new.rds")
-target_var     <- "median_carbon_density_100cm"
+target_var        <- "median_carbon_density_100cm"
 predictor_vars_all <- raster_covariates[raster_covariates %in% colnames(dat)]
 
 excl <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
@@ -30,23 +29,23 @@ if (length(excl) > 0L) {
   dat <- dat[is.na(dat$region) | !dat$region %in% excl, ]
 }
 
-core_data <- if ("random_core_variable" %in% colnames(dat)) {
-  dat %>%
-    dplyr::group_by(.data$random_core_variable) %>%
-    dplyr::summarise(
-      median_carbon_density = median(.data[[target_var]], na.rm = TRUE),
-      dplyr::across(dplyr::all_of(c(predictor_vars_all, "longitude", "latitude")),
-                    dplyr::first),
-      .groups = "drop"
+core_data <- dat %>%
+  dplyr::mutate(median_carbon_density = .data[[target_var]]) %>%
+  dplyr::select(
+    longitude, latitude, median_carbon_density,
+    dplyr::all_of(predictor_vars_all),
+    dplyr::all_of(intersect(c("seagrass_species", "region"), names(dat)))
+  )
+
+core_data <- as.data.frame(
+  core_data %>%
+    dplyr::select(
+      longitude, latitude, median_carbon_density,
+      dplyr::all_of(predictor_vars_all),
+      dplyr::all_of(intersect(c("seagrass_species", "region"), names(core_data)))
     ) %>%
-    dplyr::filter(!is.na(.data$median_carbon_density))
-} else {
-  dat %>%
-    dplyr::mutate(median_carbon_density = .data[[target_var]]) %>%
-    dplyr::select(longitude, latitude, median_carbon_density,
-                  dplyr::all_of(predictor_vars_all))
-}
-core_data <- as.data.frame(core_data[complete.cases(core_data), , drop = FALSE])
+    dplyr::filter(complete.cases(.))
+)
 
 out_dir <- "output/covariate_selection"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -63,6 +62,11 @@ make_predictor <- function(model_name) {
   }
   obj   <- readRDS(rds_path)
   pvars <- obj$predictor_vars
+  pvars <- intersect(pvars, names(core_data))
+  if (length(pvars) == 0L) {
+    cat("Skipping", model_name, ": no overlap between predictor_vars and core_data.\n")
+    return(NULL)
+  }
 
   if (model_name == "XGB") {
     sp <- obj$scale_params
