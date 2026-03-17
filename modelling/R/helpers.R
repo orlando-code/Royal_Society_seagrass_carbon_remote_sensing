@@ -636,21 +636,44 @@ test_rows_with_factors_in_train <- function(train, test, factor_vars = c("seagra
   keep
 }
 
+# Original R² metric (squared correlation; kept for reference)
+# calculate_metrics <- function(observed, predicted) {
+#   r2 <- cor(observed, predicted, use = "complete.obs")^2
+#   rmse <- sqrt(mean((observed - predicted)^2, na.rm = TRUE))
+#   mae <- mean(abs(observed - predicted), na.rm = TRUE)
+#   bias <- mean(predicted - observed, na.rm = TRUE)
+#   data.frame(r2 = r2, rmse = rmse, mae = mae, bias = bias)
+# }
+
 #' Calculate performance metrics for model predictions
 #'
-#' R² is the standard squared correlation between observed and predicted
-#' (always in [0, 1] when defined; NA if either vector has zero variance).
+#' R² is computed as the standard coefficient of determination
+#'  \(1 - \sum (y - \hat{y})^2 / \sum (y - \bar{y})^2\), which can be negative
+#'  when the model performs worse than using the mean.
 #'
 #' @param observed vector of observed (true) values
 #' @param predicted vector of predicted values
 #' @return data frame with r2, rmse, mae, and bias metrics
 calculate_metrics <- function(observed, predicted) {
-  r2 <- cor(observed, predicted, use = "complete.obs")^2
-  rmse <- sqrt(mean((observed - predicted)^2, na.rm = TRUE))
-  mae <- mean(abs(observed - predicted), na.rm = TRUE)
-  bias <- mean(predicted - observed, na.rm = TRUE)
+  ok <- is.finite(observed) & is.finite(predicted)
+  observed <- observed[ok]
+  predicted <- predicted[ok]
 
-  return(data.frame(r2 = r2, rmse = rmse, mae = mae, bias = bias))
+  if (length(observed) < 2L) {
+    return(data.frame(
+      r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_
+    ))
+  }
+
+  ss_res <- sum((observed - predicted)^2)
+  ss_tot <- sum((observed - mean(observed))^2)
+  r2 <- if (ss_tot > 0) 1 - ss_res / ss_tot else NA_real_
+
+  rmse <- sqrt(mean((observed - predicted)^2))
+  mae <- mean(abs(observed - predicted))
+  bias <- mean(predicted - observed)
+
+  data.frame(r2 = r2, rmse = rmse, mae = mae, bias = bias)
 }
 
 #' Read per-model predictor variables from a CSV (e.g. pruned_model_variables_shap.csv).
@@ -1033,9 +1056,13 @@ tune_gpr <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
         for (fold in seq_len(n_folds)) {
           train_fold <- dat[folds != fold, , drop = FALSE]
           test_fold <- dat[folds == fold, , drop = FALSE]
-          res <- fit_gpr(train_fold, predictor_vars, value_var = value_var,
-                        test_data = test_fold,
-                        hyperparams = list(kernel = kernel, nug.min = nug_min, nug.max = nug_max))
+          res <- fit_gpr(
+            train_data = train_fold,
+            test_data = test_fold,
+            predictor_vars = predictor_vars,
+            value_var = value_var,
+            hyperparams = list(kernel = kernel, nug.min = nug_min, nug.max = nug_max)
+          )
           cv_rmse[fold] <- if (!is.null(res$rmse) && is.finite(res$rmse)) res$rmse else NA_real_
         }
         mean_rmse <- mean(cv_rmse, na.rm = TRUE)
@@ -1122,6 +1149,7 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
                    return_predictions = FALSE, models = NULL,
                    tune_hyperparams = FALSE, nested_tuning = FALSE,
                    predictor_vars_by_model = NULL,
+                   hyperparams_by_model = NULL,
                    log_response = get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE)) {
   models <- intersect(models %||% c("GPR", "GAM", "XGB", "RF"),
                       c("GPR", "GAM", "XGB", "RF"))
@@ -1167,11 +1195,27 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
         predictor_vars_by_model[[m]] else predictor_vars
       res <- tryCatch({
         prep <- prepare_data_for_model(m, train_raw, test_raw, pvars)
+        hp <- if (is.list(hyperparams_by_model) && m %in% names(hyperparams_by_model))
+          hyperparams_by_model[[m]] else NULL
         fit <- switch(m,
-          GPR = fit_gpr(prep$train, prep$predictor_vars, test_data = prep$test),
-          RF  = fit_rf(prep$train, prep$test, prep$predictor_vars),
-          XGB = fit_xgboost(prep$train, prep$test, prep$predictor_vars),
-          GAM = fit_gam(prep$train, prep$test, prep$predictor_vars),
+          GPR = fit_gpr(
+            prep$train, prep$predictor_vars,
+            test_data = prep$test,
+            hyperparams = hp
+          ),
+          RF  = fit_rf(
+            prep$train, prep$test, prep$predictor_vars,
+            hyperparams = hp
+          ),
+          XGB = fit_xgboost(
+            prep$train, prep$test, prep$predictor_vars,
+            hyperparams = hp
+          ),
+          GAM = fit_gam(
+            prep$train, prep$test, prep$predictor_vars,
+            k_spatial = if (is.list(hp) && !is.null(hp$k_spatial)) hp$k_spatial else 80L,
+            include_spatial = FALSE
+          ),
           stop("Unsupported model: ", m)
         )
         if (all(is.na(fit$predictions))) return(NULL)
