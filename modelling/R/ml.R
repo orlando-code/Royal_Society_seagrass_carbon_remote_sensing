@@ -262,9 +262,9 @@ predict_gpr <- function(gpr, newdata, se = TRUE) {
 #' Fit GPR on training data. Optionally predict on test_data (CV) or prediction_grid (spatial).
 #'
 #' @param train_data Training data.
+#' @param test_data Optional test data for CV-style evaluation.
 #' @param predictor_vars Predictor variable names.
 #' @param value_var Response column (default: median_carbon_density).
-#' @param test_data Optional; if provided, predict on test and return r2, rmse.
 #' @param prediction_grid Optional; if provided, predict on grid and return prediction_grid with gpr_mean, gpr_se.
 #' @param coords Optional; for prediction_grid only; required if include_spatial=TRUE.
 #' @param include_spatial If TRUE, add coords to predictor_vars (for spatial smoothing).
@@ -272,8 +272,11 @@ predict_gpr <- function(gpr, newdata, se = TRUE) {
 #' @param hyperparams kernel, nug.min, nug.max, nug.est.
 #' @return Model list with model, scale_params (means/sds), encoding, encoded_names, predictor_vars, model_type.
 #'   If test_data: predictions, r2, rmse. If prediction_grid: predictions, se, prediction_grid, n_train, n_pred.
-fit_gpr <- function(train_data, predictor_vars, value_var = "median_carbon_density",
-                    test_data = NULL, prediction_grid = NULL,
+fit_gpr <- function(train_data,
+                    test_data = NULL,
+                    predictor_vars,
+                    value_var = "median_carbon_density",
+                    prediction_grid = NULL,
                     coords = NULL, include_spatial = FALSE, formula = NULL,
                     hyperparams = NULL) {
   if (!requireNamespace("GauPro", quietly = TRUE))
@@ -386,9 +389,17 @@ fit_gaussian_process_regression <- function(dat, value_var, coords, predictor_va
                                             formula = NULL, prediction_grid,
                                             include_spatial = FALSE,
                                             kernel = "matern52", nug_min = 1e-8, nug_max = 100, nug_est = TRUE) {
-  fit_gpr(train_data = dat, predictor_vars = predictor_vars, value_var = value_var,
-          prediction_grid = prediction_grid, coords = coords, include_spatial = include_spatial,
-          formula = formula, hyperparams = list(kernel = kernel, nug.min = nug_min, nug.max = nug_max, nug.est = nug_est))
+  fit_gpr(
+    train_data = dat,
+    test_data = NULL,
+    predictor_vars = predictor_vars,
+    value_var = value_var,
+    prediction_grid = prediction_grid,
+    coords = coords,
+    include_spatial = include_spatial,
+    formula = formula,
+    hyperparams = list(kernel = kernel, nug.min = nug_min, nug.max = nug_max, nug.est = nug_est)
+  )
 }
 
 # ================================ RF, XGB, GAM ================================
@@ -425,15 +436,21 @@ fit_xgboost <- function(train_data, test_data, predictor_vars, hyperparams = NUL
   list(model = model, predictions = as.numeric(predict(model, newdata = X_test)))
 }
 
-fit_gam <- function(train_data, test_data, predictor_vars, k_spatial = 80) {
+fit_gam <- function(train_data, test_data, predictor_vars, k_spatial = 80,
+                    include_spatial = TRUE) {
   if (!requireNamespace("mgcv", quietly = TRUE))
     return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
 
   y_train <- train_data$median_carbon_density
   family_used <- if (any(y_train <= 0, na.rm = TRUE)) gaussian() else Gamma(link = "log")
   covar_terms  <- paste(predictor_vars, collapse = " + ")
-  spatial_term <- paste0("s(longitude, latitude, k = ", k_spatial, ")")
-  form <- as.formula(paste("median_carbon_density ~", spatial_term, "+", covar_terms))
+
+  if (include_spatial && all(c("longitude", "latitude") %in% names(train_data))) {
+    spatial_term <- paste0("s(longitude, latitude, k = ", k_spatial, ")")
+    form <- as.formula(paste("median_carbon_density ~", spatial_term, "+", covar_terms))
+  } else {
+    form <- as.formula(paste("median_carbon_density ~", covar_terms))
+  }
 
   fit <- try(mgcv::gam(form, data = train_data, family = family_used, method = "REML"), silent = TRUE)
   if (inherits(fit, "try-error"))
