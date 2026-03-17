@@ -43,7 +43,7 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 | **3**  | Hyperparameter tuning for GPR, GAM, XGB (best config per model)                                    | `output/cv_pipeline/best_config_*.rds`                |
 | **3b** | Permutation importance with tuned models and best vars                                             | `output/cv_pipeline/importance_perm_*.csv/.png`       |
 | **3c** | SHAP importance with tuned models and best vars                                                    | `output/cv_pipeline/importance_shap_*.csv/.png`       |
-| **4**  | CV and importance plots (second pass of cv_pipeline)                                               | `output/cv_pipeline/`                                 |
+| **4**  | Cross-validation with tuned models and pruned covariates (second pass of `cv_pipeline.R`)         | `output/cv_pipeline/`                                 |
 | **5**  | Fit and save final models on all data (XGB, GAM, GPR)                                              | `output/final_models/*_final.rds`                            |
 | **6**  | Partial dependence plots for each final model                                                      | `output/covariate_selection/pdp_*.png`                       |
 | **7**  | Spatial prediction maps (mean + SE for GPR) for each model                                         | `output/predictions/*_prediction_map.png`, `gpr_se_map.png`  |
@@ -107,9 +107,9 @@ The pipeline reuses caches where possible. All cache files live under `**output/
 
 ## Environmental data
 
-First, ensure that a 'data' directory exists in the main repository (see [Directory structure](#directory-structure)).
+First, ensure that a `data` directory exists in the main repository (see [Directory structure](#directory-structure)).
 
-The raster files containing environmental covariates (from remote sensing and re-analysis products) are available at XXX (TODO: EITHER [ZENODO](https://zenodo.org/) OR [GITHUB LARGE FILE STORAGE](https://docs.github.com/en/repositories/working-with-files/managing-large-files/configuring-git-large-file-storage)). This file must be placed in the data repository and named `env_rasters`.
+The NetCDF raster files containing environmental covariates (from remote sensing and re-analysis products) are not stored in this repository. Download them from the data archive associated with the paper (e.g. the Zenodo record referenced in the manuscript) and place all `.nc` files under `data/env_rasters/`. The pipeline will auto-discover these covariates at runtime using `raster_covariates` from `modelling/R/extract_covariates_from_rasters.R`.
 
 ## Regions data
 
