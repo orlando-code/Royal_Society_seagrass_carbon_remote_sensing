@@ -16,6 +16,8 @@ source("modelling/R/extract_covariates_from_rasters.R")
 source("modelling/R/assign_region_from_latlon.R")
 load_packages(c("here", "dplyr", "ggplot2", "tidyr", "sf"))
 
+use_tuned_categorical <- isTRUE(get0("categorical_use_tuned", envir = .GlobalEnv, ifnotfound = FALSE))
+
 target_var   <- get0("target_var", envir = .GlobalEnv, ifnotfound = "median_carbon_density_100cm")
 model_list   <- get0("model_list", envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB"))
 n_folds      <- get0("n_folds", envir = .GlobalEnv, ifnotfound = 5L)
@@ -30,7 +32,11 @@ dpi          <- get0("dpi", envir = .GlobalEnv, ifnotfound = 150)
 show_titles  <- isTRUE(get0("show_titles", envir = .GlobalEnv, ifnotfound = TRUE))
 
 cat("\n========================================\n")
-cat("SPATIAL/CATEGORICAL EFFECT (ALL MODELS)\n")
+if (use_tuned_categorical) {
+  cat("SPATIAL/CATEGORICAL EFFECT (ALL MODELS, TUNED)\n")
+} else {
+  cat("SPATIAL/CATEGORICAL EFFECT (ALL MODELS)\n")
+}
 cat("========================================\n\n")
 
 # -----------------------------------------------------------------------------
@@ -90,6 +96,59 @@ if (length(per_model_vars) == 0) {
 env_only_by_model <- lapply(per_model_vars, function(v) setdiff(v, c("latitude", "longitude", "region")))
 
 # -----------------------------------------------------------------------------
+# Optional tuned hyperparameters (used when use_tuned_categorical = TRUE)
+# -----------------------------------------------------------------------------
+hyperparams_by_model <- NULL
+if (use_tuned_categorical) {
+  config_dir <- "output/cv_pipeline"
+  load_best_config <- function(model_name) {
+    base <- file.path(config_dir, "best_config")
+    candidates <- switch(model_name,
+      XGB = c(paste0(base, "_xgb.rds"), file.path(config_dir, "xgb_best_config.rds")),
+      GAM = c(paste0(base, "_gam.rds"), file.path(config_dir, "gam_best_config.rds")),
+      GPR = c(paste0(base, "_gpr.rds"), file.path(config_dir, "gpr_best_config.rds")),
+      character(0)
+    )
+    for (p in candidates) {
+      if (file.exists(p)) return(readRDS(p))
+    }
+    NULL
+  }
+
+  hyperparams_by_model <- list()
+  for (m in intersect(model_list, c("GPR", "GAM", "XGB"))) {
+    cfg <- load_best_config(m)
+    if (is.null(cfg)) {
+      cat("Warning: missing tuned config for", m, "- categorical effect for this model will use defaults.\n")
+      next
+    }
+    if (m == "GPR") {
+      hyperparams_by_model[[m]] <- list(
+        kernel = cfg$kernel,
+        nug.min = cfg$nug.min,
+        nug.max = cfg$nug.max,
+        nug.est = TRUE
+      )
+    } else if (m == "XGB") {
+      hyperparams_by_model[[m]] <- list(
+        nrounds = cfg$nrounds,
+        max_depth = cfg$max_depth,
+        learning_rate = cfg$learning_rate %||% 0.1,
+        subsample = cfg$subsample %||% 0.8,
+        colsample_bytree = cfg$colsample_bytree %||% 0.8
+      )
+    } else if (m == "GAM") {
+      hyperparams_by_model[[m]] <- list(
+        k_spatial = cfg$k_spatial %||% 80L
+      )
+    }
+  }
+  if (length(hyperparams_by_model) > 0) {
+    cat("Loaded tuned hyperparams for:", paste(names(hyperparams_by_model), collapse = ", "), "\n")
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Folds (same as pipeline: cv_type)
 # -----------------------------------------------------------------------------
 if (identical(cv_type, "spatial") && length(cv_blocksize) > 0) {
@@ -138,7 +197,9 @@ for (model_name in intersect(model_list, c("GPR", "GAM", "XGB"))) {
         models         = model_name,
         verbose        = FALSE,
         core_sf        = core_sf,
-        log_response   = log_response
+        log_response   = log_response,
+        tune_hyperparams = FALSE,
+        hyperparams_by_model = hyperparams_by_model
       ),
       error = function(e) { cat("error:", e$message, "\n"); NULL }
     )
@@ -168,8 +229,11 @@ if (length(results_list) == 0) {
   cat("No results. Check data and model list.\n")
 } else {
   summary_tab <- dplyr::bind_rows(results_list)
-  write.csv(summary_tab, file.path(out_dir, "spatial_categorical_effect_all_models.csv"), row.names = FALSE)
-  cat("Saved:", file.path(out_dir, "spatial_categorical_effect_all_models.csv"), "\n")
+  suffix <- if (use_tuned_categorical) "_tuned" else ""
+  csv_name <- paste0("spatial_categorical_effect_all_models", suffix, ".csv")
+  png_name <- paste0("spatial_categorical_effect_all_models", suffix, ".png")
+  write.csv(summary_tab, file.path(out_dir, csv_name), row.names = FALSE)
+  cat("Saved:", file.path(out_dir, csv_name), "\n")
 
   # Bar chart: configuration vs mean_r2, faceted by model (or grouped)
   summary_tab <- summary_tab %>%
@@ -185,8 +249,8 @@ if (length(results_list) == 0) {
     labs(
       x = "",
       y = paste0("Mean R² (", cv_method_name, ")"),
-      title = if (show_titles) "Effect of latitude, longitude, and region on CV R² (all models)" else NULL,
-      subtitle = if (show_titles) "Same folds and env predictors per model; adding spatial terms can lower R² under spatial CV." else NULL
+      title = if (show_titles && !use_tuned_categorical) "Effect of latitude, longitude, and region on CV R² (all models)" else if (show_titles && use_tuned_categorical) "Effect of latitude, longitude, and region on CV R² (tuned models)" else NULL,
+      subtitle = if (show_titles && !use_tuned_categorical) "Same folds and env predictors per model; adding spatial terms can lower R² under spatial CV." else if (show_titles && use_tuned_categorical) "Same folds and env predictors per model; tuned hyperparameters applied for categorical comparison." else NULL
     ) +
     theme_minimal() +
     theme(
@@ -195,9 +259,9 @@ if (length(results_list) == 0) {
       legend.position = "right",
       axis.text.x = element_text(angle = 45, hjust = 1)
     )
-  ggsave(file.path(out_dir, "spatial_categorical_effect_all_models.png"), p, width = 9, height = 5, dpi = dpi)
-  if (fig_dir != out_dir) ggsave(file.path(fig_dir, "spatial_categorical_effect_all_models.png"), p, width = 9, height = 5, dpi = dpi)
-  cat("Figure saved: spatial_categorical_effect_all_models.png\n")
+  ggsave(file.path(out_dir, png_name), p, width = 9, height = 5, dpi = dpi)
+  if (fig_dir != out_dir) ggsave(file.path(fig_dir, png_name), p, width = 9, height = 5, dpi = dpi)
+  cat("Figure saved:", png_name, "\n")
 }
 
 cat("\nDone.\n")
