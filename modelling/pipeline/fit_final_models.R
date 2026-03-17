@@ -52,17 +52,23 @@ if ("random_core_variable" %in% colnames(dat)) {
     dplyr::summarise(
       median_carbon_density = median(.data[[target_var]], na.rm = TRUE),
       dplyr::across(dplyr::all_of(c(predictor_vars, "longitude", "latitude")), dplyr::first),
+      seagrass_species = dplyr::first(seagrass_species),
+      region = dplyr::first(region),
       .groups = "drop"
     ) %>%
     dplyr::filter(!is.na(median_carbon_density))
 } else {
   core_data <- dat %>%
     dplyr::mutate(median_carbon_density = .data[[target_var]]) %>%
-    dplyr::select(longitude, latitude, median_carbon_density, dplyr::all_of(predictor_vars))
+    dplyr::select(longitude, latitude, median_carbon_density,
+                  dplyr::all_of(predictor_vars),
+                  dplyr::all_of(intersect(c("seagrass_species", "region"), names(dat))))
 }
 core_data <- as.data.frame(
   core_data %>%
-    dplyr::select(longitude, latitude, median_carbon_density, dplyr::all_of(predictor_vars)) %>%
+    dplyr::select(longitude, latitude, median_carbon_density,
+                  dplyr::all_of(predictor_vars),
+                  dplyr::all_of(intersect(c("seagrass_species", "region"), names(core_data)))) %>%
     dplyr::filter(complete.cases(.))
 )
 predictor_vars <- predictor_vars[predictor_vars %in% colnames(core_data)]
@@ -297,7 +303,12 @@ if (file.exists(best_config_path)) {
 
 gpr_hp <- list(kernel = gpr_kernel, nug.min = gpr_nug_min, nug.max = gpr_nug_max)
 gpr_data <- if (log_response) transform_response(core_data, "median_carbon_density", log = TRUE) else core_data
-gpr_final_fit <- fit_gpr(gpr_data, predictor_vars, test_data = gpr_data, hyperparams = gpr_hp)
+gpr_final_fit <- fit_gpr(
+  train_data = gpr_data,
+  test_data = gpr_data,
+  predictor_vars = predictor_vars,
+  hyperparams = gpr_hp
+)
 gpr_pred <- gpr_final_fit$predictions
 if (log_response) gpr_pred <- inverse_response_transform(gpr_pred, log = TRUE)
 gpr_train_metrics <- calculate_metrics(core_data$median_carbon_density, gpr_pred)
