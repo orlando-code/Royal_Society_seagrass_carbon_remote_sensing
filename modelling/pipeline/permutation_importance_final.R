@@ -43,7 +43,11 @@ if (length(exclude_regions) > 0L) {
 predictor_vars_all <- raster_covariates[raster_covariates %in% colnames(dat)]
 core_data <- dat %>%
   dplyr::mutate(median_carbon_density = .data[[target_var]]) %>%
-  dplyr::select(longitude, latitude, median_carbon_density, dplyr::all_of(predictor_vars_all)) %>%
+  dplyr::select(
+    longitude, latitude, median_carbon_density,
+    dplyr::all_of(predictor_vars_all),
+    dplyr::all_of(intersect(c("seagrass_species", "region"), names(dat)))
+  ) %>%
   dplyr::filter(complete.cases(.))
 core_data <- as.data.frame(core_data)
 
