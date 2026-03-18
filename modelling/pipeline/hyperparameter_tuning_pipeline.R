@@ -63,8 +63,6 @@ block_size   <- NULL
 fold_indices <- cv_fold_info$fold_indices
 
 
-
-
 # ---------------------------------------------------------------------------
 # GPR
 # ---------------------------------------------------------------------------
@@ -142,7 +140,7 @@ if ("XGB" %in% model_list) {
       colsample_bytree = xgb_grid$colsample_bytree[i],
       min_child_weight = xgb_grid$min_child_weight[i]
     )
-    m <- cv_tune_xgb(core_data, pvars, tune_folds, hp, log_response = log_response)
+    m <- cv_tune_xgb(core_data, pvars, fold_indices, hp, log_response = log_response)
     xgb_results[[i]] <- cbind(xgb_grid[i, ], m)
     cat("  nrounds=", hp$nrounds, " depth=", hp$max_depth, " lr=", hp$learning_rate,
         " mcw=", hp$min_child_weight, " -> R2=", round(m$r2, 4), " RMSE=", round(m$rmse, 4), "\n")
@@ -172,7 +170,7 @@ if ("GAM" %in% model_list) {
   cat("\n=== GAM hyperparameter tuning (k_covariate, no spatial smooth) ===\n")
   pvars <- load_model_vars("GAM", per_model_vars, use_shap_first = use_shap_per_model)
   cat("  Predictor(s):", length(pvars), "\n")
-  gam_k_grid <- c(2L, 4L, 6L, 8L, 10L)
+  gam_k_grid <- c(2L, 4L, 6L, 8L, 10L, 12L, 15L, 20L)
 
   cv_tune_gam <- function(core_data, predictor_vars, folds, k_covariate, log_response = TRUE) {
     metrics <- vector("list", max(folds))
@@ -204,7 +202,7 @@ if ("GAM" %in% model_list) {
   gam_results <- vector("list", length(gam_k_grid))
   for (i in seq_along(gam_k_grid)) {
     k_cov <- gam_k_grid[i]
-    m     <- cv_tune_gam(core_data, pvars, tune_folds, k_cov, log_response = log_response)
+    m     <- cv_tune_gam(core_data, pvars, fold_indices, k_cov, log_response = log_response)
     r2_val <- if (is.nan(m$r2) || is.infinite(m$r2)) NA_real_ else m$r2
     rmse_val <- if (is.nan(m$rmse) || is.infinite(m$rmse)) NA_real_ else m$rmse
     gam_results[[i]] <- data.frame(k_covariate = k_cov, r2 = r2_val, rmse = rmse_val)
