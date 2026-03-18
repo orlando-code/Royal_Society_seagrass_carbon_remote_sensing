@@ -5,7 +5,7 @@
 # saves prediction (and SE where available) maps to output/predictions/.
 #
 # Requires: fit_final_models.R has been run (XGB_final.rds, GAM_final.rds, GPR_final.rds)
-# Outputs:  output/predictions/{xgb,gam,gpr}_prediction_map.png, gpr_se_map.png
+# Outputs:  output/predictions/{xgb,gam,gpr}_prediction_map.png, {gpr,gam}_se_map.png
 #
 # Usage: source from run_paper.R (step 7), or run standalone.
 
@@ -108,9 +108,29 @@ plot_prediction_map <- function(grid, mean_col, se_col = NULL,
                                 se_name = "Standard error",
                                 lon_range, lat_range, obs_data = NULL, value_col = target_var) {
   if (nrow(grid) == 0L || !mean_col %in% names(grid)) return(list(p_mean = NULL, p_se = NULL))
+
+  # Crop the color scale when values become very large.
+  # Rule: if any value > 0.5, cap the scale upper bound at 0.25.
+  crop_limits <- function(v) {
+    v <- v[is.finite(v)]
+    if (length(v) == 0L) return(c(0, 1))
+    upper <- if (any(v > 0.5, na.rm = TRUE)) 0.25 else max(v, na.rm = TRUE)
+    lower <- min(v, na.rm = TRUE)
+    if (!is.finite(lower)) lower <- 0
+    if (lower > upper) lower <- upper
+    c(lower, upper)
+  }
+
+  mean_lim <- crop_limits(grid[[mean_col]])
   p_mean <- ggplot2::ggplot() +
     ggplot2::geom_raster(data = grid, ggplot2::aes(x = longitude, y = latitude, fill = .data[[mean_col]])) +
-    ggplot2::scale_fill_viridis_c(option = "turbo", name = mean_name, na.value = "transparent") +
+    ggplot2::scale_fill_viridis_c(
+      option = "turbo",
+      name = mean_name,
+      na.value = "transparent",
+      limits = mean_lim,
+      oob = scales::squish
+    ) +
     ggplot2::geom_polygon(
       data = world,
       ggplot2::aes(x = long, y = lat, group = group),
@@ -132,9 +152,16 @@ plot_prediction_map <- function(grid, mean_col, se_col = NULL,
 
   p_se <- NULL
   if (!is.null(se_col) && se_col %in% names(grid)) {
+    se_lim <- crop_limits(grid[[se_col]])
     p_se <- ggplot2::ggplot() +
       ggplot2::geom_raster(data = grid, ggplot2::aes(x = longitude, y = latitude, fill = .data[[se_col]])) +
-      ggplot2::scale_fill_viridis_c(option = "turbo", name = se_name, na.value = "transparent") +
+      ggplot2::scale_fill_viridis_c(
+        option = "turbo",
+        name = se_name,
+        na.value = "transparent",
+        limits = se_lim,
+        oob = scales::squish
+      ) +
       ggplot2::geom_polygon(
         data = world,
         ggplot2::aes(x = long, y = lat, group = group),
@@ -187,13 +214,13 @@ for (model_name in model_list) {
   }
   grid_sub <- prediction_grid[pred_ok, , drop = FALSE]
   res <- tryCatch(
-    predict_model(obj, grid_sub, se = (model_name == "GPR")),
+    predict_model(obj, grid_sub, se = (model_name %in% c("GPR", "GAM"))),
     error = function(e) { cat("  Predict error:", conditionMessage(e), "\n"); NULL }
   )
   if (is.null(res)) next
 
   mean_col <- paste0(tolower(model_name), "_mean")
-  se_col <- if (model_name == "GPR" && !is.null(res$se)) paste0(tolower(model_name), "_se") else NULL
+  se_col <- if (!is.null(res$se)) paste0(tolower(model_name), "_se") else NULL
   prediction_grid[[mean_col]] <- NA_real_
   prediction_grid[[mean_col]][pred_ok] <- res$mean
   if (!is.null(se_col)) {
