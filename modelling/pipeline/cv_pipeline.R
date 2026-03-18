@@ -185,12 +185,21 @@ loc_id <- as.integer(factor(paste(complete_dat$longitude, complete_dat$latitude)
 unique_loc_ids <- unique(loc_id)
 loc_fold_assign <- sample(rep(seq_len(n_folds), length.out = length(unique_loc_ids)))
 loc_grouped_folds <- loc_fold_assign[match(loc_id, unique_loc_ids)]
+
+# 3. Pixel-grouped random: all rows sharing identical covariate vectors go to the
+#    same fold (strictly more conservative than location-grouped, since distinct
+#    locations that map to same raster pixel will also be grouped together)
+pixel_info <- make_pixel_grouped_folds(complete_dat, predictor_vars, n_folds, seed = 42L)
+pixel_grouped_folds <- pixel_info$fold_indices
+
 cat("  True random folds:", n_cores, "rows ->", n_folds, "folds.\n")
 cat("  Location-grouped random folds:", length(unique_loc_ids), "unique locations ->", n_folds, "folds.\n")
+cat("  Pixel-grouped random folds:", pixel_info$n_groups, "unique covariate vectors ->", n_folds, "folds.\n")
 
 cv_strategies <- list(
   list(method = "random_split", folds = true_random_folds, block_size_m = NA),
-  list(method = "location_grouped_random", folds = loc_grouped_folds, block_size_m = NA)
+  list(method = "location_grouped_random", folds = loc_grouped_folds, block_size_m = NA),
+  list(method = "pixel_grouped_random", folds = pixel_grouped_folds, block_size_m = NA)
 )
 if (identical(cv_type, "spatial") && length(block_sizes_m) > 0) {
   cat("\tCreating spatial folds (cv_type = spatial)\n")
@@ -514,9 +523,34 @@ summary_method <- results_df %>%
   ) %>%
   mutate(method_label = vapply(method, method_to_display, character(1)))
 
+# To control bar order such that non-spatial methods appear first,
+# followed by spatial methods ordered from smallest to largest block size,
+# define an explicit method order.
+
+# Function to extract a numeric km value from method strings (eg "spatial_block_1km" => 1)
+get_block_km <- function(x) {
+  m <- regmatches(x, regexec("spatial_block_(\\d+)km", x))
+  as.numeric(vapply(m, function(val) if (length(val) > 1) val[2] else NA_real_, numeric(1)))
+}
+
+# Find all method types
+methods_all <- unique(summary_method$method)
+spatial_methods <- grep("^spatial_block_\\d+km$", methods_all, value = TRUE)
+non_spatial_methods <- setdiff(methods_all, spatial_methods)
+
+# Order spatial methods by their km value
+spatial_methods_ordered <- spatial_methods[order(get_block_km(spatial_methods))]
+method_order <- c(non_spatial_methods, spatial_methods_ordered)
+
+# Ensure this order is reflected in method_label via a factor
+summary_method$method_label <- factor(
+  vapply(summary_method$method, method_to_display, character(1)),
+  levels = vapply(method_order, method_to_display, character(1))
+)
+
 p_method <- summary_method %>%
   tidyr::pivot_longer(cols = c(r2, rmse), names_to = "metric", values_to = "value") %>%
-  ggplot(aes(x = reorder(method_label, -value), y = value, fill = metric)) +
+  ggplot(aes(x = method_label, y = value, fill = metric)) +
   geom_col(position = "dodge") +
   labs(x = "CV method", y = "Mean (across folds and models)", title = if (show_titles) "Ensemble performance by CV method" else NULL) +
   theme_minimal() +
