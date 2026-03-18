@@ -25,22 +25,22 @@ All pipeline settings live at the top of `modelling/run_paper.R` (Step **-1**). 
 
 ### Plotting / reporting
 
-- **`dpi`**: Output figure resolution (default `150`).
-- **`show_titles`**: If `TRUE`, include plot titles/subtitles (useful for interactive runs); set `FALSE` for cleaner figure panels.
+- `**dpi`**: Output figure resolution (default `150`).
+- `**show_titles`**: If `TRUE`, include plot titles/subtitles (useful for interactive runs); set `FALSE` for cleaner figure panels.
 
 ### What to run
 
-- **`do_cv_on_defaults`**: If `TRUE` (default), runs the *default* CV pass (**Step 2**) and the default spatial/categorical investigation (**Step 2b**). Set to `FALSE` to skip those and only run cross-fold validation post model tuning.
+- `**do_cv_on_defaults**`: If `TRUE` (default), runs the *default* CV pass (**Step 2**) and the default spatial/categorical investigation (**Step 2b**). Set to `FALSE` to skip those and only run cross-fold validation post model tuning.
 
 ### Target and transforms
 
-- **`target_var`**: The response column in `data/all_extracted_new.rds` to model (default `median_carbon_density_100cm`).
-- **`log_transform_target`**: If `TRUE`, models are fit on \(\log(y)\) and predictions are back-transformed for metrics. This often stabilises variance for right-skewed carbon density.
+- `**target_var`**: The response column in `data/all_extracted_new.rds` to model (default `median_carbon_density_100cm`).
+- `**log_transform_target*`*: If `TRUE`, models are fit on \log(y) and predictions are back-transformed for metrics. This often stabilises variance for right-skewed carbon density.
 
 ### Spatial filtering
 
-- **`exclude_regions`**: Character vector of region names to remove from *all* modelling stages (pruning, CV, tuning, final fits, prediction maps). Use `character(0)` to include everything ie:
-  
+- `**exclude_regions**`: Character vector of region names to remove from *all* modelling stages (pruning, CV, tuning, final fits, prediction maps). Use `character(0)` to include everything ie:
+
 ```r
 exclude_regions <- c("Black Sea")   # exclude Black Sea
 exclude_regions <- character(0)     # include all regions
@@ -50,25 +50,24 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 
 ### Covariate pruning / selection
 
-- **`use_correlation_filter`**: If `TRUE`, drops highly correlated covariates before model-specific selection.
-- **`correlation_filter_threshold`**: Absolute correlation threshold for pruning (e.g. `0.8`).
-- **`permutation_max_vars`**: Maximum number of covariates retained after permutation selection (e.g. `15L`).
-- **`n_permutations`**: Replicates per variable when computing permutation importance (increase for more stable rankings).
-- **`permutation_coverage`**: Cumulative importance coverage target (e.g. keep enough variables to explain `0.99` of total importance).
-- **`use_shap_per_model`**: If `TRUE`, prefers per-model SHAP-selected covariate sets where available; otherwise uses permutation-selected sets.
+- `**use_correlation_filter**`: If `TRUE`, drops highly correlated covariates before model-specific selection.
+- `**correlation_filter_threshold**`: Absolute correlation threshold for pruning (e.g. `0.8`).
+- `**permutation_max_vars**`: Maximum number of covariates retained after permutation selection (e.g. `15L`).
+- `**n_permutations**`: Replicates per variable when computing permutation importance (increase for more stable rankings).
+- `**permutation_coverage**`: Cumulative importance coverage target (e.g. keep enough variables to explain `0.99` of total importance).
+- `**use_shap_per_model**`: If `TRUE`, prefers per-model SHAP-selected covariate sets where available; otherwise uses permutation-selected sets.
 
 ### Models
 
-- **`model_list`**: Which models to run. Defaults to `c("GPR", "GAM", "XGB")`.
+- `**model_list**`: Which models to run. Defaults to `c("GPR", "GAM", "XGB")`.
 
 ### Cross-validation design
 
-- **`n_folds`**: Number of CV folds (default `5L`).
-- **`cv_type`**: `"spatial"` (block CV) or `"random"` (random split).
+- `**n_folds**`: Number of CV folds (default `5L`).
+- `**cv_type**`: `"spatial"` (block CV) or `"random"` (random split).
   - Spatial CV is stricter and is the recommended choice if your goal is “gap-filling away from sampled cores”.
-- **`cv_blocksize`**: Spatial block size (metres) for tuning and other “single block size” steps (default `5000L`).
-- **`cv_blocksize_scan`**: Vector of block sizes (metres) to scan in the CV comparison plots (Step 2). Set to `NULL` or `integer(0)` to avoid scanning and use only `cv_blocksize`.
-
+- `**cv_blocksize**`: Spatial block size (metres) for tuning and other “single block size” steps (default `5000L`).
+- `**cv_blocksize_scan**`: Vector of block sizes (metres) to scan in the CV comparison plots (Step 2). Set to `NULL` or `integer(0)` to avoid scanning and use only `cv_blocksize`.
 
 ---
 
@@ -80,12 +79,13 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 | **-1** | Config (exclude_regions, model_list, pruning flags, n_folds, cv_type, etc.) and create output dirs | —                                                            |
 | **0**  | Build `data/all_extracted_new.rds` from raw rasters if missing                                     | `data/all_extracted_new.rds`                                 |
 | **1**  | Covariate pruning: correlation filter + per-model permutation (and optionally SHAP) importance     | `output/covariate_selection/` (pruned CSVs, importance CSVs) |
-| **2**  | CV pipeline: spatial (or random) folds, run GPR/GAM/XGB, compare block sizes                       | `output/cv_pipeline/` (CV results, plots)             |
-| **2b** | Spatial/categorical effect: env-only vs +lat vs +lon vs +region for each model                     | `output/cv_pipeline/`                                 |
-| **3**  | Hyperparameter tuning for GPR, GAM, XGB (best config per model)                                    | `output/cv_pipeline/best_config_*.rds`                |
-| **3b** | Permutation importance with tuned models and best vars                                             | `output/cv_pipeline/importance_perm_*.csv/.png`       |
-| **3c** | SHAP importance with tuned models and best vars                                                    | `output/cv_pipeline/importance_shap_*.csv/.png`       |
-| **4**  | Cross-validation with tuned models and pruned covariates (second pass of `cv_pipeline.R`)         | `output/cv_pipeline/`                                 |
+| **2**  | CV pipeline: spatial (or random) folds, run GPR/GAM/XGB, compare block sizes                       | `output/cv_pipeline/` (CV results, plots)                    |
+| **2b** | Spatial/categorical effect: env-only vs +lat vs +lon vs +region for each model                     | `output/cv_pipeline/`                                        |
+| **3**  | Hyperparameter tuning for GPR, GAM, XGB (best config per model)                                    | `output/cv_pipeline/best_config_*.rds`                       |
+| **3b** | Permutation importance with tuned models and best vars                                             | `output/cv_pipeline/importance_perm_*.csv/.png`              |
+| **3c** | SHAP importance with tuned models and best vars                                                    | `output/cv_pipeline/importance_shap_*.csv/.png`              |
+| **4**  | Cross-validation with tuned models and pruned covariates (second pass of `cv_pipeline.R`)          | `output/cv_pipeline/`                                        |
+| **4b** | Spatial/categorical effect: env-only vs +lat vs +lon vs +region for each model                     | `output/cv_pipeline/`                                        |
 | **5**  | Fit and save final models on all data (XGB, GAM, GPR)                                              | `output/final_models/*_final.rds`                            |
 | **6**  | Partial dependence plots for each final model                                                      | `output/covariate_selection/pdp_*.png`                       |
 | **7**  | Spatial prediction maps (mean + SE for GPR) for each model                                         | `output/predictions/*_prediction_map.png`, `gpr_se_map.png`  |
@@ -126,7 +126,7 @@ See `**modelling/pipeline/README.md**`, `**modelling/plots/README.md**`, and `**
 
 This is a short overview: see the README files in the relevant directories for more information.
 
-![Flowchart of repository workflow](flowchart.png)
+Flowchart of repository workflow
 
 ---
 
@@ -143,9 +143,20 @@ The pipeline reuses caches where possible. All cache files live under `**output/
 
 ## Models and methods
 
-- **Models**: GAM, GPR (GauPro), XGBoost. All use the same per-model covariate set from pruning (permutation or SHAP). Where necessary, categorical variables (e.g. seagrass species, region) are encoded as integers.
+- **Models**: GAM, GPR, XGBoost. All use the same per-model covariate set from pruning (permutation or SHAP). Where necessary, categorical variables (e.g. seagrass species, region) are encoded as integers.
 - **CV**: Spatial block CV (with configurable block size(s)) or random split; `**n_folds`** and `**cv_type`** are set in `**run_paper.R`**.
 - **Variable selection**: Correlation filter plus per-model permutation importance (and optionally SHAP); top vars per model are written to `**pruned_model_variables_perm.csv`** / `**pruned_model_variables_shap.csv`**.
+
+## Cross-Validation Approaches
+
+The pipeline evaluates predictive performance under multiple fold construction strategies (see `modelling/pipeline/cv_pipeline.R`). This matters because the data are spatially clustered and some observations share identical `(longitude, latitude)` raster-derived covariates.
+
+- `random_split`: Naive split across rows; train/test may contain points from the same location (and duplicate covariates can leak), so results are a highly optimistic baseline for out-of-sample prediction.
+- `location_grouped_random`: All rows that share the exact same `(longitude, latitude)` are assigned to the same fold; this prevents leakage from duplicate coordinates (and their identical covariates) and gives a more realistic generalisation estimate.
+- `spatial_block_<m>m`: The study area is partitioned into spatial blocks of size `<m>` metres; folds hold out whole blocks, testing extrapolation to new geography away from sampled cores and indicating how well covariates capture spatial structure at that scale.
+- `region_stratified_<m>m`: Spatial blocks are built within each ecoregion `region`, and then folds are combined so each fold retains representation from multiple regions; this reduces “leave-one-region-out” artifacts caused by how blocks fall across coastal regions.
+
+All fold types are cached/reused via `**output/cache/`** to make re-runs fast.
 
 ## Environmental data
 
@@ -165,6 +176,6 @@ Persistent identifier: [https://gis.ices.dk/geonetwork/srv/metadata/4745e824-a61
 
 ### MEOW Ecoregions
 
-The Marine Ecoregions of the World (MEOW) document global ecoregions. These are available via UNEP[](https://data-gis.unep-wcmc.org/portal/home/item.html?id=80567b4443f4457b822f645a2f0d70cf) via [this link](https://data-gis.unep-wcmc.org/portal/home/item.html?id=80567b4443f4457b822f645a2f0d70cf#:~:text=Description-,Download%20Dataset,-This%20dataset%20combines).
+The Marine Ecoregions of the World (MEOW) document global ecoregions. These are available via UNEP via [this link](https://data-gis.unep-wcmc.org/portal/home/item.html?id=80567b4443f4457b822f645a2f0d70cf#:~:text=Description-,Download%20Dataset,-This%20dataset%20combines).
 
 Persistent identifier: [https://data-gis.unep-wcmc.org/server/rest/services/Hosted/WCMC036_MEOW_PPOW_2007_2012/FeatureServer](https://data-gis.unep-wcmc.org/server/rest/services/Hosted/WCMC036_MEOW_PPOW_2007_2012/FeatureServer)
