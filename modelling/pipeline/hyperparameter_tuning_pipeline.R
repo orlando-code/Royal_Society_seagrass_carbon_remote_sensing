@@ -53,18 +53,14 @@ use_shap_per_model <- isTRUE(get0("use_shap_per_model", envir = .GlobalEnv, ifno
 per_model_vars <- get_per_model_vars(cov_dir, colnames(core_data), use_shap_first = use_shap_per_model)
 
 
-# Location-grouped folds: all rows sharing a (lon, lat) go to the same fold.
-# This prevents duplicate-location leakage while being less harsh than spatial blocks,
-# giving the tuner a realistic signal to optimise against.
-loc_id <- as.integer(factor(paste(core_data$longitude, core_data$latitude)))
-unique_loc_ids <- unique(loc_id)
-set.seed(42)
-loc_fold <- sample(rep(seq_len(n_folds), length.out = length(unique_loc_ids)))
-tune_folds   <- loc_fold[match(loc_id, unique_loc_ids)]
+# Pixel-grouped folds: all rows with identical covariate vectors go to the same
+# fold. Prevents leakage from both duplicate coordinates AND distinct locations
+# that map to the same coarse raster pixel.
+pixel_info   <- make_pixel_grouped_folds(core_data, predictor_vars, n_folds, seed = 42L)
 block_size   <- NULL
-fold_indices <- tune_folds
-cat("Tuning with location-grouped random folds (",
-    length(unique_loc_ids), " unique locations, ", n_folds, " folds).\n", sep = "")
+fold_indices <- pixel_info$fold_indices
+cat("Tuning with pixel-grouped random folds (",
+    pixel_info$n_groups, " unique covariate vectors, ", n_folds, " folds).\n", sep = "")
 
 
 

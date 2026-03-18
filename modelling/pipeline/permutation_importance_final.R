@@ -55,16 +55,10 @@ core_data <- as.data.frame(core_data)
 use_shap_per_model <- isTRUE(get0("use_shap_per_model", envir = .GlobalEnv, ifnotfound = FALSE))
 per_model_vars <- get_per_model_vars(cov_dir, colnames(core_data), use_shap_first = use_shap_per_model)
 
-# Folds (same as tuning)
-if (identical(cv_type, "spatial") && all(c("longitude", "latitude") %in% names(core_data))) {
-  fold_info <- get_cached_spatial_folds(
-    dat = core_data, block_size = cv_blocksize, n_folds = n_folds,
-    cache_tag = "perm_importance_final", exclude_regions = exclude_regions, progress = TRUE
-  )
-  fold_indices <- fold_info$fold_indices
-} else {
-  fold_indices <- sample(rep(seq_len(n_folds), length.out = nrow(core_data)))
-}
+# Folds: pixel-grouped random (matches tuning pipeline)
+pixel_info <- make_pixel_grouped_folds(core_data, predictor_vars_all, n_folds, seed = 42L)
+fold_indices <- pixel_info$fold_indices
+cat("  Pixel-grouped random folds:", pixel_info$n_groups, "unique covariate vectors ->", n_folds, "folds.\n")
 
 # Helper: load best config (try names from hyperparameter_tuning_pipeline first)
 load_best_config <- function(model_name) {
