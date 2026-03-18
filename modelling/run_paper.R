@@ -97,7 +97,7 @@ for (d in c("output", "output/cache", "output/supplement",
   dir.create(d, recursive = TRUE, showWarnings = FALSE)
 }
 
-# Flag to distinguish pre- vs post-tuning CV in cv_pipeline.R
+# Flag to distinguish pre- vs post-tuning CV in cv_pipeline.R (to distinguish the outputs of steps 2 and 4)
 post_tuning_validation <- FALSE
 assign("post_tuning_validation", post_tuning_validation, envir = .GlobalEnv)
 
@@ -182,7 +182,7 @@ cat("\n")
 # -----------------------------------------------------------------------------
 # 4. Cross-fold validation (tuned models and pruned covariates)
 # -----------------------------------------------------------------------------
-post_tuning_validation <- TRUE
+post_tuning_validation <- TRUE  # now using tuned models
 assign("post_tuning_validation", post_tuning_validation, envir = .GlobalEnv)
 cat("\t\tStep 4: Cross-fold validation (tuned models)\n")
 source("modelling/pipeline/cv_pipeline.R")
@@ -191,7 +191,7 @@ cat("\n")
 # -----------------------------------------------------------------------------
 # 4b. Spatial / lat-lon / region effect (tuned models)
 # -----------------------------------------------------------------------------
-categorical_use_tuned <- TRUE
+categorical_use_tuned <- TRUE # use tuned models for spatial and categorical effect plots
 assign("categorical_use_tuned", categorical_use_tuned, envir = .GlobalEnv)
 cat("\t\tStep 4b: Spatial and categorical effect (lat, lon, region) for all models (tuned hyperparams)\n")
 source("modelling/plots/spatial_categorical_effect_all_models.R")
