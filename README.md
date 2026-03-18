@@ -17,16 +17,58 @@ source("modelling/run_paper.R")
 
 Everything goes under `**output/**`: cache, covariate selection, CV/tuning results, final models, prediction maps, and supplement. Caches (spatial folds, prediction grids) live in `**output/cache/**` so heavy steps can be skipped on re-runs.
 
-### Region exclusion
+---
 
-To exclude regions (e.g. Black Sea) from modelling and predictions, set in `run_paper.R` (around line 38):
+## Config (run_paper.R)
 
+All pipeline settings live at the top of `modelling/run_paper.R` (Step **-1**). These are the main knobs you’ll most commonly change.
+
+### Plotting / reporting
+
+- **`dpi`**: Output figure resolution (default `150`).
+- **`show_titles`**: If `TRUE`, include plot titles/subtitles (useful for interactive runs); set `FALSE` for cleaner figure panels.
+
+### What to run
+
+- **`do_cv_on_defaults`**: If `TRUE` (default), runs the *default* CV pass (**Step 2**) and the default spatial/categorical investigation (**Step 2b**). Set to `FALSE` to skip those and only run cross-fold validation post model tuning.
+
+### Target and transforms
+
+- **`target_var`**: The response column in `data/all_extracted_new.rds` to model (default `median_carbon_density_100cm`).
+- **`log_transform_target`**: If `TRUE`, models are fit on \(\log(y)\) and predictions are back-transformed for metrics. This often stabilises variance for right-skewed carbon density.
+
+### Spatial filtering
+
+- **`exclude_regions`**: Character vector of region names to remove from *all* modelling stages (pruning, CV, tuning, final fits, prediction maps). Use `character(0)` to include everything ie:
+  
 ```r
 exclude_regions <- c("Black Sea")   # exclude Black Sea
 exclude_regions <- character(0)     # include all regions
 ```
 
 This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
+
+### Covariate pruning / selection
+
+- **`use_correlation_filter`**: If `TRUE`, drops highly correlated covariates before model-specific selection.
+- **`correlation_filter_threshold`**: Absolute correlation threshold for pruning (e.g. `0.8`).
+- **`permutation_max_vars`**: Maximum number of covariates retained after permutation selection (e.g. `15L`).
+- **`n_permutations`**: Replicates per variable when computing permutation importance (increase for more stable rankings).
+- **`permutation_coverage`**: Cumulative importance coverage target (e.g. keep enough variables to explain `0.99` of total importance).
+- **`use_shap_per_model`**: If `TRUE`, prefers per-model SHAP-selected covariate sets where available; otherwise uses permutation-selected sets.
+
+### Models
+
+- **`model_list`**: Which models to run. Defaults to `c("GPR", "GAM", "XGB")`.
+
+### Cross-validation design
+
+- **`n_folds`**: Number of CV folds (default `5L`).
+- **`cv_type`**: `"spatial"` (block CV) or `"random"` (random split).
+  - Spatial CV is stricter and is the recommended choice if your goal is “gap-filling away from sampled cores”.
+- **`cv_blocksize`**: Spatial block size (metres) for tuning and other “single block size” steps (default `5000L`).
+- **`cv_blocksize_scan`**: Vector of block sizes (metres) to scan in the CV comparison plots (Step 2). Set to `NULL` or `integer(0)` to avoid scanning and use only `cv_blocksize`.
+
 
 ---
 
