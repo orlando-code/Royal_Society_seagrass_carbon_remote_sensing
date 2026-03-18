@@ -3,8 +3,8 @@
 # Uses iml::FeatureEffect (method = "pdp") to compute and plot the marginal
 # effect of each predictor for each model's final fitted object.
 #
-# Requires: output/final_models/<model>_final.rds (from fit_final_models.R)
-# Outputs:  output/covariate_selection/pdp_<model>.png
+# Requires: output/<cv_regime>/final_models/<model>_final.rds (from fit_final_models.R)
+# Outputs:  output/<cv_regime>/covariate_selection/pdp_<model>.png
 #
 # Usage: sourced from run_paper.R (step 5b), or run standalone.
 

@@ -27,7 +27,7 @@ Machine learning and prediction layer:
 - **Scaling and encoding**: **compute_scale_params()**, **apply_scaling()**, **prepare_predictors_train()**, **prepare_predictors_train_numeric_only()**, **prepare_predictors_new()**, **apply_categorical_encoding()** – used for XGB, GAM, GPR (and RF where used).
 - **Response transform**: **transform_response()**, **inverse_response_transform()** (re-exported / used in concert with helpers).
 - **Model fitting**: **fit_xgboost()**, **fit_gam()**, **fit_gpr()**, **fit_rf()** – take train (and optionally test) data and predictor names; **fit_gpr** supports **prediction_grid** and returns predictions + SE.
-- **Unified prediction**: **predict_model()** – takes a saved model list (as from **output/final_models/*_final.rds**), new data, and optional **se = TRUE**; dispatches by model type (GPR returns SE when requested, others return **se = NULL**). **infer_model_type()** identifies GPR/XGB/GAM/RF from the object.
+- **Unified prediction**: **predict_model()** – takes a saved model list (as from **output/<cv_regime>/final_models/*_final.rds**), new data, and optional **se = TRUE**; dispatches by model type (GPR returns SE when requested, others return **se = NULL**). **infer_model_type()** identifies GPR/XGB/GAM/RF from the object.
 - **Data prep for CV**: **prepare_data_for_model()** – returns train/test (and predictor_vars) in the form expected by **fit_***.
 
 Used by **cv_pipeline.R**, **hyperparameter_tuning_pipeline.R**, **fit_final_models.R**, **permutation_importance_final.R**, **shap_importance_final.R**, and **spatial_prediction_maps.R** (for **predict_model**).

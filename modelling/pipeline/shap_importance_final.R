@@ -7,7 +7,7 @@
 #
 # Requires: hyperparameter_tuning_pipeline.R has been run (best_config_*.rds),
 #           pruned_model_variables_shap.csv or pruned_model_variables_perm.csv
-# Outputs:  output/cv_pipeline/importance_shap_<model>.csv and .png
+# Outputs:  output/<cv_regime>/cv_pipeline/importance_shap_<model>.csv and .png
 #
 # Usage: source after step 3 in run_paper.R, or run standalone.
 

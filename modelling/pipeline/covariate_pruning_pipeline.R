@@ -7,7 +7,7 @@
 #   model_list             – character vector of model names
 #   use_shap_per_model     – if TRUE, also compute per-model SHAP via iml (default FALSE)
 #
-# Outputs -> output/covariate_selection/
+# Outputs -> output/<cv_regime>/covariate_selection/
 #   importance_permutation_<model>.csv   + importance_permutation_combined.csv
 #   importance_shap_<model>.csv         + importance_shap_combined.csv (if use_shap_per_model)
 #   pruned_model_variables_perm.csv     (combined top vars per model, permutation)

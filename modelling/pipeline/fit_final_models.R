@@ -3,7 +3,7 @@
 # For each model:
 #   1. Tune key hyperparameters via 5-fold random CV on the full training set.
 #   2. Fit the best configuration on all data.
-#   3. Save a shareable RDS to output/final_models/<model>_final.rds
+#   3. Save a shareable RDS to output/<cv_regime>/final_models/<model>_final.rds
 #
 # Each saved object is a named list with:
 #   $model            – the fitted (tuned) model object

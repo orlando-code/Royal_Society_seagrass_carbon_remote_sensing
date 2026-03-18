@@ -64,8 +64,8 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 ### Cross-validation design
 
 - `**n_folds**`: Number of CV folds (default `5L`).
-- `**cv_type**`: `"spatial"` (block CV) or `"random"` (random split).
-  - Spatial CV is stricter and is the recommended choice if your goal is “gap-filling away from sampled cores”.
+- `**cv_type**`: One of `"random"`, `"location_grouped"`, `"pixel_grouped"`, or `"spatial"` (block CV).
+  - Use `"spatial"` to test extrapolation to new geography away from sampled cores; use `"pixel_grouped"` to avoid leakage from coarse raster pixels (recommended for tuning/pruning/importance).
 - `**cv_blocksize**`: Spatial block size (metres) for tuning and other “single block size” steps (default `5000L`).
 - `**cv_blocksize_scan**`: Vector of block sizes (metres) to scan in the CV comparison plots (Step 2). Set to `NULL` or `integer(0)` to avoid scanning and use only `cv_blocksize`.
 
@@ -76,20 +76,20 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 
 | Step   | What it does                                                                                       | Outputs                                                      |
 | ------ | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| **-1** | Config (exclude_regions, model_list, pruning flags, n_folds, cv_type, etc.) and create output dirs | —                                                            |
+| **-1** | Config (exclude_regions, model_list, pruning flags, n_folds, cv_type, etc.) and create output dirs | `output/` (and shared subdirs under `output/cache/`)       |
 | **0**  | Build `data/all_extracted_new.rds` from raw rasters if missing                                     | `data/all_extracted_new.rds`                                 |
-| **1**  | Covariate pruning: correlation filter + per-model permutation (and optionally SHAP) importance     | `output/covariate_selection/` (pruned CSVs, importance CSVs) |
-| **2**  | CV pipeline: spatial (or random) folds, run GPR/GAM/XGB, compare block sizes                       | `output/cv_pipeline/` (CV results, plots)                    |
-| **2b** | Spatial/categorical effect: env-only vs +lat vs +lon vs +region for each model                     | `output/cv_pipeline/`                                        |
-| **3**  | Hyperparameter tuning for GPR, GAM, XGB (best config per model)                                    | `output/cv_pipeline/best_config_*.rds`                       |
-| **3b** | Permutation importance with tuned models and best vars                                             | `output/cv_pipeline/importance_perm_*.csv/.png`              |
-| **3c** | SHAP importance with tuned models and best vars                                                    | `output/cv_pipeline/importance_shap_*.csv/.png`              |
-| **4**  | Cross-validation with tuned models and pruned covariates (second pass of `cv_pipeline.R`)          | `output/cv_pipeline/`                                        |
-| **4b** | Spatial/categorical effect: env-only vs +lat vs +lon vs +region for each model                     | `output/cv_pipeline/`                                        |
-| **5**  | Fit and save final models on all data (XGB, GAM, GPR)                                              | `output/final_models/*_final.rds`                            |
-| **6**  | Partial dependence plots for each final model                                                      | `output/covariate_selection/pdp_*.png`                       |
-| **7**  | Spatial prediction maps (mean + SE for GPR) for each model                                         | `output/predictions/*_prediction_map.png`, `gpr_se_map.png`  |
-| **8**  | Supplement: region outlines, target histograms, correlation, similarity                            | `output/supplement/`                                         |
+| **1**  | Covariate pruning: correlation filter + per-model permutation (and optionally SHAP) importance     | `output/<cv_regime>/covariate_selection/`                   |
+| **2**  | CV pipeline: spatial (or random) folds, run GPR/GAM/XGB, compare block sizes                       | `output/<cv_regime>/cv_pipeline/`                           |
+| **2b** | Spatial/categorical effect: env-only vs +lat vs +lon vs +region for each model                     | `output/<cv_regime>/cv_pipeline/`                           |
+| **3**  | Hyperparameter tuning for GPR, GAM, XGB (best config per model)                                    | `output/<cv_regime>/cv_pipeline/best_config_*.rds`       |
+| **3b** | Permutation importance with tuned models and best vars                                             | `output/<cv_regime>/cv_pipeline/importance_perm_*.csv/.png` |
+| **3c** | SHAP importance with tuned models and best vars                                                    | `output/<cv_regime>/cv_pipeline/importance_shap_*.csv/.png` |
+| **4**  | Cross-validation with tuned models and pruned covariates (second pass of `cv_pipeline.R`)          | `output/<cv_regime>/cv_pipeline/`                           |
+| **4b** | Spatial/categorical effect: env-only vs +lat vs +lon vs +region for each model                     | `output/<cv_regime>/cv_pipeline/`                           |
+| **5**  | Fit and save final models on all data (XGB, GAM, GPR)                                              | `output/<cv_regime>/final_models/*_final.rds`             |
+| **6**  | Partial dependence plots for each final model                                                      | `output/<cv_regime>/covariate_selection/pdp_*.png`        |
+| **7**  | Spatial prediction maps (mean + SE for GPR) for each model                                         | `output/<cv_regime>/predictions/*_prediction_map.png`, `{gpr,gam}_se_map.png` |
+| **8**  | Supplement: region outlines, target histograms, correlation, similarity                            | `output/supplement/`                                       |
 
 
 ---
@@ -109,14 +109,21 @@ seagrass/
 │   ├── plots/                    # Figures: PDPs, prediction maps, supplement
 │   ├── R/                        # Shared R helpers, ML, raster extraction, plot config
 ├── output/                       # All pipeline outputs (replaces old figures/)
-│   ├── cache/                    # Cached spatial folds and prediction grids
-│   ├── covariate_selection/      # Pruning results, importance, PDPs
-│   ├── cv_pipeline/       # CV results, tuning configs, importance plots
-│   ├── final_models/             # XGB_final.rds, GAM_final.rds, GPR_final.rds
-│   ├── predictions/             # Prediction maps, GPR SE map
-│   └── supplement/               # Region shapes, histograms, correlation, similarity
+│   ├── cache/                    # Shared cached spatial folds and prediction grids
+│   ├── <cv_regime>/             # Regime-specific outputs (based on `cv_type`)
+│   │   ├── covariate_selection/ # Pruning results, importance, PDPs
+│   │   ├── cv_pipeline/        # CV results, tuning configs, importance plots
+│   │   ├── final_models/      # XGB_final.rds, GAM_final.rds, GPR_final.rds
+│   │   ├── predictions/       # Prediction maps (+ SE where available)
+│   └── supplement/              # Shared supplement outputs
 └── README.md
 ```
+
+`<cv_regime>` is derived from `cv_type` in `modelling/run_paper.R`:
+- `"random"` -> `output/random`
+- `"location_grouped"` -> `output/location_grouped`
+- `"pixel_grouped"` -> `output/pixel_grouped`
+- `"spatial"` -> `output/spatial_<cv_blocksize>m`
 
 See `**modelling/pipeline/README.md**`, `**modelling/plots/README.md**`, and `**modelling/R/README.md**` for a file-by-file description of each directory.
 
@@ -137,7 +144,7 @@ The pipeline reuses caches where possible. All cache files live under `**output/
 - `**data/all_extracted_new.rds**` – rebuild extracted data (step 0).
 - `**output/cache/*_folds.rds**` – recompute spatial (or random) folds for CV/tuning/importance.
 - `**output/cache/prediction_grid_cache_*.rds**` – rebuild prediction grid used in supplement and spatial prediction maps.
-- `**output/cv_pipeline/best_config_*.rds**` – re-run hyperparameter tuning (step 3).
+- `**output/<cv_regime>/cv_pipeline/best_config_*.rds**` – re-run hyperparameter tuning (step 3).
 
 ---
 
