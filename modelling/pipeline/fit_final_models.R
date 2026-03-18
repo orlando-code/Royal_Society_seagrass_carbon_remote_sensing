@@ -27,7 +27,8 @@ source("modelling/R/extract_covariates_from_rasters.R")
 source("modelling/R/assign_region_from_latlon.R")
 load_packages(c("here", "mgcv", "tidyverse", "randomForest", "GauPro", "xgboost", "sf"))
 
-out_dir <- "output/final_models"
+cv_out  <- get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output")
+out_dir <- file.path(cv_out, "final_models")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 # ---------------------------------------------------------------------------
@@ -65,7 +66,7 @@ predictor_vars <- predictor_vars[predictor_vars %in% colnames(core_data)]
 #   - Sets tuning CV folds (spatial or random).
 # ---------------------------------------------------------------------------
 
-cov_dir <- "output/covariate_selection"
+cov_dir <- file.path(cv_out, "covariate_selection")
 
 # Load shared and per-model pruned covariates (helpers: get_per_model_vars, load_model_vars)
 shared_file <- file.path(cov_dir, "pruned_variables_to_include.csv")
@@ -140,8 +141,9 @@ cat("=== XGBoost: hyperparameter tuning ===\n")
 predictor_vars <- load_model_vars("XGB", per_model_vars, use_shap_first = use_shap_per_model)
 xgb_pvars <- predictor_vars
 cat("  Predictors (", length(predictor_vars), "): ", paste(predictor_vars, collapse = ", "), "\n", sep = "")
-xgb_config_path <- file.path("output/cv_pipeline", "best_config_xgb.rds")
-if (!file.exists(xgb_config_path)) xgb_config_path <- file.path("output/cv_pipeline", "xgb_best_config.rds")
+config_dir <- file.path(cv_out, "cv_pipeline")
+xgb_config_path <- file.path(config_dir, "best_config_xgb.rds")
+if (!file.exists(xgb_config_path)) xgb_config_path <- file.path(config_dir, "xgb_best_config.rds")
 if (file.exists(xgb_config_path)) {
   xgb_cfg <- readRDS(xgb_config_path)
   best_xgb_hp <- list(nrounds = xgb_cfg$nrounds, max_depth = xgb_cfg$max_depth,
@@ -211,8 +213,8 @@ cat("=== GAM: hyperparameter tuning ===\n")
 predictor_vars <- load_model_vars("GAM", per_model_vars, use_shap_first = use_shap_per_model)
 gam_pvars <- predictor_vars
 cat("  Predictors (", length(predictor_vars), "): ", paste(predictor_vars, collapse = ", "), "\n", sep = "")
-gam_config_path <- file.path("output/cv_pipeline", "best_config_gam.rds")
-if (!file.exists(gam_config_path)) gam_config_path <- file.path("output/cv_pipeline", "gam_best_config.rds")
+gam_config_path <- file.path(config_dir, "best_config_gam.rds")
+if (!file.exists(gam_config_path)) gam_config_path <- file.path(config_dir, "gam_best_config.rds")
 if (file.exists(gam_config_path)) {
   gam_cfg <- readRDS(gam_config_path)
   best_gam_hp <- list(k_covariate = gam_cfg$k_covariate %||% gam_cfg$k_spatial %||% 6L)
@@ -266,8 +268,8 @@ cat("=== GPR: loading best config and fitting final model ===\n")
 predictor_vars <- load_model_vars("GPR", per_model_vars, use_shap_first = use_shap_per_model)
 gpr_pvars <- predictor_vars
 cat("  Predictors (", length(predictor_vars), "): ", paste(predictor_vars, collapse = ", "), "\n", sep = "")
-best_config_path <- file.path("output/cv_pipeline", "best_config_gpr.rds")
-if (!file.exists(best_config_path)) best_config_path <- file.path("output/cv_pipeline", "gpr_best_config.rds")
+best_config_path <- file.path(config_dir, "best_config_gpr.rds")
+if (!file.exists(best_config_path)) best_config_path <- file.path(config_dir, "gpr_best_config.rds")
 if (file.exists(best_config_path)) {
   best_config <- readRDS(best_config_path)
   gpr_kernel  <- if (!is.null(best_config$kernel))  best_config$kernel  else "matern52"
@@ -333,5 +335,5 @@ write.csv(summary_tbl, file.path(out_dir, "final_models_summary.csv"), row.names
 cat("Summary saved to", file.path(out_dir, "final_models_summary.csv"), "\n")
 print(summary_tbl)
 cat("\nAll final models saved to", out_dir, "\n")
-cat("To re-use: obj <- readRDS('output/final_models/XGB_final.rds')\n")
+cat("To re-use: obj <- readRDS('", file.path(out_dir, "XGB_final.rds"), "')\n", sep = "")
 cat("           predict(obj$model, xgb.DMatrix(as.matrix(new_data[, obj$predictor_vars])))\n\n")

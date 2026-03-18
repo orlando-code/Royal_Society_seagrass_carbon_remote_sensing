@@ -48,12 +48,12 @@ buffer_m  <- buffer_km * 1000
 # n_folds set from run_paper.R globals (get0 above); do not override
 # n_folds <- 5
 
-out_dir <- "output/cv_pipeline"
+out_dir <- file.path(get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output"), "cv_pipeline")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 hyperparams_by_model <- list()
 if (post_tuning_validation) {
-  config_dir <- "output/cv_pipeline"
+  config_dir <- out_dir
   load_best_config <- function(model_name) {
     base <- file.path(config_dir, "best_config")
     paths <- switch(model_name,
@@ -135,8 +135,9 @@ cat("Working dataset:", n_cores, "rows,", length(predictor_vars), "predictors.\n
 # Load model-specific predictor sets: prefer SHAP when use_shap_per_model, else permutation
 predictor_vars_by_model <- list()
 use_shap_per_model <- isTRUE(get0("use_shap_per_model", envir = .GlobalEnv, ifnotfound = FALSE))
-shap_file <- "output/covariate_selection/pruned_model_variables_shap.csv"
-perm_file <- "output/covariate_selection/pruned_model_variables_perm.csv"
+cov_dir   <- file.path(get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output"), "covariate_selection")
+shap_file <- file.path(cov_dir, "pruned_model_variables_shap.csv")
+perm_file <- file.path(cov_dir, "pruned_model_variables_perm.csv")
 src_file  <- if (use_shap_per_model && file.exists(shap_file)) shap_file else if (file.exists(perm_file)) perm_file else shap_file
 if (file.exists(src_file)) {
   df <- read.csv(src_file, stringsAsFactors = FALSE)

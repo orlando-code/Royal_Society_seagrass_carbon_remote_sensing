@@ -25,7 +25,8 @@ cv_type      <- get0("cv_type", envir = .GlobalEnv, ifnotfound = "spatial")
 cv_blocksize <- get0("cv_blocksize", envir = .GlobalEnv, ifnotfound = 5000L)
 exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
 log_response  <- isTRUE(get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE))
-out_dir      <- "output/cv_pipeline"
+cv_out       <- get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output")
+out_dir      <- file.path(cv_out, "cv_pipeline")
 fig_dir      <- out_dir
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 dpi          <- get0("dpi", envir = .GlobalEnv, ifnotfound = 150)
@@ -61,7 +62,7 @@ n_cores <- nrow(complete_dat)
 cat("Cores:", n_cores, " | region in data:", has_region, "\n")
 
 # Per-model base (env-only) predictor sets: prefer SHAP when use_shap_per_model
-cov_dir            <- "output/covariate_selection"
+cov_dir            <- file.path(cv_out, "covariate_selection")
 use_shap_per_model <- isTRUE(get0("use_shap_per_model", envir = .GlobalEnv, ifnotfound = FALSE))
 shap_combined      <- file.path(cov_dir, "pruned_model_variables_shap.csv")
 perm_combined      <- file.path(cov_dir, "pruned_model_variables_perm.csv")
@@ -100,7 +101,7 @@ env_only_by_model <- lapply(per_model_vars, function(v) setdiff(v, c("latitude",
 # -----------------------------------------------------------------------------
 hyperparams_by_model <- NULL
 if (use_tuned_categorical) {
-  config_dir <- "output/cv_pipeline"
+  config_dir <- file.path(cv_out, "cv_pipeline")
   load_best_config <- function(model_name) {
     base <- file.path(config_dir, "best_config")
     candidates <- switch(model_name,

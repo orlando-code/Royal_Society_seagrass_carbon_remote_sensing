@@ -47,14 +47,15 @@ core_data <- as.data.frame(
     dplyr::filter(complete.cases(.))
 )
 
-out_dir <- "output/covariate_selection"
+cv_out  <- get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output")
+out_dir <- file.path(cv_out, "covariate_selection")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 # ---------------------------------------------------------------------------
 # Build iml::Predictor for a final model
 # ---------------------------------------------------------------------------
 make_predictor <- function(model_name) {
-  rds_path <- file.path("output/final_models",
+  rds_path <- file.path(cv_out, "final_models",
                         paste0(model_name, "_final.rds"))
   if (!file.exists(rds_path)) {
     cat("Skipping", model_name, ": no final model at", rds_path, "\n")
@@ -138,9 +139,9 @@ plot_pdp_for_model <- function(model_name, max_vars = 6L) {
   pred <- make_predictor(model_name)
   if (is.null(pred)) return(invisible(NULL))
 
-  per_path <- file.path("output/covariate_selection",
+  per_path <- file.path(cv_out, "covariate_selection",
     paste0("pruned_variables_to_include_", tolower(model_name), ".csv"))
-  obj <- readRDS(file.path("output/final_models", paste0(model_name, "_final.rds")))
+  obj <- readRDS(file.path(cv_out, "final_models", paste0(model_name, "_final.rds")))
   pvars <- if (model_name == "XGB" && !is.null(obj$encoded_names)) obj$encoded_names else obj$predictor_vars
   if (file.exists(per_path)) {
     pv_df <- read.csv(per_path, stringsAsFactors = FALSE)

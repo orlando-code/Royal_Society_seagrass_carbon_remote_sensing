@@ -17,9 +17,10 @@ source("modelling/R/extract_covariates_from_rasters.R")
 source("modelling/R/assign_region_from_latlon.R")
 load_packages(c("here", "mgcv", "tidyverse", "ggplot2", "GauPro", "xgboost", "maps"))
 
-out_dir <- "output/predictions"
+cv_out    <- get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output")
+out_dir   <- file.path(cv_out, "predictions")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-final_dir <- "output/final_models"
+final_dir <- file.path(cv_out, "final_models")
 
 target_var <- "median_carbon_density_100cm"
 exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))

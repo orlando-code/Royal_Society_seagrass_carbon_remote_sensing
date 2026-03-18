@@ -19,10 +19,11 @@ source("modelling/R/extract_covariates_from_rasters.R")
 source("modelling/R/assign_region_from_latlon.R")
 load_packages(c("here", "mgcv", "tidyverse", "ggplot2", "GauPro", "xgboost", "sf", "iml"))
 
-out_dir <- "output/cv_pipeline"
+cv_out  <- get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output")
+out_dir <- file.path(cv_out, "cv_pipeline")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-cov_dir <- "output/covariate_selection"
-config_dir <- "output/cv_pipeline"
+cov_dir    <- file.path(cv_out, "covariate_selection")
+config_dir <- out_dir
 
 target_var <- "median_carbon_density_100cm"
 log_response <- isTRUE(get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE))

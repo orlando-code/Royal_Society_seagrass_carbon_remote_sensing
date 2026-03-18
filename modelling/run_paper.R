@@ -65,7 +65,20 @@ cv_blocksize  <- 1000L  # metres; only used when cv_type = "spatial"
 # cv_blocksize_scan: block sizes evaluated in the diagnostic CV scan
 # (cv_pipeline.R always runs random, location-grouped, and pixel-grouped
 # in addition to these spatial block sizes)
-cv_blocksize_scan <- c(1000L, 5000L, 10000L, 20000L, 50000L, 100000L)
+cv_blocksize_scan <- c(1000L, 5000L, 10000L, 100000L)
+
+# --- Output directory structure ---
+# Regime-specific outputs go under output/<cv_regime>/ so results from
+# different splitting strategies are kept separate. Shared resources
+# (cache, supplement) stay at the top level.
+cv_regime_name <- switch(cv_type,
+  random           = "random",
+  location_grouped = "location_grouped",
+  pixel_grouped    = "pixel_grouped",
+  spatial          = paste0("spatial_", cv_blocksize, "m"),
+  cv_type  # fallback
+)
+cv_output_dir <- file.path("output", cv_regime_name)
 
 # Assign all globals for sourced sub-scripts
 for (nm in c("target_var", "log_transform_target",
@@ -73,15 +86,14 @@ for (nm in c("target_var", "log_transform_target",
              "use_correlation_filter", "correlation_filter_threshold",
              "permutation_max_vars", "permutation_coverage", "n_permutations",
              "use_shap_per_model", "n_folds", "cv_type", "cv_blocksize", "cv_blocksize_scan",
-             "do_cv_on_defaults")) {
+             "do_cv_on_defaults", "cv_output_dir")) {
   assign(nm, get(nm), envir = .GlobalEnv)
 }
 
-# Output and cache directories (all pipeline outputs under output/; cache under output/cache).
-# If you previously used "figures/" or caches in output/cv_pipeline or data/, move
-# *_folds.rds and prediction_grid_cache_*.rds into output/cache/ to avoid recomputing.
-for (d in c("output", "output/cache", "output/covariate_selection", "output/cv_pipeline",
-            "output/final_models", "output/predictions", "output/supplement")) {
+# Create directories: shared (cache, supplement) + regime-specific subdirs
+for (d in c("output", "output/cache", "output/supplement",
+            file.path(cv_output_dir, c("covariate_selection", "cv_pipeline",
+                                        "final_models", "predictions")))) {
   dir.create(d, recursive = TRUE, showWarnings = FALSE)
 }
 
@@ -109,6 +121,7 @@ cat("  do_cv_on_defaults:          ", do_cv_on_defaults, "\n")
 cat("  cv_type:                     ", cv_type, "\n")
 cat("  cv_blocksize:               ", cv_blocksize, "\n")
 cat("  cv_blocksize_scan:          ", if (length(cv_blocksize_scan)) paste(cv_blocksize_scan, collapse = ", ") else "none", "\n")
+cat("  cv_output_dir:              ", cv_output_dir, "\n")
 cat("  dpi:                         ", dpi, "\n")
 cat("\n")
 
@@ -132,7 +145,7 @@ source("modelling/pipeline/covariate_pruning_pipeline.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# 2. CV pipeline (folds, CV results, inline plots) -> output/cv_pipeline
+# 2. CV pipeline (folds, CV results, inline plots)
 # -----------------------------------------------------------------------------
 if (isTRUE(get0("do_cv_on_defaults", envir = .GlobalEnv, ifnotfound = TRUE))) {
   cat("\t\tStep 2: CV pipeline (spatial folds, comparison, results)\n")
@@ -140,7 +153,7 @@ if (isTRUE(get0("do_cv_on_defaults", envir = .GlobalEnv, ifnotfound = TRUE))) {
   cat("\n")
 
   # -----------------------------------------------------------------------------
-  # 2b. Spatial / lat-lon / region effect (all models) -> output/cv_pipeline
+  # 2b. Spatial / lat-lon / region effect (all models)
   # -----------------------------------------------------------------------------
   cat("\t\tStep 2b: Spatial and categorical effect (lat, lon, region) for all models (default hyperparams)\n")
   source("modelling/plots/spatial_categorical_effect_all_models.R")
@@ -150,7 +163,7 @@ if (isTRUE(get0("do_cv_on_defaults", envir = .GlobalEnv, ifnotfound = TRUE))) {
 }
 
 # -----------------------------------------------------------------------------
-# 3. Hyperparameter tuning (all models; cv_type; progress) -> output/cv_pipeline
+# 3. Hyperparameter tuning (all models; cv_type; progress)
 # -----------------------------------------------------------------------------
 cat("\t\tStep 3: Hyperparameter tuning (GPR, GAM, XGB)\n")
 source("modelling/pipeline/hyperparameter_tuning_pipeline.R")
@@ -176,7 +189,7 @@ source("modelling/pipeline/cv_pipeline.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# 4b. Spatial / lat-lon / region effect (tuned models) -> output/cv_pipeline
+# 4b. Spatial / lat-lon / region effect (tuned models)
 # -----------------------------------------------------------------------------
 categorical_use_tuned <- TRUE
 assign("categorical_use_tuned", categorical_use_tuned, envir = .GlobalEnv)
@@ -192,7 +205,7 @@ source("modelling/pipeline/fit_final_models.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# 6. Partial dependence plots for all final models -> output/covariate_selection
+# 6. Partial dependence plots for all final models
 # -----------------------------------------------------------------------------
 cat("\t\tStep 6: Partial dependence plots (XGB, GAM, GPR)\n")
 source("modelling/plots/partial_dependence_all_models.R")
@@ -200,14 +213,14 @@ cat("\n")
 
 
 # -----------------------------------------------------------------------------
-# 7. Spatial prediction maps for each model -> output/predictions
+# 7. Spatial prediction maps for each model
 # -----------------------------------------------------------------------------
 cat("\t\tStep 7: Spatial prediction maps (XGB, GAM, GPR)\n")
 source("modelling/plots/spatial_prediction_maps.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# 8. Supplement: region outlines, target histograms, maps, correlation, similarity -> output/supplement
+# 8. Supplement (shared, not regime-specific)
 # -----------------------------------------------------------------------------
 cat("\t\tStep 8: Supplement figures\n")
 source("modelling/plots/supplement.R")
@@ -219,11 +232,11 @@ cat("\n")
 cat(paste(rep("=", 70), collapse = ""), "\n")
 cat("PAPER PIPELINE COMPLETE\n")
 cat(paste(rep("=", 70), collapse = ""), "\n\n")
-cat("Outputs:\n")
-cat("  output/cache/                  – Cached spatial folds and prediction grids\n")
-cat("  output/covariate_selection/    – Covariate pruning results\n")
-cat("  output/cv_pipeline/     – CV results, pruning, tuning, importance plots\n")
-cat("  output/final_models/           – Fitted model RDS (XGB, GAM, GPR)\n")
-cat("  output/predictions/            – Prediction maps, PDPs\n")
-cat("  output/supplement/             – region_shapes, target histograms, maps, correlation, similarity\n")
+cat("Outputs (cv_regime = ", cv_regime_name, "):\n", sep = "")
+cat("  output/cache/                           – Shared cached spatial folds and prediction grids\n")
+cat("  output/supplement/                      – Shared supplement figures\n")
+cat("  ", cv_output_dir, "/covariate_selection/ – Covariate pruning results\n", sep = "")
+cat("  ", cv_output_dir, "/cv_pipeline/         – CV results, tuning, importance plots\n", sep = "")
+cat("  ", cv_output_dir, "/final_models/        – Fitted model RDS (XGB, GAM, GPR)\n", sep = "")
+cat("  ", cv_output_dir, "/predictions/         – Prediction maps, PDPs\n", sep = "")
 cat("\n")
