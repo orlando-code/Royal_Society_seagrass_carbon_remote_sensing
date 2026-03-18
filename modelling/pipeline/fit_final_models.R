@@ -90,14 +90,11 @@ cat("Training rows:", nrow(core_data),
     " | Shared predictors:", length(shared_vars),
     " | log_response:", log_response, "\n")
 
-# Location-grouped folds for fallback tuning (consistent with hyperparameter_tuning_pipeline)
-loc_id <- as.integer(factor(paste(core_data$longitude, core_data$latitude)))
-unique_loc_ids <- unique(loc_id)
-set.seed(42)
-loc_fold <- sample(rep(seq_len(n_tune_folds), length.out = length(unique_loc_ids)))
-tune_folds <- loc_fold[match(loc_id, unique_loc_ids)]
-cat("CV strategy for tuning: location-grouped random, ",
-    length(unique_loc_ids), " unique locations, ", n_tune_folds, " folds.\n\n", sep = "")
+# Pixel-grouped folds for fallback tuning (consistent with hyperparameter_tuning_pipeline)
+pixel_info <- make_pixel_grouped_folds(core_data, predictor_vars, n_tune_folds, seed = 42L)
+tune_folds <- pixel_info$fold_indices
+cat("CV strategy for tuning: pixel-grouped random, ",
+    pixel_info$n_groups, " unique covariate vectors, ", n_tune_folds, " folds.\n\n", sep = "")
 
 # Helper: run k-fold CV. Optionally fit on log(response) and back-transform predictions for metrics.
 # Excludes test rows whose factor predictors (e.g. species) were not in train when computing metrics.
