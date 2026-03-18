@@ -1,11 +1,13 @@
 # Spatial prediction maps for all final models (XGB, GAM, GPR)
 #
-# Loads final model RDS from output/final_models/, builds a prediction grid from
-# rasters (same approach as gpr_predictions.R), predicts with each model, and
-# saves prediction (and SE where available) maps to output/predictions/.
+# Loads final model RDS from output/<cv_regime>/final_models/, builds a
+# prediction grid from rasters (same approach as gpr_predictions.R), predicts
+# with each model, and saves prediction (and SE where available) maps to
+# output/<cv_regime>/predictions/.
 #
 # Requires: fit_final_models.R has been run (XGB_final.rds, GAM_final.rds, GPR_final.rds)
-# Outputs:  output/predictions/{xgb,gam,gpr}_prediction_map.png, {gpr,gam}_se_map.png
+# Outputs:  output/<cv_regime>/predictions/{xgb,gam,gpr}_prediction_map.png,
+#            {gpr,gam}_se_map.png (SE maps are available for models that return SE)
 #
 # Usage: source from run_paper.R (step 7), or run standalone.
 
