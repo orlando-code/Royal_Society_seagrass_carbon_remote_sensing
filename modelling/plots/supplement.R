@@ -52,8 +52,8 @@ all_pred_vars <- setdiff(
 )
 all_pred_vars <- all_pred_vars[vapply(dat[all_pred_vars], is.numeric, logical(1))]
 
-n_lats <- 5000
-n_lons <- 5000
+n_lons <- as.integer(get0("n_lons", envir = .GlobalEnv, ifnotfound = 500L))
+n_lats <- as.integer(get0("n_lats", envir = .GlobalEnv, ifnotfound = 500L))
 lon_min <- min(dat$longitude, na.rm = TRUE)
 lon_max <- max(dat$longitude, na.rm = TRUE)
 lat_min <- min(dat$latitude, na.rm = TRUE)

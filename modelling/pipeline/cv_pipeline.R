@@ -31,6 +31,8 @@ nested_tuning <- FALSE
 quick_cv_check <- get0("quick_cv_check", envir = .GlobalEnv, ifnotfound = FALSE)
 model_list <- get0("model_list", envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB"))
 post_tuning_validation <- isTRUE(get0("post_tuning_validation", envir = .GlobalEnv, ifnotfound = FALSE))
+exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
+
 
 # Block sizes: when cv_type == "spatial" use cv_blocksize_scan if set, else cv_blocksize only
 cv_blocksize_scan <- get0("cv_blocksize_scan", envir = .GlobalEnv, ifnotfound = NULL)
@@ -80,11 +82,12 @@ if (post_tuning_validation) {
         max_depth = cfg$max_depth,
         learning_rate = cfg$learning_rate %||% 0.1,
         subsample = cfg$subsample %||% 0.8,
-        colsample_bytree = cfg$colsample_bytree %||% 0.8
+        colsample_bytree = cfg$colsample_bytree %||% 0.8,
+        min_child_weight = cfg$min_child_weight %||% 1L
       )
     } else if (m == "GAM") {
       hyperparams_by_model[[m]] <- list(
-        k_spatial = cfg$k_spatial %||% 80L
+        k_covariate = cfg$k_covariate %||% 6L
       )
     }
   }
@@ -99,7 +102,6 @@ cat("========================================\n\n")
 
 dat <- read_rds("data/all_extracted_new.rds")
 # Exclude necessary regions
-exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
 if (length(exclude_regions) > 0L) {
   if (!"region" %in% names(dat)) dat <- assign_region_from_latlon(dat)
   dat <- dat[is.na(dat$region) | !dat$region %in% exclude_regions, ]
@@ -123,9 +125,12 @@ complete_dat$median_carbon_density <- complete_dat[[target_var]]
 predictor_vars <- predictor_vars[predictor_vars %in% colnames(complete_dat)]
 log_response <- isTRUE(get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE))
 
+n_raw <- nrow(complete_dat)
+n_unique_locs <- nrow(unique(complete_dat[, c("longitude", "latitude")]))
+cat("Cores (complete cases):", n_raw, " | Unique locations:", n_unique_locs, "\n")
+
 n_cores <- nrow(complete_dat)
-cat("Cores (complete cases):", n_cores, "\n")
-cat("Predictors (all):", length(predictor_vars), "\n")
+cat("Working dataset:", n_cores, "rows,", length(predictor_vars), "predictors.\n")
 
 # Load model-specific predictor sets: prefer SHAP when use_shap_per_model, else permutation
 predictor_vars_by_model <- list()
@@ -172,14 +177,26 @@ light_core_sf <- sf::st_as_sf(
 cat("Core-level data:", nrow(complete_dat), "cores,", ncol(complete_dat), "variables.\n")
 
 # CV strategies driven by cv_type (from run_paper.R)
-random_folds <- sample(rep(seq_len(n_folds), length.out = n_cores))
+# 1. True random: naive i.i.d. split (duplicate locations can leak between train/test)
+true_random_folds <- sample(rep(seq_len(n_folds), length.out = n_cores))
+
+# 2. Location-grouped random: all rows at the same (lon, lat) go to the same fold
+loc_id <- as.integer(factor(paste(complete_dat$longitude, complete_dat$latitude)))
+unique_loc_ids <- unique(loc_id)
+loc_fold_assign <- sample(rep(seq_len(n_folds), length.out = length(unique_loc_ids)))
+loc_grouped_folds <- loc_fold_assign[match(loc_id, unique_loc_ids)]
+cat("  True random folds:", n_cores, "rows ->", n_folds, "folds.\n")
+cat("  Location-grouped random folds:", length(unique_loc_ids), "unique locations ->", n_folds, "folds.\n")
+
 cv_strategies <- list(
-  list(method = "random_split", folds = random_folds, block_size_m = NA)
+  list(method = "random_split", folds = true_random_folds, block_size_m = NA),
+  list(method = "location_grouped_random", folds = loc_grouped_folds, block_size_m = NA)
 )
 if (identical(cv_type, "spatial") && length(block_sizes_m) > 0) {
   cat("\tCreating spatial folds (cv_type = spatial)\n")
   for (size_m in block_sizes_m) {
     cat("  Spatial blocks ", size_m, " m ...\n", sep = "")
+    cat("N.B. the progress bar is poor – it generally stays at 0, then leaps to 100\n", sep="")
     fold_info <- get_cached_spatial_folds(
       dat = complete_dat,
       block_size = size_m,
@@ -200,6 +217,51 @@ if (identical(cv_type, "spatial") && length(block_sizes_m) > 0) {
         block_size_m = size_m,
         blocks = NULL
       )
+    }
+  }
+
+  # Region-stratified spatial CV: build spatial blocks WITHIN each region so every fold
+  # has representation from all regions (avoids leave-one-region-out artifacts).
+  if ("region" %in% names(complete_dat) && length(unique(complete_dat$region)) >= 2L) {
+    strat_size_m <- cv_blocksize
+    cat("\n  Region-stratified spatial blocks (", strat_size_m, " m) ...\n", sep = "")
+    regions <- unique(complete_dat$region)
+    strat_folds <- integer(n_cores)
+    strat_ok <- TRUE
+    for (reg in regions) {
+      reg_idx <- which(complete_dat$region == reg)
+      if (length(reg_idx) < n_folds) {
+        strat_folds[reg_idx] <- sample(rep(seq_len(n_folds), length.out = length(reg_idx)))
+        next
+      }
+      reg_fi <- tryCatch({
+        fi_reg <- get_cached_spatial_folds(
+          dat = complete_dat[reg_idx, , drop = FALSE],
+          block_size = strat_size_m,
+          n_folds = n_folds,
+          cache_tag = paste0("cv_stratified_", gsub(" ", "_", tolower(reg))),
+          exclude_regions = character(0),
+          progress = FALSE
+        )
+        folds_to_vector(fi_reg$fold_indices, length(reg_idx))
+      }, error = function(e) {
+        sample(rep(seq_len(n_folds), length.out = length(reg_idx)))
+      })
+      strat_folds[reg_idx] <- reg_fi
+    }
+    if (all(strat_folds > 0L) && max(strat_folds) >= 2L) {
+      cv_strategies[[length(cv_strategies) + 1]] <- list(
+        method = paste0("region_stratified_", strat_size_m, "m"),
+        folds = strat_folds,
+        block_size_m = strat_size_m,
+        blocks = NULL
+      )
+      cat("  Added region_stratified_", strat_size_m, "m (",
+          max(strat_folds), " folds, balanced across ", length(regions), " regions).\n", sep = "")
+      for (reg in regions) {
+        reg_idx <- which(complete_dat$region == reg)
+        cat("    ", reg, ": ", paste(table(strat_folds[reg_idx]), collapse = "/"), " per fold\n", sep = "")
+      }
     }
   }
 } else {
@@ -352,7 +414,7 @@ cat("========================================\n\n")
 has_ps <- "predictor_set" %in% names(results_df)
 filter_pruned <- function(d) {
   if (!"predictor_set" %in% names(d)) return(d)
-  d[d[["predictor_set"]] %in% c("all", "pruned", "shap_per_model"), , drop = FALSE]
+  d[d[["predictor_set"]] %in% c("all", "pruned", "pruned_per_model"), , drop = FALSE]
 }
 grp <- c("method", "model", if (has_ps) "predictor_set")
 
@@ -412,18 +474,21 @@ p_metrics <- results_df %>%
 ggsave(file.path(out_dir, sprintf("%s_cv_metrics_by_method_model.png", suffix)), p_metrics, width = 12, height = 8, dpi = dpi)
 cat("\nSaved", file.path(out_dir, sprintf("%s_cv_metrics_by_method_model.png", suffix)), "\n")
 
-# Scatter: observed vs predicted for all methods (one panel per model)
+# Scatter: observed vs predicted for all methods (one panel per model), colour by fold
 if (!is.null(predictions_df) && nrow(predictions_df) > 0) {
   pred_all <- filter_pruned(predictions_df)
   if (nrow(pred_all) > 0) {
     pred_all <- pred_all %>% mutate(method_label = vapply(method, method_to_display, character(1)))
-    p_scatter <- ggplot(pred_all, aes(x = predicted, y = observed)) +
-      geom_point(alpha = 0.4, size = 1) +
+    p_scatter <- ggplot(pred_all, aes(x = predicted, y = observed, colour = as.factor(fold))) +
+      geom_point(alpha = 0.6, size = 1) +
       geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "red", linewidth = 0.5) +
       facet_wrap(~model, scales = "free", ncol = 3) +
-      labs(x = "Predicted", y = "Observed", title = if (show_titles) "Observed vs predicted by model (all CV folds)" else NULL) +
+      scale_colour_viridis_d(name = "Fold", option = "plasma") +
+      labs(x = "Predicted", y = "Observed", 
+           title = if (show_titles) "Observed vs predicted by model (all CV folds)" else NULL) +
       theme_minimal() +
-      theme(plot.title = element_text(hjust = 0.5))
+      theme(plot.title = element_text(hjust = 0.5),
+            legend.position = "right")
     ggsave(file.path(out_dir, sprintf("%s_cv_observed_vs_predicted.png", suffix)), p_scatter, width = 12, height = 10, dpi = dpi)
     cat("Saved", file.path(out_dir, sprintf("%s_cv_observed_vs_predicted.png", suffix)), "\n")
   }
