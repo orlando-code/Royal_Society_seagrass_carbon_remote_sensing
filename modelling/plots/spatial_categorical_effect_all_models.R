@@ -152,10 +152,13 @@ if (use_tuned_categorical) {
 # -----------------------------------------------------------------------------
 # Folds (same as pipeline: cv_type)
 # -----------------------------------------------------------------------------
-pixel_info <- make_pixel_grouped_folds(complete_dat, predictor_vars, n_folds, seed = 42L)
-fold_indices <- pixel_info$fold_indices
-cv_method_name <- "pixel_grouped_random"
-cat("Using pixel-grouped random folds (", pixel_info$n_groups, " unique covariate vectors -> ", n_folds, " folds).\n", sep = "")
+cv_fold_info <- make_cv_folds(
+  complete_dat, predictor_vars, n_folds, cv_type,
+  cv_blocksize = cv_blocksize, exclude_regions = exclude_regions,
+  cache_tag = "spatial_categorical_effect"
+)
+fold_indices <- cv_fold_info$fold_indices
+cv_method_name <- cv_fold_info$method_name
 core_sf <- sf::st_as_sf(complete_dat, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
 
 # -----------------------------------------------------------------------------

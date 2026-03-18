@@ -49,8 +49,22 @@ do_cv_on_defaults <- TRUE  # whether to run Step 2 (default CV) + Step 2b
 
 model_list    <- c("GPR", "GAM", "XGB")
 n_folds       <- 5L
-cv_type       <- "spatial"  # "spatial" or "random"
-cv_blocksize <- 1000L  # metres for spatial CV to tune models on (set by desired application)
+
+# --- CV strategy for tuning, pruning, importance, and final-model fallback ---
+# cv_type controls fold construction across the whole pipeline (except the
+# diagnostic CV scan in cv_pipeline.R, which always runs all methods).
+#
+#   "random"           – naive i.i.d. row-level split (optimistic; leaks duplicates)
+#   "location_grouped" – group by identical (lon, lat); prevents coordinate leakage
+#   "pixel_grouped"    – group by identical covariate vector; prevents both
+#                        coordinate AND coarse-raster-pixel leakage (recommended)
+#   "spatial"          – spatial blocks via blockCV at cv_blocksize metres
+cv_type       <- "pixel_grouped"
+cv_blocksize  <- 1000L  # metres; only used when cv_type = "spatial"
+
+# cv_blocksize_scan: block sizes evaluated in the diagnostic CV scan
+# (cv_pipeline.R always runs random, location-grouped, and pixel-grouped
+# in addition to these spatial block sizes)
 cv_blocksize_scan <- c(1000L, 5000L, 10000L, 20000L, 50000L, 100000L)
 
 # Assign all globals for sourced sub-scripts

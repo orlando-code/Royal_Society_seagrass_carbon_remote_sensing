@@ -55,10 +55,13 @@ core_data <- as.data.frame(core_data)
 use_shap_per_model <- isTRUE(get0("use_shap_per_model", envir = .GlobalEnv, ifnotfound = FALSE))
 per_model_vars <- get_per_model_vars(cov_dir, colnames(core_data), use_shap_first = use_shap_per_model)
 
-# Folds: pixel-grouped random (matches tuning pipeline)
-pixel_info <- make_pixel_grouped_folds(core_data, predictor_vars_all, n_folds, seed = 42L)
-fold_indices <- pixel_info$fold_indices
-cat("  Pixel-grouped random folds:", pixel_info$n_groups, "unique covariate vectors ->", n_folds, "folds.\n")
+# Folds: same cv_type as the rest of the pipeline (run_paper.R)
+cv_fold_info <- make_cv_folds(
+  core_data, predictor_vars_all, n_folds, cv_type,
+  cv_blocksize = cv_blocksize, exclude_regions = exclude_regions,
+  cache_tag = "perm_importance_final"
+)
+fold_indices <- cv_fold_info$fold_indices
 
 # Helper: load best config (try names from hyperparameter_tuning_pipeline first)
 load_best_config <- function(model_name) {

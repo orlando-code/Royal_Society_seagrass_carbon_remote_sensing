@@ -53,14 +53,14 @@ use_shap_per_model <- isTRUE(get0("use_shap_per_model", envir = .GlobalEnv, ifno
 per_model_vars <- get_per_model_vars(cov_dir, colnames(core_data), use_shap_first = use_shap_per_model)
 
 
-# Pixel-grouped folds: all rows with identical covariate vectors go to the same
-# fold. Prevents leakage from both duplicate coordinates AND distinct locations
-# that map to the same coarse raster pixel.
-pixel_info   <- make_pixel_grouped_folds(core_data, predictor_vars, n_folds, seed = 42L)
+# Build folds from the global cv_type setting (run_paper.R)
+cv_fold_info <- make_cv_folds(
+  core_data, predictor_vars, n_folds, cv_type,
+  cv_blocksize = cv_blocksize, exclude_regions = exclude_regions,
+  cache_tag = "hp_tuning"
+)
 block_size   <- NULL
-fold_indices <- pixel_info$fold_indices
-cat("Tuning with pixel-grouped random folds (",
-    pixel_info$n_groups, " unique covariate vectors, ", n_folds, " folds).\n", sep = "")
+fold_indices <- cv_fold_info$fold_indices
 
 
 

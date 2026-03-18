@@ -84,16 +84,18 @@ if (length(importance_predictor_vars) > permutation_max_vars) {
   if (length(supported_models) == 0L)
     stop("No supported models for importance ranking.")
 
-  # -- Permutation importance: pixel-grouped random folds ---------------
-  # All rows with identical covariate vectors go to the same fold,
-  # preventing leakage from both duplicate coords and coarse raster pixels.
-  pixel_info <- make_pixel_grouped_folds(dat, cor_predictor_vars, n_folds, seed = 42L)
-  fold_indices <- pixel_info$fold_indices
+  # -- Permutation importance: folds from cv_type (run_paper.R) ----------
+  cv_fold_info <- make_cv_folds(
+    dat, cor_predictor_vars, n_folds, cv_type,
+    cv_blocksize = cv_blocksize, exclude_regions = exclude_regions,
+    cache_tag = "cov_pruning_perm"
+  )
+  fold_indices <- cv_fold_info$fold_indices
   cat(sprintf(
-    "\nPERMUTATION IMPORTANCE (%d var(s), %d fold(s), pixel-grouped random, %d unique covariate vectors):\n",
+    "\nPERMUTATION IMPORTANCE (%d var(s), %d fold(s), %s):\n",
     length(importance_predictor_vars),
     n_folds,
-    pixel_info$n_groups
+    cv_fold_info$method_name
   ))
 
   imp_perm_all <- do.call(rbind, lapply(supported_models, function(model_name) {

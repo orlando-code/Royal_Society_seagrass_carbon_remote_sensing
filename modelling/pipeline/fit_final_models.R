@@ -90,11 +90,13 @@ cat("Training rows:", nrow(core_data),
     " | Shared predictors:", length(shared_vars),
     " | log_response:", log_response, "\n")
 
-# Pixel-grouped folds for fallback tuning (consistent with hyperparameter_tuning_pipeline)
-pixel_info <- make_pixel_grouped_folds(core_data, predictor_vars, n_tune_folds, seed = 42L)
-tune_folds <- pixel_info$fold_indices
-cat("CV strategy for tuning: pixel-grouped random, ",
-    pixel_info$n_groups, " unique covariate vectors, ", n_tune_folds, " folds.\n\n", sep = "")
+# Folds for fallback tuning: same cv_type as the rest of the pipeline
+cv_fold_info <- make_cv_folds(
+  core_data, predictor_vars, n_tune_folds, cv_type,
+  cv_blocksize = cv_blocksize, exclude_regions = exclude_regions,
+  cache_tag = "fit_final_fallback"
+)
+tune_folds <- cv_fold_info$fold_indices
 
 # Helper: run k-fold CV. Optionally fit on log(response) and back-transform predictions for metrics.
 # Excludes test rows whose factor predictors (e.g. species) were not in train when computing metrics.

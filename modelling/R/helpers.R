@@ -1096,6 +1096,68 @@ make_pixel_grouped_folds <- function(dat, covariate_cols, n_folds, seed = 42L) {
   )
 }
 
+#' Create CV fold assignments based on the global cv_type setting.
+#'
+#' Dispatches to the appropriate fold construction method:
+#'   "random"           — naive i.i.d. row-level split
+#'   "location_grouped" — group by identical (lon, lat)
+#'   "pixel_grouped"    — group by identical covariate vector
+#'   "spatial"          — spatial blocks via blockCV (requires cv_blocksize)
+#'
+#' @param dat            data.frame (must contain longitude, latitude, and covariates)
+#' @param covariate_cols character vector of raster covariate column names
+#' @param n_folds        integer number of folds
+#' @param cv_type        one of "random", "location_grouped", "pixel_grouped", "spatial"
+#' @param cv_blocksize   block size in metres (only used when cv_type = "spatial")
+#' @param exclude_regions character vector of regions to exclude (spatial only)
+#' @param cache_tag      cache tag string for spatial folds (spatial only)
+#' @param seed           random seed (NULL = no set.seed)
+#' @return list with fold_indices (integer vector, length nrow(dat)),
+#'         method_name (character), and n_groups (integer, number of groups)
+make_cv_folds <- function(dat, covariate_cols, n_folds, cv_type,
+                          cv_blocksize = NULL, exclude_regions = character(0),
+                          cache_tag = "cv_folds", seed = 42L) {
+  if (!is.null(seed)) set.seed(seed)
+
+  if (identical(cv_type, "random")) {
+    fi <- sample(rep(seq_len(n_folds), length.out = nrow(dat)))
+    cat("  CV folds: random split (", nrow(dat), " rows -> ", n_folds, " folds).\n", sep = "")
+    return(list(fold_indices = fi, method_name = "random_split", n_groups = nrow(dat)))
+  }
+
+  if (identical(cv_type, "location_grouped")) {
+    loc_id <- as.integer(factor(paste(dat$longitude, dat$latitude)))
+    unique_ids <- unique(loc_id)
+    grp_fold <- sample(rep(seq_len(n_folds), length.out = length(unique_ids)))
+    fi <- grp_fold[match(loc_id, unique_ids)]
+    cat("  CV folds: location-grouped random (", length(unique_ids),
+        " unique locations -> ", n_folds, " folds).\n", sep = "")
+    return(list(fold_indices = fi, method_name = "location_grouped_random", n_groups = length(unique_ids)))
+  }
+
+  if (identical(cv_type, "pixel_grouped")) {
+    pf <- make_pixel_grouped_folds(dat, covariate_cols, n_folds, seed = NULL)
+    cat("  CV folds: pixel-grouped random (", pf$n_groups,
+        " unique covariate vectors -> ", n_folds, " folds).\n", sep = "")
+    return(list(fold_indices = pf$fold_indices, method_name = "pixel_grouped_random", n_groups = pf$n_groups))
+  }
+
+  if (identical(cv_type, "spatial")) {
+    if (is.null(cv_blocksize)) stop("cv_type = 'spatial' requires cv_blocksize to be set.")
+    fi_info <- get_cached_spatial_folds(
+      dat = dat, block_size = cv_blocksize, n_folds = n_folds,
+      cache_tag = cache_tag, exclude_regions = exclude_regions, progress = TRUE
+    )
+    method <- paste0("spatial_block_", cv_blocksize, "m")
+    n_actual <- max(fi_info$fold_indices, na.rm = TRUE)
+    cat("  CV folds: spatial blocks (", cv_blocksize, " m, ",
+        n_actual, " folds).\n", sep = "")
+    return(list(fold_indices = fi_info$fold_indices, method_name = method, n_groups = n_actual))
+  }
+
+  stop("Unknown cv_type '", cv_type, "'. Use 'random', 'location_grouped', 'pixel_grouped', or 'spatial'.")
+}
+
 method_to_display <- function(m) {
   if (grepl("^spatial_block_.+m$", m)) {
     size_str <- sub("^spatial_block_(.+)m$", "\\1", m)
