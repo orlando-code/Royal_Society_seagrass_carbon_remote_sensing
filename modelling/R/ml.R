@@ -238,7 +238,12 @@ predict_model <- function(obj, newdata, se = TRUE) {
     storage.mode(X_mat) <- "double"
     out <- list(mean = as.numeric(predict(obj$model, newdata = X_mat)), se = NULL)
   } else if (type == "GAM") {
-    out <- list(mean = as.numeric(mgcv::predict.gam(obj$model, newdata = X, type = "response")), se = NULL)
+    if (isTRUE(se)) {
+      pr <- mgcv::predict.gam(obj$model, newdata = X, type = "response", se.fit = TRUE)
+      out <- list(mean = as.numeric(pr$fit), se = as.numeric(pr$se.fit))
+    } else {
+      out <- list(mean = as.numeric(mgcv::predict.gam(obj$model, newdata = X, type = "response")), se = NULL)
+    }
   } else if (type == "RF") {
     out <- list(mean = as.numeric(predict(obj$model, newdata = X)), se = NULL)
   } else {
