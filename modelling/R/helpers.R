@@ -1074,6 +1074,28 @@ folds_to_vector <- function(folds, n) {
     fv
   } else as.integer(folds)
 }
+#' Build pixel-grouped fold assignments: points with identical covariate
+#' vectors are placed in the same fold so the model never sees an exact
+#' duplicate input in the test set during training.
+#'
+#' @param dat       data.frame with at least the columns in \code{covariate_cols}
+#' @param covariate_cols character vector of column names to hash
+#' @param n_folds   number of folds
+#' @param seed      random seed for reproducibility (NULL = no set.seed)
+#' @return list(fold_indices, n_groups) where fold_indices is an integer vector
+#'   of length nrow(dat) and n_groups is the number of unique covariate vectors
+make_pixel_grouped_folds <- function(dat, covariate_cols, n_folds, seed = 42L) {
+  cov_mat <- dat[, covariate_cols, drop = FALSE]
+  pixel_id <- as.integer(factor(do.call(paste, c(cov_mat, sep = "|"))))
+  unique_ids <- unique(pixel_id)
+  if (!is.null(seed)) set.seed(seed)
+  grp_fold <- sample(rep(seq_len(n_folds), length.out = length(unique_ids)))
+  list(
+    fold_indices = grp_fold[match(pixel_id, unique_ids)],
+    n_groups     = length(unique_ids)
+  )
+}
+
 method_to_display <- function(m) {
   if (grepl("^spatial_block_.+m$", m)) {
     size_str <- sub("^spatial_block_(.+)m$", "\\1", m)
@@ -1098,6 +1120,7 @@ method_to_display <- function(m) {
   switch(m,
     random_split = "Random split",
     location_grouped_random = "Location-grouped random",
+    pixel_grouped_random = "Pixel-grouped random",
     env_cluster = "Env. cluster",
     paste0(toupper(substring(m, 1, 1)), substring(m, 2))
   )
@@ -1105,7 +1128,8 @@ method_to_display <- function(m) {
 # Order methods: random first (0), then spatial blocks by ascending size (1km, 5km, ...)
 method_block_size_km <- function(m) {
   if (m == "random_split") return(-1)
-  if (m == "location_grouped_random") return(0)
+  if (m == "location_grouped_random") return(-0.5)
+  if (m == "pixel_grouped_random") return(0)
   if (grepl("^spatial_block_.+m$", m)) {
     size_str <- sub("^spatial_block_(.+)m$", "\\1", m)
     size_m <- as.numeric(size_str)
