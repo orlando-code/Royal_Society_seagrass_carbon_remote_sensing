@@ -157,7 +157,7 @@ if (length(importance_predictor_vars) > permutation_max_vars) {
 # ---------------------------------------------------------------------------
 # Write outputs
 # ---------------------------------------------------------------------------
-covariate_dir <- "output/covariate_selection"
+covariate_dir <- file.path(get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output"), "covariate_selection")
 dir.create(covariate_dir, recursive = TRUE, showWarnings = FALSE)
 
 # Per-model importance CSVs (permutation and SHAP)

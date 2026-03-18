@@ -15,7 +15,7 @@ project_root <- here::here()
 source(file.path(project_root, "modelling/R/helpers.R"))
 load_packages(c("here", "mgcv", "dplyr", "randomForest", "GauPro", "xgboost", "sf"))
 
-out_dir <- file.path(project_root, "output/cv_pipeline")
+out_dir <- file.path(get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output"), "cv_pipeline")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 # ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ cv_blocksize <- get0("cv_blocksize", envir = .GlobalEnv, ifnotfound = 5000L)
 log_response  <- isTRUE(get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE))
 model_list    <- get0("model_list", envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB"))
 
-cov_dir <- file.path(project_root, "output/covariate_selection")
+cov_dir <- file.path(get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output"), "covariate_selection")
 use_shap_per_model <- isTRUE(get0("use_shap_per_model", envir = .GlobalEnv, ifnotfound = FALSE))
 per_model_vars <- get_per_model_vars(cov_dir, colnames(core_data), use_shap_first = use_shap_per_model)
 

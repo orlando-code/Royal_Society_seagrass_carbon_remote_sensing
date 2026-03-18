@@ -532,7 +532,7 @@ compute_shap_importance <- function(core_data, target_var, predictor_vars,
 #' @param covariate_dir Directory containing the per-model CSVs.
 #' @param type One of \code{"pruned"}, \code{"permutation"}, \code{"shap"}.
 #' @return Path to the combined CSV, or \code{NULL} if no per-model files found.
-combine_pruned_model_variables <- function(covariate_dir = "output/covariate_selection",
+combine_pruned_model_variables <- function(covariate_dir,
                                            type = c("pruned", "permutation", "shap")) {
   type <- match.arg(type)
   if (type == "pruned") {
