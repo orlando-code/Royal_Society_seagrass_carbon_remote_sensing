@@ -34,13 +34,19 @@ post_tuning_validation <- isTRUE(get0("post_tuning_validation", envir = .GlobalE
 exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
 
 
-# Block sizes: when cv_type == "spatial" use cv_blocksize_scan if set, else cv_blocksize only
+# Block sizes for spatial diagnostics (run in both Step 2 and Step 4).
+# If `cv_blocksize_scan` is set, use it; otherwise fall back to a single
+# `cv_blocksize` only when `cv_type == "spatial"`.
 cv_blocksize_scan <- get0("cv_blocksize_scan", envir = .GlobalEnv, ifnotfound = NULL)
-spatial_block_sizes_km <- if (identical(cv_type, "spatial")) c(cv_blocksize %/% 1000L) else integer(0)
-default_block_sizes_m <- if (length(spatial_block_sizes_km) > 0) spatial_block_sizes_km * 1000 else integer(0)
-# Use scan vector (metres) when provided and non-empty; otherwise single cv_blocksize
-if (identical(cv_type, "spatial") && length(cv_blocksize_scan) > 0L && is.numeric(cv_blocksize_scan)) {
-  default_block_sizes_m <- as.integer(cv_blocksize_scan)
+use_spatial_diags <- !is.null(cv_blocksize_scan) &&
+  length(cv_blocksize_scan) > 0L &&
+  is.numeric(cv_blocksize_scan)
+default_block_sizes_m <- if (isTRUE(use_spatial_diags)) {
+  as.integer(cv_blocksize_scan)
+} else if (identical(cv_type, "spatial")) {
+  as.integer(cv_blocksize)
+} else {
+  integer(0)
 }
 buffer_km <- 1
 buffer_m  <- buffer_km * 1000
@@ -202,8 +208,8 @@ cv_strategies <- list(
   list(method = "location_grouped_random", folds = loc_grouped_folds, block_size_m = NA),
   list(method = "pixel_grouped_random", folds = pixel_grouped_folds, block_size_m = NA)
 )
-if (identical(cv_type, "spatial") && length(block_sizes_m) > 0) {
-  cat("\tCreating spatial folds (cv_type = spatial)\n")
+if (length(block_sizes_m) > 0) {
+  cat("\tCreating spatial folds (spatial block diagnostics)\n")
   for (size_m in block_sizes_m) {
     cat("  Spatial blocks ", size_m, " m ...\n", sep = "")
     cat("N.B. the progress bar is poor – it generally stays at 0, then leaps to 100\n", sep="")
