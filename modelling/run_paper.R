@@ -50,11 +50,12 @@ do_cv_on_defaults <- TRUE  # whether to run Step 2 (default CV) + Step 2b
 model_list    <- c("GPR", "GAM", "XGB")
 n_folds       <- 5L
 cv_type       <- "spatial"  # "spatial" or "random"
-cv_blocksize <- 5000L  # metres for spatial CV to tune models on (set by desired application)
+cv_blocksize <- 1000L  # metres for spatial CV to tune models on (set by desired application)
 cv_blocksize_scan <- c(1000L, 5000L, 10000L, 20000L, 50000L, 100000L)
 
 # Assign all globals for sourced sub-scripts
-for (nm in c("target_var", "log_transform_target", "exclude_regions", "model_list",
+for (nm in c("target_var", "log_transform_target",
+             "exclude_regions", "model_list",
              "use_correlation_filter", "correlation_filter_threshold",
              "permutation_max_vars", "permutation_coverage", "n_permutations",
              "use_shap_per_model", "n_folds", "cv_type", "cv_blocksize", "cv_blocksize_scan",

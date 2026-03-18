@@ -280,7 +280,8 @@ permutation_importance_cv <- function(core_data, target_var, predictor_vars, mod
         GPR = fit_gpr(prep$train, prep$predictor_vars, test_data = prep$test, hyperparams = hp),
         RF  = fit_rf(prep$train, prep$test, prep$predictor_vars),
         XGB = fit_xgboost(prep$train, prep$test, prep$predictor_vars, hyperparams = hp),
-        GAM = fit_gam(prep$train, prep$test, prep$predictor_vars, k_spatial = if (is.list(hp) && !is.null(hp$k_spatial)) hp$k_spatial else 80L),
+        GAM = fit_gam(prep$train, prep$test, prep$predictor_vars, include_spatial = FALSE,
+                      k_covariate = if (is.list(hp) && !is.null(hp$k_covariate)) hp$k_covariate else 6L),
         stop("Unsupported model: ", model_name)
       )
       pred <- fit$predictions
@@ -420,38 +421,22 @@ compute_shap_importance <- function(core_data, target_var, predictor_vars,
     core_sc <- prep$data
     core_sc$median_carbon_density <- y
     pvars <- predictor_vars
-    if (model_name == "GAM" && is.list(hp) && !is.null(hp$k_spatial)) {
-      if (all(c("longitude", "latitude") %in% names(core))) {
-        core_sc$longitude <- core$longitude
-        core_sc$latitude  <- core$latitude
-      }
-      fit <- fit_gam(core_sc, core_sc, pvars, k_spatial = hp$k_spatial %||% 80L)
+    if (model_name == "GAM") {
+      k_cov <- if (is.list(hp) && !is.null(hp$k_covariate)) hp$k_covariate else 6L
+      fit <- fit_gam(core_sc, core_sc, pvars, include_spatial = FALSE, k_covariate = k_cov)
       mdl <- fit$model
       if (is.null(mdl)) { warning("GAM SHAP failed; returning NULL."); return(NULL) }
       pred_fun <- function(m, newdata) {
         as.numeric(mgcv::predict.gam(m, newdata = as.data.frame(newdata), type = "response"))
       }
-      X <- core_sc[, c("longitude", "latitude", pvars), drop = FALSE]
+      X <- core_sc[, pvars, drop = FALSE]
     } else {
       X <- core_sc[, pvars, drop = FALSE]
-      if (model_name == "GAM") {
-        form <- as.formula(
-          paste("median_carbon_density ~", paste(predictor_vars, collapse = " + "))
-        )
-        mdl <- tryCatch(mgcv::gam(form, data = core_sc, family = gaussian()),
-                        error = function(e) NULL)
-        if (is.null(mdl)) { warning("GAM SHAP failed; returning NULL."); return(NULL) }
-        pred_fun <- function(m, newdata) {
-          nd <- apply_scaling(as.data.frame(newdata), prep$scale_params, predictor_vars)
-          as.numeric(mgcv::predict.gam(m, newdata = nd, type = "response"))
-        }
-      } else {
-        fit <- fit_rf(core_sc, core_sc, predictor_vars)
-        mdl <- fit$model
-        pred_fun <- function(m, newdata) {
-          nd <- apply_scaling(as.data.frame(newdata), prep$scale_params, predictor_vars)
-          as.numeric(predict(m, newdata = nd))
-        }
+      fit <- fit_rf(core_sc, core_sc, predictor_vars)
+      mdl <- fit$model
+      pred_fun <- function(m, newdata) {
+        nd <- apply_scaling(as.data.frame(newdata), prep$scale_params, predictor_vars)
+        as.numeric(predict(m, newdata = nd))
       }
     }
 
@@ -1098,23 +1083,38 @@ method_to_display <- function(m) {
       return(paste("Spatial block", size_km, "km"))
     }
   }
+  if (grepl("^region_stratified_.+m$", m)) {
+    size_str <- sub("^region_stratified_(.+)m$", "\\1", m)
+    size_m <- as.numeric(size_str)
+    size_km <- if (!is.na(size_m) && size_m >= 1000) round(size_m / 1000) else size_m
+    if (!is.na(size_km)) {
+      return(paste("Region-strat.", size_km, "km"))
+    }
+  }
   if (grepl("^distance_buffer_", m)) {
     km <- sub("distance_buffer_|km", "", m)
     return(paste("Distance buffer", km, "km"))
   }
   switch(m,
     random_split = "Random split",
+    location_grouped_random = "Location-grouped random",
     env_cluster = "Env. cluster",
     paste0(toupper(substring(m, 1, 1)), substring(m, 2))
   )
 }
 # Order methods: random first (0), then spatial blocks by ascending size (1km, 5km, ...)
 method_block_size_km <- function(m) {
-  if (m == "random_split") return(0)
+  if (m == "random_split") return(-1)
+  if (m == "location_grouped_random") return(0)
   if (grepl("^spatial_block_.+m$", m)) {
     size_str <- sub("^spatial_block_(.+)m$", "\\1", m)
     size_m <- as.numeric(size_str)
     if (!is.na(size_m)) return(round(size_m / 1000))
+  }
+  if (grepl("^region_stratified_.+m$", m)) {
+    size_str <- sub("^region_stratified_(.+)m$", "\\1", m)
+    size_m <- as.numeric(size_str)
+    if (!is.na(size_m)) return(round(size_m / 1000) + 0.5)
   }
   NA_real_
 }
@@ -1213,8 +1213,8 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
           ),
           GAM = fit_gam(
             prep$train, prep$test, prep$predictor_vars,
-            k_spatial = if (is.list(hp) && !is.null(hp$k_spatial)) hp$k_spatial else 80L,
-            include_spatial = FALSE
+            include_spatial = FALSE,
+            k_covariate = if (is.list(hp) && !is.null(hp$k_covariate)) hp$k_covariate else 6L
           ),
           stop("Unsupported model: ", m)
         )

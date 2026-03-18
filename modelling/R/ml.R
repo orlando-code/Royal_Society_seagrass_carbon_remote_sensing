@@ -426,33 +426,56 @@ fit_xgboost <- function(train_data, test_data, predictor_vars, hyperparams = NUL
   learning_rate    <- hyperparams$learning_rate    %||% 0.3
   subsample        <- hyperparams$subsample        %||% 0.8
   colsample_bytree <- hyperparams$colsample_bytree %||% 0.8
+  min_child_weight <- hyperparams$min_child_weight %||% 1L
   nthreads         <- hyperparams$nthreads         %||% 1L
 
   model <- xgboost(x = X_train, y = y_train, nrounds = nrounds,
     max_depth = max_depth, learning_rate = learning_rate,
     subsample = subsample, colsample_bytree = colsample_bytree,
+    min_child_weight = min_child_weight,
     nthread = as.integer(nthreads), objective = "reg:squarederror")
 
   list(model = model, predictions = as.numeric(predict(model, newdata = X_test)))
 }
 
 fit_gam <- function(train_data, test_data, predictor_vars, k_spatial = 80,
-                    include_spatial = TRUE) {
+                    include_spatial = FALSE, k_covariate = 6L) {
   if (!requireNamespace("mgcv", quietly = TRUE))
     return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
 
   y_train <- train_data$median_carbon_density
   family_used <- if (any(y_train <= 0, na.rm = TRUE)) gaussian() else Gamma(link = "log")
-  covar_terms  <- paste(predictor_vars, collapse = " + ")
+
+  numeric_pvars <- predictor_vars[vapply(train_data[predictor_vars], is.numeric, logical(1))]
+  factor_pvars  <- setdiff(predictor_vars, numeric_pvars)
+
+  n_train   <- nrow(train_data)
+  n_smooth  <- length(numeric_pvars)
+  k_max_per <- if (n_smooth > 0L)
+    max(3L, floor(n_train / (3 * n_smooth))) else as.integer(k_covariate)
+  k_eff <- min(as.integer(k_covariate), k_max_per)
+
+  smooth_terms <- vapply(numeric_pvars, function(v) {
+    n_unique <- length(unique(train_data[[v]][!is.na(train_data[[v]])]))
+    k_use <- min(k_eff, n_unique - 1L)
+    if (k_use >= 3L) paste0("s(", v, ", bs = \"cr\", k = ", k_use, ")") else v
+  }, character(1))
+
+  all_covar_terms <- c(smooth_terms, factor_pvars)
+  covar_formula   <- paste(all_covar_terms, collapse = " + ")
 
   if (include_spatial && all(c("longitude", "latitude") %in% names(train_data))) {
     spatial_term <- paste0("s(longitude, latitude, k = ", k_spatial, ")")
-    form <- as.formula(paste("median_carbon_density ~", spatial_term, "+", covar_terms))
+    form <- as.formula(paste("median_carbon_density ~", spatial_term, "+", covar_formula))
   } else {
-    form <- as.formula(paste("median_carbon_density ~", covar_terms))
+    form <- as.formula(paste("median_carbon_density ~", covar_formula))
   }
 
-  fit <- try(mgcv::gam(form, data = train_data, family = family_used, method = "REML"), silent = TRUE)
+  fit <- try(
+    mgcv::gam(form, data = train_data, family = family_used,
+              method = "REML", select = FALSE), # TODO: does this now throw infs?
+    silent = TRUE
+  )
   if (inherits(fit, "try-error"))
     return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
 
@@ -460,5 +483,11 @@ fit_gam <- function(train_data, test_data, predictor_vars, k_spatial = 80,
     as.numeric(mgcv::predict.gam(fit, newdata = test_data, type = "response")),
     error = function(e) rep(mean(y_train, na.rm = TRUE), nrow(test_data))
   )
+
+  y_range <- range(y_train, na.rm = TRUE)
+  clamp_lo <- y_range[1] - 3 * diff(y_range)
+  clamp_hi <- y_range[2] + 3 * diff(y_range)
+  pred <- pmin(pmax(pred, clamp_lo), clamp_hi)
+
   list(model = fit, predictions = pred)
 }

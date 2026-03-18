@@ -135,11 +135,12 @@ if (use_tuned_categorical) {
         max_depth = cfg$max_depth,
         learning_rate = cfg$learning_rate %||% 0.1,
         subsample = cfg$subsample %||% 0.8,
-        colsample_bytree = cfg$colsample_bytree %||% 0.8
+        colsample_bytree = cfg$colsample_bytree %||% 0.8,
+        min_child_weight = cfg$min_child_weight %||% 1L
       )
     } else if (m == "GAM") {
       hyperparams_by_model[[m]] <- list(
-        k_spatial = cfg$k_spatial %||% 80L
+        k_covariate = cfg$k_covariate %||% cfg$k_spatial %||% 6L
       )
     }
   }

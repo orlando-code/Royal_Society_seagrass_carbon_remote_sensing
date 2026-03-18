@@ -46,24 +46,11 @@ if (exists("exclude_regions", envir = .GlobalEnv)) {
 target_var <- "median_carbon_density_100cm"
 predictor_vars <- raster_covariates[raster_covariates %in% colnames(dat)]
 
-if ("random_core_variable" %in% colnames(dat)) {
-  core_data <- dat %>%
-    dplyr::group_by(random_core_variable) %>%
-    dplyr::summarise(
-      median_carbon_density = median(.data[[target_var]], na.rm = TRUE),
-      dplyr::across(dplyr::all_of(c(predictor_vars, "longitude", "latitude")), dplyr::first),
-      seagrass_species = dplyr::first(seagrass_species),
-      region = dplyr::first(region),
-      .groups = "drop"
-    ) %>%
-    dplyr::filter(!is.na(median_carbon_density))
-} else {
-  core_data <- dat %>%
-    dplyr::mutate(median_carbon_density = .data[[target_var]]) %>%
-    dplyr::select(longitude, latitude, median_carbon_density,
-                  dplyr::all_of(predictor_vars),
-                  dplyr::all_of(intersect(c("seagrass_species", "region"), names(dat))))
-}
+core_data <- dat %>%
+  dplyr::mutate(median_carbon_density = .data[[target_var]]) %>%
+  dplyr::select(longitude, latitude, median_carbon_density,
+                dplyr::all_of(predictor_vars),
+                dplyr::all_of(intersect(c("seagrass_species", "region"), names(dat))))
 core_data <- as.data.frame(
   core_data %>%
     dplyr::select(longitude, latitude, median_carbon_density,
@@ -75,7 +62,7 @@ predictor_vars <- predictor_vars[predictor_vars %in% colnames(core_data)]
 # ---------------------------------------------------------------------------
 # Covariate Selection and CV Fold Assignment
 #   - Loads per-model and shared pruned covariates, preferring SHAP exports.
-#   - Sets tuning CV folds (spatial or random) with no duplicate logic elsewhere.
+#   - Sets tuning CV folds (spatial or random).
 # ---------------------------------------------------------------------------
 
 cov_dir <- "output/covariate_selection"
@@ -103,23 +90,14 @@ cat("Training rows:", nrow(core_data),
     " | Shared predictors:", length(shared_vars),
     " | log_response:", log_response, "\n")
 
-# Generate CV folds for hyperparameter tuning (no duplicate logic)
-if (identical(cv_type, "spatial") && all(c("longitude", "latitude") %in% names(core_data))) {
-  fold_info <- get_cached_spatial_folds(
-    dat            = core_data,
-    block_size     = cv_blocksize,
-    n_folds        = n_tune_folds,
-    cache_tag      = "fit_final_models_tune",
-    exclude_regions= exclude_regions,
-    progress       = TRUE
-  )
-  tune_folds <- fold_info$fold_indices
-  cat("CV strategy for tuning: spatial block ", cv_blocksize, " m, ", n_tune_folds, " folds.\n", sep = "")
-  cat("  (Folds from cache or blockCV; test rows with factor levels not in train excluded from metrics.)\n\n")
-} else {
-  tune_folds <- sample(rep(seq_len(n_tune_folds), length.out = nrow(core_data)))
-  cat("CV strategy for tuning: random split, ", n_tune_folds, " folds.\n\n", sep = "")
-}
+# Location-grouped folds for fallback tuning (consistent with hyperparameter_tuning_pipeline)
+loc_id <- as.integer(factor(paste(core_data$longitude, core_data$latitude)))
+unique_loc_ids <- unique(loc_id)
+set.seed(42)
+loc_fold <- sample(rep(seq_len(n_tune_folds), length.out = length(unique_loc_ids)))
+tune_folds <- loc_fold[match(loc_id, unique_loc_ids)]
+cat("CV strategy for tuning: location-grouped random, ",
+    length(unique_loc_ids), " unique locations, ", n_tune_folds, " folds.\n\n", sep = "")
 
 # Helper: run k-fold CV. Optionally fit on log(response) and back-transform predictions for metrics.
 # Excludes test rows whose factor predictors (e.g. species) were not in train when computing metrics.
@@ -168,10 +146,14 @@ if (!file.exists(xgb_config_path)) xgb_config_path <- file.path("output/cv_pipel
 if (file.exists(xgb_config_path)) {
   xgb_cfg <- readRDS(xgb_config_path)
   best_xgb_hp <- list(nrounds = xgb_cfg$nrounds, max_depth = xgb_cfg$max_depth,
-    learning_rate = xgb_cfg$learning_rate %||% 0.1, subsample = xgb_cfg$subsample %||% 0.8, colsample_bytree = xgb_cfg$colsample_bytree %||% 0.8)
+    learning_rate = xgb_cfg$learning_rate %||% 0.1, subsample = xgb_cfg$subsample %||% 0.8,
+    colsample_bytree = xgb_cfg$colsample_bytree %||% 0.8,
+    min_child_weight = xgb_cfg$min_child_weight %||% 1L)
   xgb_cv_metrics <- xgb_cfg$cv_metrics
-  cat("  Loaded best config from hyperparameter_tuning_pipeline: nrounds =", best_xgb_hp$nrounds,
-      ", max_depth =", best_xgb_hp$max_depth, "\n\n")
+  cat("  Loaded best config: nrounds =", best_xgb_hp$nrounds,
+      ", max_depth =", best_xgb_hp$max_depth,
+      ", lr =", best_xgb_hp$learning_rate,
+      ", mcw =", best_xgb_hp$min_child_weight, "\n\n")
 } else {
   xgb_grid <- expand.grid(
     nrounds    = c(50L, 100L, 200L),
@@ -224,7 +206,7 @@ cat("Saved XGB_final.rds  (train R2=", round(xgb_train_metrics$r2, 3),
     " RMSE=", round(xgb_train_metrics$rmse, 4), ")\n\n")
 
 # ---------------------------------------------------------------------------
-# GAM: load best config from hyperparameter_tuning_pipeline or tune k_spatial here
+# GAM: load best config from hyperparameter_tuning_pipeline or tune k_covariate here
 # ---------------------------------------------------------------------------
 cat("=== GAM: hyperparameter tuning ===\n")
 predictor_vars <- load_model_vars("GAM", per_model_vars, use_shap_first = use_shap_per_model)
@@ -234,31 +216,33 @@ gam_config_path <- file.path("output/cv_pipeline", "best_config_gam.rds")
 if (!file.exists(gam_config_path)) gam_config_path <- file.path("output/cv_pipeline", "gam_best_config.rds")
 if (file.exists(gam_config_path)) {
   gam_cfg <- readRDS(gam_config_path)
-  best_gam_hp <- list(k_spatial = gam_cfg$k_spatial)
+  best_gam_hp <- list(k_covariate = gam_cfg$k_covariate %||% gam_cfg$k_spatial %||% 6L)
   gam_cv_metrics <- gam_cfg$cv_metrics
-  cat("  Loaded best config from hyperparameter_tuning_pipeline: k_spatial =", best_gam_hp$k_spatial, "\n\n")
+  cat("  Loaded best config: k_covariate =", best_gam_hp$k_covariate, "\n\n")
 } else {
-  gam_k_grid <- c(20L, 50L, 80L)
+  gam_k_grid <- c(4L, 6L, 8L, 10L)
   gam_results <- vector("list", length(gam_k_grid))
   for (i in seq_along(gam_k_grid)) {
-    k_sp <- gam_k_grid[i]
-    hp   <- list(k_spatial = k_sp)
-    m    <- cv_tune(core_data, predictor_vars, tune_folds,
-      function(tr, te, pv, h) fit_gam(tr, te, pv, k_spatial = h$k_spatial), hp, model_name = "GAM", log_response = log_response)
-    gam_results[[i]] <- data.frame(k_spatial = k_sp, r2 = m$r2, rmse = m$rmse)
-    cat("  k_spatial=", k_sp, " -> R2=", round(m$r2, 3),
+    k_cov <- gam_k_grid[i]
+    hp    <- list(k_covariate = k_cov)
+    m     <- cv_tune(core_data, predictor_vars, tune_folds,
+      function(tr, te, pv, h) fit_gam(tr, te, pv, include_spatial = FALSE, k_covariate = h$k_covariate),
+      hp, model_name = "GAM", log_response = log_response)
+    gam_results[[i]] <- data.frame(k_covariate = k_cov, r2 = m$r2, rmse = m$rmse)
+    cat("  k_covariate=", k_cov, " -> R2=", round(m$r2, 3),
         " RMSE=", round(m$rmse, 4), "\n")
   }
   gam_cv_metrics <- dplyr::bind_rows(gam_results)
-  best_gam_k    <- gam_cv_metrics$k_spatial[which.max(gam_cv_metrics$r2)]
-  best_gam_hp   <- list(k_spatial = best_gam_k)
-  cat("Best GAM: k_spatial=", best_gam_k,
+  best_gam_k    <- gam_cv_metrics$k_covariate[which.max(gam_cv_metrics$r2)]
+  best_gam_hp   <- list(k_covariate = best_gam_k)
+  cat("Best GAM: k_covariate=", best_gam_k,
       " (CV R2=", round(max(gam_cv_metrics$r2, na.rm = TRUE), 3), ")\n\n")
 }
 
 gam_data <- if (log_response) transform_response(core_data, "median_carbon_density", log = TRUE) else core_data
 gam_prep <- prepare_data_for_model("GAM", gam_data, gam_data, predictor_vars)
-gam_final <- fit_gam(gam_prep$train, gam_prep$test, predictor_vars, k_spatial = best_gam_hp$k_spatial)
+gam_final <- fit_gam(gam_prep$train, gam_prep$test, predictor_vars,
+                     include_spatial = FALSE, k_covariate = best_gam_hp$k_covariate)
 gam_pred <- gam_final$predictions
 if (log_response) gam_pred <- inverse_response_transform(gam_pred, log = TRUE)
 gam_train_metrics <- calculate_metrics(core_data$median_carbon_density, gam_pred)
@@ -336,7 +320,7 @@ summary_tbl <- data.frame(
   train_rmse   = round(c(xgb_train_metrics$rmse, gam_train_metrics$rmse, gpr_train_metrics$rmse), 4),
   best_hp      = c(
     paste0("nrounds=", best_xgb_hp$nrounds, " max_depth=", best_xgb_hp$max_depth),
-    paste0("k_spatial=", best_gam_hp$k_spatial),
+    paste0("k_covariate=", best_gam_hp$k_covariate),
     paste0("kernel=", gpr_kernel, " nug_max=", gpr_nug_max)
   ),
   variables    = c(

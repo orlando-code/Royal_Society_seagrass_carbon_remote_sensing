@@ -82,10 +82,11 @@ for (model_name in model_list) {
   }
   if (model_name == "XGB" && is.list(hp)) {
     hp <- list(nrounds = hp$nrounds, max_depth = hp$max_depth, learning_rate = hp$learning_rate %||% 0.1,
-               subsample = hp$subsample %||% 0.8, colsample_bytree = hp$colsample_bytree %||% 0.8)
+               subsample = hp$subsample %||% 0.8, colsample_bytree = hp$colsample_bytree %||% 0.8,
+               min_child_weight = hp$min_child_weight %||% 1L)
   }
   if (model_name == "GAM" && is.list(hp)) {
-    hp <- list(k_spatial = hp$k_spatial %||% 80L)
+    hp <- list(k_covariate = hp$k_covariate %||% hp$k_spatial %||% 6L)
   }
   cat("Model:", model_name, "| Predictors:", length(pvars), "| Hyperparams:", if (length(hp)) "from tuning" else "defaults", "| n_points:", n_shap_points, "\n")
   imp <- tryCatch(

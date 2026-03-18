@@ -105,7 +105,7 @@ if (length(importance_predictor_vars) > permutation_max_vars) {
   }
 
   imp_perm_all <- do.call(rbind, lapply(supported_models, function(model_name) {
-    cat("  - ", model_name, " ... ", sep = "")
+    cat("\n  - ", model_name, " ... ", sep = "")
     out <- tryCatch({
       df <- permutation_importance_cv(
         dat, target_var, importance_predictor_vars, model_name,
