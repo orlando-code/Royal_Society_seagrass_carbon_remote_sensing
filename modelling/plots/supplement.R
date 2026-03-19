@@ -254,7 +254,6 @@ cor_df_plot <- cor_df %>%
     label = ifelse(as.character(variable) %in% names(VAR_LABELS), VAR_LABELS[as.character(variable)], as.character(variable)),
     status = ifelse(kept, "Retained", "Removed by correlation filter")
   )
-# Optional: use human-readable labels on y-axis (from plot_config)
 y_labels <- label_vars(levels(cor_df_plot$variable))
 y_labels <- ifelse(nchar(y_labels) > 50, paste0(substr(y_labels, 1, 47), "..."), y_labels)
 p_cor_bar <- ggplot(cor_df_plot, aes(x = correlation, y = variable, fill = status)) +
@@ -289,7 +288,6 @@ if (!is.null(similarity$summary)) {
 flags <- flag_outside_applicability_domain(
   dat, prediction_grid, raster_covariates, strict=FALSE
 )
-source("modelling/R/helpers.R")
 p <- plot_applicability_domain(
   prediction_grid,
   similarity_scores = similarity$similarity_scores,
@@ -302,19 +300,72 @@ p <- plot_applicability_domain(
   ylim = c(lat_min, lat_max),
   use_raster = TRUE
 )
-print(p)
+ggsave(file.path(OUT_DIR, "applicability_domain.png"), p, width = 8, height = 6)
+cat("Saved", file.path(OUT_DIR, "applicability_domain.png"), "\n")
 
 
 # calculate the 5th percentile similarity score in data
-percentile_similarity_score_cutoff <- quantile(similarity$data_similarity_scores, 0.05, na.rm = TRUE)
+# get indices of gebco cells between -70 and 0 depth
+in_range_indices <- which(prediction_grid$gebco_2025_n61.0_s34.0_w_10.0_e35.0 >= -70 & prediction_grid$gebco_2025_n61.0_s34.0_w_10.0_e35.0 <= 0)
+
+# filter similarity scores to only include the in_range_indices
+in_range_similarity_scores <- similarity$similarity_scores[in_range_indices]
+
+# calculate the 5th percentile similarity score in the gebco cells
+data_similarity_score_cutoff <- quantile(similarity$data_similarity_scores, 0.1, na.rm = TRUE)
+
+
+# plot histogram of data similarity scores
+p <- ggplot(data.frame(data_similarity_scores = similarity$data_similarity_scores), aes(x = data_similarity_scores)) +
+  geom_histogram(binwidth = 0.01, fill = "steelblue", color = "black", alpha = 0.7) +
+  geom_vline(
+    xintercept = data_similarity_score_cutoff,
+    linetype = "dashed",
+    color = "red",
+    linewidth = 1
+  ) +
+  annotate(
+    "text",
+    x = data_similarity_score_cutoff,
+    y = Inf,
+    label = "10th percentile of core data similarity scores",
+    color = "red",
+    angle = 90,
+    vjust = -0.5,
+    hjust = 1.1,
+    size = 4
+  ) +
+  labs(
+    x = "Euclidean Distance Similarity Score",
+    y = "Count",
+    title = "Histogram of core data similarity scores"
+  ) +
+  theme_minimal()
+ggsave(file.path(OUT_DIR, "data_similarity_scores_histogram.png"), p, width = 8, height = 6)
+cat("Saved", file.path(OUT_DIR, "data_similarity_scores_histogram.png"), "\n")
 
 # plot a histogram of the similarity scores
-p <- ggplot(data.frame(similarity_scores = similarity$similarity_scores), aes(x = similarity_scores)) +
+p <- ggplot(data.frame(similarity_scores = in_range_similarity_scores), aes(x = similarity_scores)) +
   geom_histogram(binwidth = 0.01, fill = "steelblue", color = "black", alpha = 0.7) +
-  geom_vline(xintercept = percentile_similarity_score_cutoff, linetype = "dashed", color = "red", linewidth = 1) +
+  geom_vline(xintercept = data_similarity_score_cutoff, linetype = "dashed", color = "red", linewidth = 1) +
   labs(x = "Similarity Score", y = "Count", title = "Histogram of similarity scores") +
+    annotate(
+    "text",
+    x = data_similarity_score_cutoff,
+    y = Inf,
+    label = "10th percentile of core data similarity scores",
+    color = "red",
+    angle = 90,
+    vjust = -0.5,
+    hjust = 1.1,
+    size = 4
+  ) +
+  labs(
+    x = "Euclidean Distance Similarity Score",
+    y = "Count",
+    title = "Histogram of data similarity scores"
+  ) +
   theme_minimal()
-print(p)
 ggsave(file.path(OUT_DIR, "similarity_scores_histogram.png"), p, width = 8, height = 6)
 
 # TODO: this could be used to mask prediction grid so that only cells with a high-enough similarity score are used for prediction
