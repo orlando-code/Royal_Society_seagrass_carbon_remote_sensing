@@ -59,8 +59,8 @@ n_folds       <- 5L
 #   "pixel_grouped"    – group by identical covariate vector; prevents both
 #                        coordinate AND coarse-raster-pixel leakage (recommended)
 #   "spatial"          – spatial blocks via blockCV at cv_blocksize metres
-cv_type       <- "pixel_grouped"
-cv_blocksize  <- 1000L  # metres; only used when cv_type = "spatial"
+cv_type       <- get0("cv_type", envir = .GlobalEnv, ifnotfound = "pixel_grouped")
+cv_blocksize  <- get0("cv_blocksize", envir = .GlobalEnv, ifnotfound = 1000L)  # metres; only used when cv_type = "spatial"
 
 # cv_blocksize_scan: block sizes evaluated in the diagnostic CV scan
 # (cv_pipeline.R always runs random, location-grouped, and pixel-grouped
