@@ -56,6 +56,49 @@ plot_n_splits_on_grid <- function(dat, split_dat_list, n = 6, world_map, min_lon
   }
 }
 
+### DIAGNOSTICS
+
+estimate_r2_upper_bound <- function(dat, covariate_cols, target_col) {
+  
+  library(dplyr)
+  
+  # group by covariate vectors
+  stats <- dat %>%
+    group_by(across(all_of(covariate_cols))) %>%
+    summarise(
+      mean_y = mean(.data[[target_col]], na.rm = TRUE),
+      var_y  = var(.data[[target_col]], na.rm = TRUE),
+      n      = n(),
+      .groups = "drop"
+    )
+  
+  # keep only groups with replicates
+  stats_rep <- stats %>% filter(n > 1)
+  
+  if (nrow(stats_rep) == 0) {
+    warning("No replicated covariate vectors — cannot estimate noise variance")
+    return(NA)
+  }
+  
+  # pooled within-group variance (noise)
+  numerator   <- sum((stats_rep$n - 1) * stats_rep$var_y, na.rm = TRUE)
+  denominator <- sum(stats_rep$n - 1, na.rm = TRUE)
+  
+  noise_var <- numerator / denominator
+  
+  # total variance
+  total_var <- var(dat[[target_col]], na.rm = TRUE)
+  
+  # theoretical upper bound on R2 (without splitting dataset)
+  r2_max <- 1 - (noise_var / total_var)
+  
+  return(list(
+    r2_max = r2_max,
+    noise_variance = noise_var,
+    total_variance = total_var,
+    stats = stats
+  ))
+}
 
 ### PREPROCESSING (copied from modelling/R/helpers.R)
 
@@ -943,3 +986,5 @@ run_cv_model_suite_over_seed_list <- function(dat, target_var, covariate_vars, s
     summary_over_seeds = summary_over_seeds
   )
 }
+
+
