@@ -151,8 +151,8 @@ if (length(importance_predictor_vars) > permutation_max_vars) {
     })
     names(imp_shap) <- supported_models
     imp_shap <- imp_shap[!vapply(imp_shap, is.null, logical(1))]
+    }
   }
-}
 
 # ---------------------------------------------------------------------------
 # Write outputs
@@ -176,33 +176,36 @@ if (!is.null(imp_shap) && length(imp_shap) > 0L) {
   if (!is.null(s_combined)) cat("Saved importance_shap_<model>.csv +", basename(s_combined), "\n")
 }
 
-# Select top env vars only (species vars are never pruned and are appended)
-select_top_env_then_species <- function(df, value_col, max_vars, coverage) {
-  if (is.null(df) || nrow(df) == 0) return(character(0))
-  species_idx <- is_species_var(df$variable)
-  species_vars <- unique(df$variable[species_idx])
-  env_df <- df[!species_idx, , drop = FALSE]
-  if (nrow(env_df) == 0) return(species_vars)
-  top_env <- select_top_vars(env_df, value_col, max_vars, coverage)
-  unique(c(top_env, species_vars))
-}
-
 # Combined pruned sets (top env vars per model + all species vars; species is not pruned)
 if (!is.null(imp_perm)) {
-  perm_pruned <- do.call(rbind, lapply(names(imp_perm), function(imp_perm_names) {
+  perm_rows <- lapply(names(imp_perm), function(imp_perm_names) {
     v <- select_top_env_then_species(imp_perm[[imp_perm_names]], "rmse_increase", permutation_max_vars, permutation_coverage)
+    if (length(v) == 0L) return(NULL)
     data.frame(model = imp_perm_names, variable = v, stringsAsFactors = FALSE)
-  }))
-  write.csv(perm_pruned, file.path(covariate_dir, "pruned_model_variables_perm.csv"), row.names = FALSE)
-  cat("Saved pruned_model_variables_perm.csv\n")
+  })
+  perm_rows <- perm_rows[!vapply(perm_rows, is.null, logical(1L))]
+  if (length(perm_rows) > 0L) {
+    perm_pruned <- do.call(rbind, perm_rows)
+    write.csv(perm_pruned, file.path(covariate_dir, "pruned_model_variables_perm.csv"), row.names = FALSE)
+    cat("Saved pruned_model_variables_perm.csv\n")
+  } else {
+    cat("No permutation-pruned variables selected; skipping pruned_model_variables_perm.csv\n")
+  }
 }
 if (!is.null(imp_shap) && length(imp_shap) > 0L) {
-  shap_pruned <- do.call(rbind, lapply(names(imp_shap), function(imp_shap_names) {
+  shap_rows <- lapply(names(imp_shap), function(imp_shap_names) {
     v <- select_top_env_then_species(imp_shap[[imp_shap_names]], "shap_importance", permutation_max_vars, permutation_coverage)
+    if (length(v) == 0L) return(NULL)
     data.frame(model = imp_shap_names, variable = v, stringsAsFactors = FALSE)
-  }))
-  write.csv(shap_pruned, file.path(covariate_dir, "pruned_model_variables_shap.csv"), row.names = FALSE)
-  cat("Saved pruned_model_variables_shap.csv\n")
+  })
+  shap_rows <- shap_rows[!vapply(shap_rows, is.null, logical(1L))]
+  if (length(shap_rows) > 0L) {
+    shap_pruned <- do.call(rbind, shap_rows)
+    write.csv(shap_pruned, file.path(covariate_dir, "pruned_model_variables_shap.csv"), row.names = FALSE)
+    cat("Saved pruned_model_variables_shap.csv\n")
+  } else {
+    cat("No SHAP-pruned variables selected; skipping pruned_model_variables_shap.csv\n")
+  }
 }
 
 # Load dataframe for permutation and/or SHAP importance combined

@@ -29,8 +29,6 @@ show_titles <- TRUE
 assign("dpi", dpi, envir = .GlobalEnv)
 assign("show_titles", show_titles, envir = .GlobalEnv)
 
-
-
 target_var <- "median_carbon_density_100cm"
 log_transform_target <- TRUE
 # Region exclusion: set to character(0) to include all regions, or e.g. c("Black Sea") to exclude
@@ -42,7 +40,7 @@ exclude_regions <- c("Black Sea")
 use_correlation_filter       <- TRUE
 correlation_filter_threshold <- 0.8
 permutation_max_vars         <- 15L   # max vars retained after permutation importance
-n_permutations              <- 1L # increase for paper run
+n_permutations               <- 1L # increase for paper run
 permutation_coverage         <- 0.99  # cumulative importance coverage threshold
 use_shap_per_model           <- TRUE  # per-model covariate sets via iml SHAP
 do_cv_on_defaults <- TRUE  # whether to run Step 2 (default CV) + Step 2b

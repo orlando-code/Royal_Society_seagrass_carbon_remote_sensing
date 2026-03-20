@@ -89,7 +89,9 @@ if (post_tuning_validation) {
         learning_rate = cfg$learning_rate %||% 0.1,
         subsample = cfg$subsample %||% 0.8,
         colsample_bytree = cfg$colsample_bytree %||% 0.8,
-        min_child_weight = cfg$min_child_weight %||% 1L
+        min_child_weight = cfg$min_child_weight %||% 1L,
+        min_split_loss = cfg$min_split_loss %||% 0,
+        reg_reg_lambda = cfg$reg_reg_lambda %||% 1
       )
     } else if (m == "GAM") {
       hyperparams_by_model[[m]] <- list(
@@ -113,7 +115,7 @@ if (length(exclude_regions) > 0L) {
   dat <- dat[is.na(dat$region) | !dat$region %in% exclude_regions, ]
   cat("Excluded region(s):", paste(exclude_regions, collapse = ", "), "\n")
 }
-target_var <- "median_carbon_density_100cm"
+target_var <- get0("target_var", envir = .GlobalEnv, ifnotfound = "median_carbon_density_100cm")
 # Predictors: raster-derived covariates that exist in dat (updated predictor set)
 predictor_vars <- raster_covariates[raster_covariates %in% colnames(dat)]
 if (length(predictor_vars) == 0) {
@@ -175,16 +177,10 @@ core_sf <- sf::st_as_sf(
   crs = 4326,
   remove = FALSE
 )
-light_core_sf <- sf::st_as_sf(
-  complete_dat %>% dplyr::select(-dplyr::all_of(predictor_vars)),
-  coords = c("longitude", "latitude"),
-  crs = 4326,
-  remove = FALSE
-) # create a version without all the variables to save memory when calculating spatial folds
 cat("Core-level data:", nrow(complete_dat), "cores,", ncol(complete_dat), "variables.\n")
 
 # CV strategies driven by cv_type (from run_paper.R)
-# 1. True random: naive i.i.d. split (duplicate locations can leak between train/test)
+# 1. True random: naive split (duplicate locations can leak between train/test)
 true_random_folds <- sample(rep(seq_len(n_folds), length.out = n_cores))
 
 # 2. Location-grouped random: all rows at the same (lon, lat) go to the same fold
@@ -202,6 +198,10 @@ pixel_grouped_folds <- pixel_info$fold_indices
 cat("  True random folds:", n_cores, "rows ->", n_folds, "folds.\n")
 cat("  Location-grouped random folds:", length(unique_loc_ids), "unique locations ->", n_folds, "folds.\n")
 cat("  Pixel-grouped random folds:", pixel_info$n_groups, "unique covariate vectors ->", n_folds, "folds.\n")
+if (!is.null(pixel_info$fold_sizes)) {
+  cat("    Pixel fold row counts:", paste(pixel_info$fold_sizes, collapse = "/"),
+      "(target ~", round(n_cores / n_folds), "per fold)\n")
+}
 
 cv_strategies <- list(
   list(method = "random_split", folds = true_random_folds, block_size_m = NA),

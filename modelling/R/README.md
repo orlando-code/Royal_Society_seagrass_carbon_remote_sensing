@@ -13,7 +13,7 @@ Central utility and modelling-help library. It:
 - **Spatial CV caching**: **get_cached_spatial_folds()** – builds or loads spatial (blockCV) or random folds, keyed by data hash, block size, n_folds, exclude_regions; cache path is **`output/cache/<cache_tag>_<hash>_folds.rds`**.
 - **Data prep and response transform**: **transform_response()**, **inverse_response_transform()** for log-scale fitting.
 - **Variable selection**: **prune_by_correlation()**, **select_top_env_then_species()**, **get_per_model_vars()**, **load_model_vars()**, **read_model_vars()**, **combine_pruned_model_variables()** – used by covariate pruning and downstream steps to get per-model predictor sets from **pruned_model_variables_perm.csv** / **pruned_model_variables_shap.csv**.
-- **CV and tuning helpers**: **permutation_importance_cv()**, **compute_shap_importance()**, **run_cv()**, **prepare_data_for_model()**, **calculate_metrics()**, and model-specific tune helpers (**tune_gpr**, **tune_xgboost**, etc.) used by **hyperparameter_tuning_pipeline.R** and **fit_final_models.R**.
+- **CV and tuning helpers**: **permutation_importance_cv()**, **compute_shap_importance()**, **run_cv()**, **prepare_data_for_model()**, **calculate_metrics()**, and model-specific tune helpers (**tune_gpr_cv**, **tune_xgboost**, etc.) used by **hyperparameter_tuning_pipeline.R** and **fit_final_models.R**.
 - **Process RS covariates**: **process_rs_covariates()** – clips selected remote-sensing columns to ≥ 0.
 
 Many pipeline scripts depend on **get_cached_spatial_folds**, **load_model_vars**, **permutation_importance_cv**, **compute_shap_importance**, and **prepare_data_for_model** / **calculate_metrics**.

@@ -1,15 +1,13 @@
 # Unified hyperparameter tuning for all models (GPR, GAM, XGB).
 #
-# Uses the best hyperparameters and best covariate set per model (from
-# hyperparameter_tuning_pipeline and pruned_model_variables_shap/perm).
-# Fits each model with best config on full data and computes mean |phi| per
-# variable via iml::Shapley, then saves CSV and bar plot per model.
+# Tunes GPR (kernel + nugget grid), XGB (random grid search), and GAM
+# (k_covariate grid) using the same CV folds derived from the global
+# cv_type setting. Saves best_config_<model>.rds to the cv_pipeline dir.
 #
-# Requires: hyperparameter_tuning_pipeline.R has been run (best_config_*.rds),
-#           pruned_model_variables_shap.csv or pruned_model_variables_perm.csv
-# Outputs:  output/<cv_regime>/cv_pipeline/importance_shap_<model>.csv and .png
+# Requires: covariate_pruning_pipeline.R has been run (pruned variables)
+# Outputs:  output/<cv_regime>/cv_pipeline/best_config_{gpr,xgb,gam}.rds
 #
-# Usage: source after step 3 in run_paper.R, or run standalone.
+# Usage: source after step 1 in run_paper.R, or run standalone.
 
 project_root <- here::here()
 source(file.path(project_root, "modelling/R/helpers.R"))
@@ -70,7 +68,7 @@ if ("GPR" %in% model_list) {
   cat("\n=== GPR hyperparameter tuning (progress below) ===\n")
   pvars <- load_model_vars("GPR", per_model_vars, use_shap_first = use_shap_per_model)
   cat("  Predictor(s):", length(pvars), "\n")
-  best_gpr <- tune_gpr(
+  best_gpr <- tune_gpr_cv(
     train_data = core_data,
     predictor_vars = pvars,
     n_folds = n_folds,
@@ -78,7 +76,7 @@ if ("GPR" %in% model_list) {
     value_var = target_var,
     fold_indices = fold_indices,
     block_size = block_size,
-    cache_tag = "tune_gpr",
+    cache_tag = "tune_gpr_cv",
     exclude_regions = exclude_regions
   )
   gpr_config <- list(
@@ -101,66 +99,31 @@ if ("XGB" %in% model_list) {
   cat("\n=== XGBoost hyperparameter tuning ===\n")
   pvars <- load_model_vars("XGB", per_model_vars, use_shap_first = use_shap_per_model)
   cat("  Predictor(s):", length(pvars), "\n")
-  xgb_grid <- expand.grid(
-    nrounds = c(100L, 300L, 500L),
-    max_depth = c(3L, 4L, 6L),
-    learning_rate = c(0.01, 0.05, 0.1),
-    subsample = c(0.7, 0.8),
-    colsample_bytree = c(0.6, 0.8),
-    min_child_weight = c(1L, 5L, 10L),
-    stringsAsFactors = FALSE
+  best_xgb <- tune_xgb_cv(
+    core_data = core_data,
+    predictor_vars = pvars,
+    fold_indices = fold_indices,
+    log_response = log_response,
+    verbose = TRUE
   )
-  cv_tune_xgb <- function(core_data, predictor_vars, folds, hp, log_response = TRUE) {
-    n_folds <- max(folds)
-    metrics <- vector("list", n_folds)
-    for (k in seq_len(n_folds)) {
-      train <- core_data[folds != k, , drop = FALSE]
-      test  <- core_data[folds == k, , drop = FALSE]
-      observed_orig <- test$median_carbon_density
-      if (log_response) {
-        train <- transform_response(train, "median_carbon_density", log = TRUE)
-        test  <- transform_response(test, "median_carbon_density", log = TRUE)
-      }
-      tryCatch({
-        prep <- prepare_data_for_model("XGB", train, test, predictor_vars)
-        res  <- fit_xgboost(prep$train, prep$test, prep$predictor_vars, hyperparams = hp)
-        pred <- res$predictions
-        if (log_response) pred <- inverse_response_transform(pred, log = TRUE)
-        metrics[[k]] <- calculate_metrics(observed_orig, pred)
-      }, error = function(e) NULL)
-    }
-    metrics <- dplyr::bind_rows(metrics)
-    data.frame(r2 = mean(metrics$r2, na.rm = TRUE), rmse = mean(metrics$rmse, na.rm = TRUE))
-  }
-  xgb_results <- vector("list", nrow(xgb_grid))
-  for (i in seq_len(nrow(xgb_grid))) {
-    hp <- list(
-      nrounds = xgb_grid$nrounds[i], max_depth = xgb_grid$max_depth[i],
-      learning_rate = xgb_grid$learning_rate[i], subsample = xgb_grid$subsample[i],
-      colsample_bytree = xgb_grid$colsample_bytree[i],
-      min_child_weight = xgb_grid$min_child_weight[i]
-    )
-    m <- cv_tune_xgb(core_data, pvars, fold_indices, hp, log_response = log_response)
-    xgb_results[[i]] <- cbind(xgb_grid[i, ], m)
-    cat("  nrounds=", hp$nrounds, " depth=", hp$max_depth, " lr=", hp$learning_rate,
-        " mcw=", hp$min_child_weight, " -> R2=", round(m$r2, 4), " RMSE=", round(m$rmse, 4), "\n")
-  }
-  xgb_cv_metrics <- dplyr::bind_rows(xgb_results)
-  best_idx <- which.max(xgb_cv_metrics$r2)
   xgb_config <- list(
-    nrounds = xgb_cv_metrics$nrounds[best_idx],
-    max_depth = xgb_cv_metrics$max_depth[best_idx],
-    learning_rate = xgb_cv_metrics$learning_rate[best_idx],
-    subsample = xgb_cv_metrics$subsample[best_idx],
-    colsample_bytree = xgb_cv_metrics$colsample_bytree[best_idx],
-    min_child_weight = xgb_cv_metrics$min_child_weight[best_idx],
-    cv_metrics = xgb_cv_metrics
+    nrounds = best_xgb$nrounds,
+    max_depth = best_xgb$max_depth,
+    learning_rate = best_xgb$learning_rate,
+    subsample = best_xgb$subsample,
+    colsample_bytree = best_xgb$colsample_bytree,
+    min_child_weight = best_xgb$min_child_weight,
+    min_split_loss = best_xgb$min_split_loss,
+    reg_reg_lambda = best_xgb$reg_reg_lambda,
+    cv_metrics = best_xgb$cv_metrics
   )
   saveRDS(xgb_config, file.path(out_dir, "best_config_xgb.rds"))
   cat("  Saved best_config_xgb.rds: nrounds =", xgb_config$nrounds,
       ", max_depth =", xgb_config$max_depth,
       ", lr =", xgb_config$learning_rate,
-      ", mcw =", xgb_config$min_child_weight, "\n")
+      ", mcw =", xgb_config$min_child_weight,
+      ", min_split_loss =", xgb_config$min_split_loss,
+      ", reg_lambda =", xgb_config$reg_reg_lambda, "\n")
 }
 
 # ---------------------------------------------------------------------------
@@ -170,57 +133,16 @@ if ("GAM" %in% model_list) {
   cat("\n=== GAM hyperparameter tuning (k_covariate, no spatial smooth) ===\n")
   pvars <- load_model_vars("GAM", per_model_vars, use_shap_first = use_shap_per_model)
   cat("  Predictor(s):", length(pvars), "\n")
-  gam_k_grid <- c(2L, 4L, 6L, 8L, 10L, 12L, 15L, 20L)
-
-  cv_tune_gam <- function(core_data, predictor_vars, folds, k_covariate, log_response = TRUE) {
-    metrics <- vector("list", max(folds))
-    for (k in seq_len(max(folds))) {
-      train <- core_data[folds != k, , drop = FALSE]
-      test  <- core_data[folds == k, , drop = FALSE]
-      observed_orig <- test$median_carbon_density
-      if (log_response) {
-        train <- transform_response(train, "median_carbon_density", log = TRUE)
-        test  <- transform_response(test, "median_carbon_density", log = TRUE)
-      }
-      metric_k <- tryCatch({
-        prep <- prepare_data_for_model("GAM", train, test, predictor_vars)
-        res  <- fit_gam(prep$train, prep$test, prep$predictor_vars,
-                        include_spatial = FALSE, k_covariate = k_covariate)
-        pred <- res$predictions
-        if (log_response) pred <- inverse_response_transform(pred, log = TRUE)
-        keep <- test_rows_with_factors_in_train(train, test, intersect(predictor_vars, c("seagrass_species", "region")))
-        obs_sub <- observed_orig[keep]
-        pred_sub <- pred[keep]
-        if (sum(keep) < 2L) data.frame(r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_) else calculate_metrics(obs_sub, pred_sub)
-      }, error = function(e) NULL)
-      metrics[[k]] <- metric_k
-    }
-    metrics <- dplyr::bind_rows(metrics)
-    data.frame(r2 = mean(metrics$r2, na.rm = TRUE), rmse = mean(metrics$rmse, na.rm = TRUE))
-  }
-
-  gam_results <- vector("list", length(gam_k_grid))
-  for (i in seq_along(gam_k_grid)) {
-    k_cov <- gam_k_grid[i]
-    m     <- cv_tune_gam(core_data, pvars, fold_indices, k_cov, log_response = log_response)
-    r2_val <- if (is.nan(m$r2) || is.infinite(m$r2)) NA_real_ else m$r2
-    rmse_val <- if (is.nan(m$rmse) || is.infinite(m$rmse)) NA_real_ else m$rmse
-    gam_results[[i]] <- data.frame(k_covariate = k_cov, r2 = r2_val, rmse = rmse_val)
-    cat("  k_covariate =", k_cov,
-        " -> R2 =", if (is.na(r2_val)) "NA" else round(r2_val, 4),
-        ", RMSE =", if (is.na(rmse_val)) "NA" else round(rmse_val, 4), "\n")
-  }
-  gam_cv_metrics <- dplyr::bind_rows(gam_results)
-  if (all(is.na(gam_cv_metrics$r2))) {
-    best_idx <- which.min(gam_cv_metrics$rmse)
-    warning("All R2 values are NA for GAM k_covariate grid search, selecting best k by minimum RMSE.")
-  } else {
-    best_idx <- which.max(gam_cv_metrics$r2)
-  }
-  best_gam_k     <- gam_cv_metrics$k_covariate[best_idx]
-  gam_config     <- list(k_covariate = best_gam_k, cv_metrics = gam_cv_metrics)
+  best_gam <- tune_gam_cv(
+    core_data = core_data,
+    predictor_vars = pvars,
+    fold_indices = fold_indices,
+    log_response = log_response,
+    verbose = TRUE
+  )
+  gam_config <- list(k_covariate = best_gam$k_covariate, cv_metrics = best_gam$cv_metrics)
   saveRDS(gam_config, file.path(out_dir, "best_config_gam.rds"))
-  cat("  Saved best_config_gam.rds: k_covariate =", best_gam_k, "\n")
+  cat("  Saved best_config_gam.rds: k_covariate =", best_gam$k_covariate, "\n")
 }
 
 cat("\nHyperparameter tuning complete. Best configs in", out_dir, "\n")

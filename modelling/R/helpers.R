@@ -260,52 +260,60 @@ permutation_importance_cv <- function(core_data, target_var, predictor_vars, mod
 
   keep_cols <- c(predictor_vars, target_var,
                  intersect(c("longitude", "latitude"), names(core_data)))
-  last_error <- NULL
   hp <- hyperparams
 
-  rmse_for_split <- function(train, test) {
-    train <- train[complete.cases(train), , drop = FALSE]
-    test  <- test[complete.cases(test), , drop = FALSE]
-    if (nrow(train) < 2L || nrow(test) < 1L) return(NA_real_)
-    test_orig_y <- test[[target_var]]
-    train$median_carbon_density <- train[[target_var]]
-    test$median_carbon_density  <- test[[target_var]]
-    if (log_response) {
-      train <- transform_response(train, "median_carbon_density", log = TRUE)
-      test  <- transform_response(test, "median_carbon_density", log = TRUE)
-    }
-    err <- tryCatch({
-      prep <- prepare_data_for_model(model_name, train, test, predictor_vars)
-      fit <- switch(model_name,
-        GPR = fit_gpr(prep$train, prep$predictor_vars, test_data = prep$test, hyperparams = hp),
-        RF  = fit_rf(prep$train, prep$test, prep$predictor_vars),
-        XGB = fit_xgboost(prep$train, prep$test, prep$predictor_vars, hyperparams = hp),
-        GAM = fit_gam(prep$train, prep$test, prep$predictor_vars, include_spatial = FALSE,
-                      k_covariate = if (is.list(hp) && !is.null(hp$k_covariate)) hp$k_covariate else 6L),
-        stop("Unsupported model: ", model_name)
-      )
-      pred <- fit$predictions
-      if (log_response) pred <- inverse_response_transform(pred, log = TRUE)
-      sqrt(mean((test_orig_y - pred)^2, na.rm = TRUE))
-    }, error = function(e) {
-      last_error <<- conditionMessage(e)
-      NA_real_
-    })
-    err
+  # Fit once per fold on clean data, then evaluate baseline and permuted test sets.
+  # This avoids the previous approach of re-training on corrupted data.
+  predict_rmse <- function(fit_obj, test_prep, observed_orig, model_name) {
+    pred <- fit_obj$predictions
+    if (log_response && !is.null(pred)) pred <- inverse_response_transform(pred, log = TRUE)
+    if (is.null(pred) || all(is.na(pred))) return(NA_real_)
+    sqrt(mean((observed_orig - pred)^2, na.rm = TRUE))
   }
 
-  if (verbose) cat("  Baseline ", model_name, " RMSE (", n_folds, " folds)... ", sep = "")
-  baseline <- vapply(seq_len(n_folds), function(k)
-    rmse_for_split(core_data[fold_indices != k, keep_cols, drop = FALSE],
-                   core_data[fold_indices == k, keep_cols, drop = FALSE]),
-    numeric(1))
-  baseline_rmse <- mean(baseline, na.rm = TRUE)
-  if (!is.finite(baseline_rmse)) {
-    msg <- paste0("Baseline RMSE could not be computed for ", model_name, ".")
-    if (!is.null(last_error)) msg <- paste0(msg, " Last error: ", last_error)
-    stop(msg)
+  if (verbose) cat("  Fitting ", model_name, " on ", n_folds, " folds... ", sep = "")
+
+  fold_models <- vector("list", n_folds)
+  fold_test_data <- vector("list", n_folds)
+  fold_observed_orig <- vector("list", n_folds)
+  baseline_rmses <- numeric(n_folds)
+
+  for (k in seq_len(n_folds)) {
+    train_raw <- as.data.frame(core_data[fold_indices != k, keep_cols, drop = FALSE])
+    test_raw  <- as.data.frame(core_data[fold_indices == k, keep_cols, drop = FALSE])
+    train_raw <- train_raw[complete.cases(train_raw), , drop = FALSE]
+    test_raw  <- test_raw[complete.cases(test_raw), , drop = FALSE]
+    if (nrow(train_raw) < 2L || nrow(test_raw) < 1L) { baseline_rmses[k] <- NA_real_; next }
+
+    observed_orig <- test_raw[[target_var]]
+    fold_observed_orig[[k]] <- observed_orig
+
+    train_raw$median_carbon_density <- train_raw[[target_var]]
+    test_raw$median_carbon_density  <- test_raw[[target_var]]
+    if (log_response) {
+      train_raw <- transform_response(train_raw, "median_carbon_density", log = TRUE)
+      test_raw  <- transform_response(test_raw, "median_carbon_density", log = TRUE)
+    }
+
+    prep <- prepare_data_for_model(model_name, train_raw, test_raw, predictor_vars)
+    fit <- tryCatch(switch(model_name,
+      GPR = fit_gpr(prep$train, prep$predictor_vars, test_data = prep$test, hyperparams = hp),
+      RF  = fit_rf(prep$train, prep$test, prep$predictor_vars),
+      XGB = fit_xgboost(prep$train, prep$test, prep$predictor_vars, hyperparams = hp),
+      GAM = fit_gam(prep$train, prep$test, prep$predictor_vars, include_spatial = FALSE,
+                    k_covariate = if (is.list(hp) && !is.null(hp$k_covariate)) hp$k_covariate else 6L),
+      stop("Unsupported model: ", model_name)
+    ), error = function(e) NULL)
+    if (is.null(fit)) { baseline_rmses[k] <- NA_real_; next }
+
+    baseline_rmses[k] <- predict_rmse(fit, prep$test, observed_orig, model_name)
+    fold_models[[k]] <- list(model = fit$model, prep = prep, train_raw = train_raw)
+    fold_test_data[[k]] <- test_raw
   }
-  if (verbose) cat("done (", round(baseline_rmse, 4), ").\n", sep = "")
+
+  baseline_rmse <- mean(baseline_rmses, na.rm = TRUE)
+  if (!is.finite(baseline_rmse)) stop("Baseline RMSE could not be computed for ", model_name, ".")
+  if (verbose) cat("done (baseline RMSE = ", round(baseline_rmse, 4), ").\n", sep = "")
 
   n_vars <- length(predictor_vars)
   if (verbose) { pb <- utils::txtProgressBar(0, n_vars, style = 3, width = 50); on.exit(close(pb), add = TRUE) }
@@ -313,15 +321,30 @@ permutation_importance_cv <- function(core_data, target_var, predictor_vars, mod
   imp_list <- vector("list", n_vars)
   for (i in seq_len(n_vars)) {
     v <- predictor_vars[i]
-    core_perm <- as.data.frame(core_data)
-    rmse_inc <- vapply(seq_len(n_permutations), function(perm) {
-      core_perm[[v]] <- sample(core_perm[[v]])
-      mean(vapply(seq_len(n_folds), function(k)
-        rmse_for_split(core_perm[fold_indices != k, keep_cols, drop = FALSE],
-                       core_perm[fold_indices == k, keep_cols, drop = FALSE]),
-        numeric(1)), na.rm = TRUE) - baseline_rmse
+    perm_rmses <- vapply(seq_len(n_permutations), function(perm) {
+      fold_perm_rmses <- numeric(n_folds)
+      for (k in seq_len(n_folds)) {
+        if (is.null(fold_models[[k]])) { fold_perm_rmses[k] <- NA_real_; next }
+        test_perm <- fold_test_data[[k]]
+        test_perm[[v]] <- sample(test_perm[[v]])
+        test_perm$median_carbon_density <- test_perm[[target_var]]
+        if (log_response) test_perm <- transform_response(test_perm, "median_carbon_density", log = TRUE)
+        prep_orig <- fold_models[[k]]$prep
+        perm_prep <- prepare_data_for_model(model_name, fold_models[[k]]$train_raw, test_perm, predictor_vars)
+        perm_fit <- tryCatch(switch(model_name,
+          GPR = fit_gpr(perm_prep$train, perm_prep$predictor_vars, test_data = perm_prep$test, hyperparams = hp),
+          RF  = fit_rf(perm_prep$train, perm_prep$test, perm_prep$predictor_vars),
+          XGB = fit_xgboost(perm_prep$train, perm_prep$test, perm_prep$predictor_vars, hyperparams = hp),
+          GAM = fit_gam(perm_prep$train, perm_prep$test, perm_prep$predictor_vars, include_spatial = FALSE,
+                        k_covariate = if (is.list(hp) && !is.null(hp$k_covariate)) hp$k_covariate else 6L),
+          stop("Unsupported model: ", model_name)
+        ), error = function(e) NULL)
+        if (is.null(perm_fit)) { fold_perm_rmses[k] <- NA_real_; next }
+        fold_perm_rmses[k] <- predict_rmse(perm_fit, perm_prep$test, fold_observed_orig[[k]], model_name)
+      }
+      mean(fold_perm_rmses, na.rm = TRUE)
     }, numeric(1))
-    imp_list[[i]] <- data.frame(variable = v, rmse_increase = mean(rmse_inc), stringsAsFactors = FALSE)
+    imp_list[[i]] <- data.frame(variable = v, rmse_increase = mean(perm_rmses) - baseline_rmse, stringsAsFactors = FALSE)
     if (verbose) utils::setTxtProgressBar(pb, i)
   }
 
@@ -348,6 +371,20 @@ select_top_vars <- function(df, value_col, max_vars = 15L, coverage = 0.99) {
                         sum(cum <= coverage, na.rm = TRUE) + 1L,
                         nrow(df)))
   df$variable[seq_len(n_keep)]
+}
+
+#' Select top environment covariates by importance, then append all species vars.
+#'
+#' Species predictors are never pruned; this wrapper filters them out before
+#' calling \code{select_top_vars} and unconditionally re-attaches them.
+select_top_env_then_species <- function(df, value_col, max_vars, coverage) {
+  if (is.null(df) || nrow(df) == 0) return(character(0))
+  species_idx <- is_species_var(df$variable)
+  species_vars <- unique(df$variable[species_idx])
+  env_df <- df[!species_idx, , drop = FALSE]
+  if (nrow(env_df) == 0) return(species_vars)
+  top_env <- select_top_vars(env_df, value_col, max_vars = max_vars, coverage = coverage)
+  unique(c(top_env, species_vars))
 }
 
 #' Print a tidy ranked importance table to the console.
@@ -441,19 +478,23 @@ compute_shap_importance <- function(core_data, target_var, predictor_vars,
     }
 
   } else if (model_name == "GPR") {
-    pvars <- predictor_vars
     train_core <- if (nrow(core) > max_gpr_train) {
       core[sample(nrow(core), max_gpr_train), , drop = FALSE]
     } else core
     train_X <- train_core[, predictor_vars, drop = FALSE]
+    # Use integer-coded categoricals (not one-hot) so iml::Shapley
+    # sees one column per original predictor and works reliably.
     prep    <- prepare_predictors_train(train_X, predictor_vars)
     train_sc <- prep$data
+    pvars <- predictor_vars
     train_df <- cbind(median_carbon_density = train_core$median_carbon_density,
                       train_sc)
     X <- train_sc[, pvars, drop = FALSE]
-    y_gpr <- train_core$median_carbon_density  # y must match nrow(X) for iml::Predictor
-    form_str <- paste("median_carbon_density ~",
-                      paste(predictor_vars, collapse = " + "))
+    y_gpr <- train_core$median_carbon_density
+    form_str <- paste(
+      quote_formula_terms("median_carbon_density"), "~",
+      paste(quote_formula_terms(pvars), collapse = " + ")
+    )
     kernel  <- if (is.list(hp) && !is.null(hp$kernel)) hp$kernel else "matern52"
     nug_min <- if (is.list(hp) && !is.null(hp$nug.min)) hp$nug.min else 1e-8
     nug_max <- if (is.list(hp) && !is.null(hp$nug.max)) hp$nug.max else 100
@@ -467,7 +508,7 @@ compute_shap_importance <- function(core_data, target_var, predictor_vars,
       return(NULL)
     }
     pred_fun  <- function(m, newdata) {
-      Xn <- as.matrix(newdata[, predictor_vars, drop = FALSE])
+      Xn <- as.matrix(newdata[, pvars, drop = FALSE])
       storage.mode(Xn) <- "double"
       as.numeric(m$pred(Xn, se.fit = FALSE))
     }
@@ -550,7 +591,7 @@ combine_pruned_model_variables <- function(covariate_dir,
     m <- sub(paste0("^(pruned_variables_to_include_|importance_", type, "_)(.+)\\.csv$"),
              "\\2", basename(f))
     d <- read.csv(f, stringsAsFactors = FALSE)
-    if (!"variable" %in% names(d)) return(NULL)
+    if (!"variable" %in% names(d) || nrow(d) == 0L) return(NULL)
     if (is.null(value_col)) return(data.frame(model = m, variable = d$variable, stringsAsFactors = FALSE))
     if (!value_col %in% names(d)) return(NULL)
     out_df <- data.frame(model = m, variable = d$variable, d[[value_col]], stringsAsFactors = FALSE)
@@ -710,34 +751,6 @@ load_model_vars <- function(model_name, per_model_vars, use_shap_first = TRUE) {
 
 # ================================ HYPERPARAMETER TUNING ================================
 
-#' Unified function to tune hyperparameters for different model types
-#'
-#' @param model_type character string specifying model type: "rf", "xgb", or "nn"
-#' @param train_data training data frame containing predictor variables and response
-#' @param predictor_vars character vector of predictor variable names
-#' @param n_folds number of folds for cross-validation during tuning (default: 3)
-#' @param verbose whether to print detailed tuning progress (default: false)
-#' @param fold_indices optional integer vector of fold IDs; if NULL, random folds
-#' @param block_size optional block size (m) for spatial CV
-#' @param cache_tag tag for spatial fold cache
-#' @param exclude_regions passed to get_cached_spatial_folds when block_size is used
-#' @return list of best hyperparameters for the specified model type
-tune_hyperparameters <- function(model_type, train_data, predictor_vars, n_folds = 3, verbose = FALSE,
-                                 fold_indices = NULL, block_size = NULL, cache_tag = NULL,
-                                 exclude_regions = character(0)) {
-  cat("Tuning", model_type, "hyperparameters...\n")
-  tag <- cache_tag %||% paste0("tune_", model_type)
-  if (model_type == "rf" || model_type == "random_forest") {
-    return(tune_rf(train_data, predictor_vars, n_folds, verbose, fold_indices, block_size, tag, exclude_regions))
-  } else if (model_type == "xgb" || model_type == "xgboost") {
-    return(tune_xgboost(train_data, predictor_vars, n_folds, verbose, fold_indices, block_size, tag, exclude_regions))
-  } else if (model_type == "nn" || model_type == "neural_network") {
-    return(tune_nn(train_data, predictor_vars, n_folds, verbose, fold_indices, block_size, tag, exclude_regions))
-  } else {
-    stop("Unknown model type. Use 'rf', 'xgb', or 'nn'")
-  }
-}
-
 #' Resolve fold indices: use provided, or spatial (block_size), or random.
 #' @return integer vector of fold IDs, length = nrow(dat)
 resolve_fold_indices <- function(dat, n_folds, fold_indices = NULL, block_size = NULL,
@@ -757,242 +770,185 @@ resolve_fold_indices <- function(dat, n_folds, fold_indices = NULL, block_size =
   sample(rep(seq_len(n_folds), length.out = nrow(dat)))
 }
 
-#' Tune random forest hyperparameters using cross-validation
+#' Tune XGBoost with fixed CV folds and in-function grid.
 #'
-#' @param train_data training data frame containing predictor variables and response
-#' @param predictor_vars character vector of predictor variable names
-#' @param n_folds number of folds for cross-validation during tuning (default: 3)
-#' @param verbose whether to print detailed tuning progress (default: false)
-#' @param fold_indices optional integer vector of fold IDs (length = nrow(train_data)); if NULL, random folds
-#' @param block_size optional block size (m) for spatial CV; if set with lon/lat in data, uses get_cached_spatial_folds
-#' @param cache_tag tag for spatial fold cache (default: "tune")
-#' @param exclude_regions passed to get_cached_spatial_folds when block_size is used
-#' @return list of best hyperparameters (mtry, ntree, nodesize)
-tune_rf <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
-                    fold_indices = NULL, block_size = NULL, cache_tag = "tune_rf",
-                    exclude_regions = character(0)) {
-  formula_str <- paste("median_carbon_density ~", paste(predictor_vars, collapse = " + "))
-  formula_obj <- as.formula(formula_str)
+#' Canonical tuner used by pipelines. Performs optional log-response fitting,
+#' inverse-transform scoring, and returns full CV metrics with best-by-RMSE pick.
+tune_xgb_cv <- function(core_data, predictor_vars, fold_indices,
+                        log_response = TRUE, verbose = FALSE, n_random = 80L) {
+  if (is.list(fold_indices)) {
+    fvec <- integer(nrow(core_data))
+    for (k in seq_along(fold_indices)) fvec[fold_indices[[k]]] <- k
+    fold_indices <- fvec
+  }
+  folds <- as.integer(fold_indices)
+  n_folds <- max(folds, na.rm = TRUE)
 
-  mtry_vals <- c(2, 4, 6, floor(sqrt(length(predictor_vars))), length(predictor_vars))
-  ntree_vals <- c(300, 500, 700)
-  nodesize_vals <- c(5, 10, 20)
-
-  best_rmse <- Inf
-  best_params <- NULL
-  folds <- resolve_fold_indices(train_data, n_folds, fold_indices, block_size, cache_tag, exclude_regions)
-  n_folds <- max(folds)
-
-  pb <- progress_bar(
-    total = length(mtry_vals) * length(ntree_vals) * length(nodesize_vals)
+  xgb_full_grid <- expand.grid(
+    nrounds = c(100L, 300L, 500L),
+    max_depth = c(3L, 4L, 6L),
+    learning_rate = c(0.01, 0.05, 0.1),
+    subsample = c(0.7, 0.8),
+    colsample_bytree = c(0.6, 0.8),
+    min_child_weight = c(1L, 5L, 10L),
+    min_split_loss = c(0, 0.5),
+    reg_reg_lambda = c(1, 10),
+    stringsAsFactors = FALSE
   )
-  for (mtry in mtry_vals) {
-    for (ntree in ntree_vals) {
-      for (nodesize in nodesize_vals) {
-        cv_rmse <- c()
-        for (fold in seq_len(n_folds)) {
-          train_fold <- train_data[folds != fold, ]
-          val_fold <- train_data[folds == fold, ]
+  n_random <- min(as.integer(n_random), nrow(xgb_full_grid))
+  xgb_grid <- xgb_full_grid[sample.int(nrow(xgb_full_grid), n_random), , drop = FALSE]
+  if (verbose) cat("  XGB random search:", n_random, "of", nrow(xgb_full_grid), "configs\n")
 
-          model <- randomForest(formula_obj,
-            data = train_fold,
-            mtry = mtry, ntree = ntree, nodesize = nodesize,
-            importance = FALSE
-          )
-          pred <- predict(model, val_fold)
-          cv_rmse <- c(cv_rmse, sqrt(mean((val_fold$median_carbon_density - pred)^2)))
+  xgb_results <- vector("list", nrow(xgb_grid))
+  for (i in seq_len(nrow(xgb_grid))) {
+    hp <- as.list(xgb_grid[i, , drop = FALSE])
+    fold_metrics <- vector("list", n_folds)
+    for (k in seq_len(n_folds)) {
+      train <- core_data[folds != k, , drop = FALSE]
+      test  <- core_data[folds == k, , drop = FALSE]
+      observed_orig <- test$median_carbon_density
+
+      metric_k <- tryCatch({
+        if (log_response) {
+          train <- transform_response(train, "median_carbon_density", log = TRUE)
+          test  <- transform_response(test, "median_carbon_density", log = TRUE)
         }
+        prep <- prepare_data_for_model("XGB", train, test, predictor_vars)
+        res  <- fit_xgboost(prep$train, prep$test, prep$predictor_vars, hyperparams = hp)
+        pred <- res$predictions
+        if (log_response) pred <- inverse_response_transform(pred, log = TRUE)
+        calculate_metrics(observed_orig, pred)
+      }, error = function(e) {
+        data.frame(r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_)
+      })
+      fold_metrics[[k]] <- metric_k
+    }
 
-        mean_rmse <- mean(cv_rmse)
-        if (verbose) cat(sprintf("  mtry=%d, ntree=%d, nodesize=%d: RMSE=%.4f\n", mtry, ntree, nodesize, mean_rmse))
+    metrics_df <- dplyr::bind_rows(fold_metrics)
+    mean_r2 <- mean(metrics_df$r2, na.rm = TRUE)
+    mean_rmse <- mean(metrics_df$rmse, na.rm = TRUE)
+    sd_rmse <- stats::sd(metrics_df$rmse, na.rm = TRUE)
+    if (is.nan(mean_r2) || is.infinite(mean_r2)) mean_r2 <- NA_real_
+    if (is.nan(mean_rmse) || is.infinite(mean_rmse)) mean_rmse <- NA_real_
+    if (is.nan(sd_rmse) || is.infinite(sd_rmse)) sd_rmse <- NA_real_
 
-        if (mean_rmse < best_rmse) {
-          best_rmse <- mean_rmse
-          best_params <- list(mtry = mtry, ntree = ntree, nodesize = nodesize)
-        }
-        pb$tick()
-      }
+    xgb_results[[i]] <- cbind(
+      xgb_grid[i, , drop = FALSE],
+      data.frame(r2 = mean_r2, rmse = mean_rmse, sd_rmse = sd_rmse)
+    )
+    if (verbose) {
+      cat("  nrounds=", hp$nrounds, " depth=", hp$max_depth, " lr=", hp$learning_rate,
+          " mcw=", hp$min_child_weight, " min_split_loss=", hp$min_split_loss,
+          " reg_lambda=", hp$reg_reg_lambda, " -> R2=",
+          if (is.na(mean_r2)) "NA" else round(mean_r2, 4),
+          " RMSE=", if (is.na(mean_rmse)) "NA" else round(mean_rmse, 4), "\n")
     }
   }
 
-  return(best_params)
+  xgb_cv_metrics <- dplyr::bind_rows(xgb_results)
+  if (all(is.na(xgb_cv_metrics$rmse))) {
+    best_idx <- which.max(xgb_cv_metrics$r2)
+    warning("All RMSE values are NA for XGB grid search; selecting best settings by maximum R2.")
+  } else {
+    best_idx <- which.min(xgb_cv_metrics$rmse)
+  }
+
+  list(
+    nrounds = xgb_cv_metrics$nrounds[best_idx],
+    max_depth = xgb_cv_metrics$max_depth[best_idx],
+    learning_rate = xgb_cv_metrics$learning_rate[best_idx],
+    subsample = xgb_cv_metrics$subsample[best_idx],
+    colsample_bytree = xgb_cv_metrics$colsample_bytree[best_idx],
+    min_child_weight = xgb_cv_metrics$min_child_weight[best_idx],
+    min_split_loss = xgb_cv_metrics$min_split_loss[best_idx],
+    reg_reg_lambda = xgb_cv_metrics$reg_reg_lambda[best_idx],
+    cv_metrics = xgb_cv_metrics
+  )
 }
 
-#' Tune xgboost hyperparameters using cross-validation
+#' Tune GAM with fixed CV folds and in-function k grid.
 #'
-#' @param train_data training data frame containing predictor variables and response
-#' @param predictor_vars character vector of predictor variable names
-#' @param n_folds number of folds for cross-validation during tuning (default: 3)
-#' @param verbose whether to print detailed tuning progress (default: false)
-#' @param fold_indices optional integer vector of fold IDs; if NULL, random folds
-#' @param block_size optional block size (m) for spatial CV
-#' @param cache_tag tag for spatial fold cache (default: "tune_xgboost")
-#' @param exclude_regions passed to get_cached_spatial_folds when block_size is used
-#' @return list of best hyperparameters (max_depth, learning_rate, subsample, colsample_bytree, nrounds)
-tune_xgboost <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
-                         fold_indices = NULL, block_size = NULL, cache_tag = "tune_xgboost",
-                         exclude_regions = character(0)) {
-  X_train <- as.matrix(train_data[, predictor_vars])
-  y_train <- train_data$median_carbon_density
+#' Canonical tuner used by pipelines. Applies optional response log-transform,
+#' inverse-transform scoring, and factor-level safety filtering.
+tune_gam_cv <- function(core_data, predictor_vars, fold_indices,
+                        log_response = TRUE, verbose = FALSE) {
+  if (is.list(fold_indices)) {
+    fvec <- integer(nrow(core_data))
+    for (k in seq_along(fold_indices)) fvec[fold_indices[[k]]] <- k
+    fold_indices <- fvec
+  }
+  folds <- as.integer(fold_indices)
+  n_folds <- max(folds, na.rm = TRUE)
+  gam_k_grid <- c(2L, 4L, 6L, 8L, 10L, 12L, 15L, 20L)
 
-  max_depth_vals <- c(3, 6, 9)
-  learning_rate_vals <- c(0.1, 0.3)
-  subsample_vals <- c(0.8, 1.0)
-  colsample_bytree_vals <- c(0.8, 1.0)
-  nrounds_vals <- c(100, 200)
+  gam_results <- vector("list", length(gam_k_grid))
+  for (i in seq_along(gam_k_grid)) {
+    k_covariate <- gam_k_grid[i]
+    fold_metrics <- vector("list", n_folds)
 
-  best_rmse <- Inf
-  best_params <- NULL
-  folds <- resolve_fold_indices(train_data, n_folds, fold_indices, block_size, cache_tag, exclude_regions)
-  n_folds <- max(folds)
+    for (k in seq_len(n_folds)) {
+      train <- core_data[folds != k, , drop = FALSE]
+      test  <- core_data[folds == k, , drop = FALSE]
+      observed_orig <- test$median_carbon_density
 
-  total_combos <- length(max_depth_vals) * length(learning_rate_vals) * length(subsample_vals) *
-    length(colsample_bytree_vals) * length(nrounds_vals)
-  pb <- progress_bar(
-    total = total_combos
-  )
-  for (max_depth in max_depth_vals) {
-    for (learning_rate in learning_rate_vals) {
-      for (subsample in subsample_vals) {
-        for (colsample_bytree in colsample_bytree_vals) {
-          for (nrounds in nrounds_vals) {
-            cv_rmse <- c()
-
-            for (fold in seq_len(n_folds)) {
-              X_fold_train <- X_train[folds != fold, ]
-              y_fold_train <- y_train[folds != fold]
-              X_fold_val <- X_train[folds == fold, ]
-              y_fold_val <- y_train[folds == fold]
-
-              model <- xgboost(
-                x = X_fold_train, y = y_fold_train,
-                nrounds = nrounds, max_depth = max_depth,
-                learning_rate = learning_rate, subsample = subsample,
-                colsample_bytree = colsample_bytree,
-                nthread = 1L,
-                objective = "reg:squarederror"
-              )
-              pred <- predict(model, X_fold_val)
-              cv_rmse <- c(cv_rmse, sqrt(mean((y_fold_val - pred)^2)))
-            }
-
-            mean_rmse <- mean(cv_rmse)
-            if (mean_rmse < best_rmse) {
-              best_rmse <- mean_rmse
-              best_params <- list(
-                max_depth = max_depth, learning_rate = learning_rate,
-                subsample = subsample, colsample_bytree = colsample_bytree,
-                nrounds = nrounds
-              )
-            }
-            pb$tick()
-          }
+      metric_k <- tryCatch({
+        if (log_response) {
+          train <- transform_response(train, "median_carbon_density", log = TRUE)
+          test  <- transform_response(test, "median_carbon_density", log = TRUE)
         }
-      }
+        prep <- prepare_data_for_model("GAM", train, test, predictor_vars)
+        res  <- fit_gam(prep$train, prep$test, prep$predictor_vars,
+                        include_spatial = FALSE, k_covariate = k_covariate)
+        pred <- res$predictions
+        if (log_response) pred <- inverse_response_transform(pred, log = TRUE)
+        keep <- test_rows_with_factors_in_train(train, test, intersect(predictor_vars, c("seagrass_species", "region")))
+        obs_sub <- observed_orig[keep]
+        pred_sub <- pred[keep]
+        if (sum(keep) < 2L) {
+          data.frame(r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_)
+        } else {
+          calculate_metrics(obs_sub, pred_sub)
+        }
+      }, error = function(e) {
+        data.frame(r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_)
+      })
+
+      fold_metrics[[k]] <- metric_k
+    }
+
+    metrics_df <- dplyr::bind_rows(fold_metrics)
+    mean_r2 <- mean(metrics_df$r2, na.rm = TRUE)
+    mean_rmse <- mean(metrics_df$rmse, na.rm = TRUE)
+    sd_rmse <- stats::sd(metrics_df$rmse, na.rm = TRUE)
+    if (is.nan(mean_r2) || is.infinite(mean_r2)) mean_r2 <- NA_real_
+    if (is.nan(mean_rmse) || is.infinite(mean_rmse)) mean_rmse <- NA_real_
+    if (is.nan(sd_rmse) || is.infinite(sd_rmse)) sd_rmse <- NA_real_
+
+    gam_results[[i]] <- data.frame(
+      k_covariate = k_covariate,
+      r2 = mean_r2,
+      rmse = mean_rmse,
+      sd_rmse = sd_rmse
+    )
+    if (verbose) {
+      cat("  k_covariate =", k_covariate,
+          " -> R2 =", if (is.na(mean_r2)) "NA" else round(mean_r2, 4),
+          ", RMSE =", if (is.na(mean_rmse)) "NA" else round(mean_rmse, 4), "\n")
     }
   }
 
-  return(best_params)
-}
+  gam_cv_metrics <- dplyr::bind_rows(gam_results)
+  if (all(is.na(gam_cv_metrics$rmse))) {
+    best_idx <- which.max(gam_cv_metrics$r2)
+    warning("All RMSE values are NA for GAM k_covariate grid search; selecting best k by maximum R2.")
+  } else {
+    best_idx <- which.min(gam_cv_metrics$rmse)
+  }
 
-#' Tune neural network hyperparameters using cross-validation
-#'
-#' @param train_data training data frame containing predictor variables and response
-#' @param predictor_vars character vector of predictor variable names
-#' @param n_folds number of folds for cross-validation during tuning (default: 3)
-#' @param verbose whether to print detailed tuning progress (default: false)
-#' @param fold_indices optional integer vector of fold IDs; if NULL, random folds
-#' @param block_size optional block size (m) for spatial CV
-#' @param cache_tag tag for spatial fold cache (default: "tune_nn")
-#' @param exclude_regions passed to get_cached_spatial_folds when block_size is used
-#' @return list of best hyperparameters (hidden, learningrate)
-tune_nn <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
-                    fold_indices = NULL, block_size = NULL, cache_tag = "tune_nn",
-                    exclude_regions = character(0)) {
-  train_data <- as.data.frame(train_data)
-  train_numeric <- train_data %>%
-    dplyr::select(dplyr::all_of(predictor_vars), median_carbon_density) %>%
-    dplyr::mutate_all(as.numeric) %>%
-    as.data.frame()
-  idx <- complete.cases(train_numeric)
-  train_numeric <- train_numeric[idx, ]
-  folds <- resolve_fold_indices(train_data, n_folds, fold_indices, block_size, cache_tag, exclude_regions)
-  folds <- folds[idx]
-  n_folds <- max(folds)
-
-  # scale data
-  scale_params <- list(
-    means = colMeans(train_numeric[, predictor_vars, drop = FALSE]),
-    sds = apply(train_numeric[, predictor_vars, drop = FALSE], 2, sd)
+  list(
+    k_covariate = gam_cv_metrics$k_covariate[best_idx],
+    cv_metrics = gam_cv_metrics
   )
-  train_scaled <- train_numeric
-  for (var in predictor_vars) {
-    if (scale_params$sds[var] > 0) {
-      train_scaled[[var]] <- (train_numeric[[var]] - scale_params$means[var]) / scale_params$sds[var]
-    } else {
-      train_scaled[[var]] <- 0
-    }
-  }
-  response_mean <- mean(train_numeric$median_carbon_density)
-  response_sd <- sd(train_numeric$median_carbon_density)
-  train_scaled$median_carbon_density <- (train_numeric$median_carbon_density - response_mean) / response_sd
-
-  formula_str <- paste("median_carbon_density ~", paste(predictor_vars, collapse = " + "))
-  formula_obj <- as.formula(formula_str)
-
-  # parameter grid
-  hidden_layers <- list(c(5), c(10), c(5, 5), c(10, 5))
-  learningrate_vals <- c(0.01, 0.1)
-
-  best_rmse <- Inf
-  best_params <- NULL
-  pb <- progress_bar(
-    total = length(hidden_layers) * length(learningrate_vals)
-  )
-  for (hidden in hidden_layers) {
-    for (learningrate in learningrate_vals) {
-      cv_rmse <- c()
-
-      for (fold in seq_len(n_folds)) {
-        train_fold <- train_scaled[folds != fold, ]
-        val_fold <- train_scaled[folds == fold, ]
-
-        tryCatch(
-          {
-            model <- neuralnet(formula_obj,
-              data = train_fold,
-              hidden = hidden, learningrate = learningrate,
-              linear.output = TRUE, threshold = 0.01, stepmax = 1e+05
-            )
-            pred_scaled <- predict(model, val_fold[, predictor_vars, drop = FALSE])
-            if (is.matrix(pred_scaled)) pred_scaled <- pred_scaled[, 1]
-            pred <- pred_scaled * response_sd + response_mean
-            obs <- val_fold$median_carbon_density * response_sd + response_mean
-            cv_rmse <- c(cv_rmse, sqrt(mean((obs - pred)^2)))
-          },
-          error = function(e) {
-            cv_rmse <<- c(cv_rmse, Inf) # skip if model fails
-          }
-        )
-      }
-
-      mean_rmse <- mean(cv_rmse)
-      if (verbose) {
-        cat(sprintf(
-          "  hidden=%s, lr=%.2f: RMSE=%.4f\n",
-          paste(hidden, collapse = ","), learningrate, mean_rmse
-        ))
-      }
-
-      if (mean_rmse < best_rmse && !is.infinite(mean_rmse)) {
-        best_rmse <- mean_rmse
-        best_params <- list(hidden = hidden, learningrate = learningrate)
-      }
-      pb$tick()
-    }
-  }
-
-  return(best_params)
 }
 
 #' Tune GPR hyperparameters using cross-validation
@@ -1004,19 +960,23 @@ tune_nn <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
 #' @param value_var response column name (default: median_carbon_density)
 #' @param fold_indices optional integer vector of fold IDs; if NULL, random folds
 #' @param block_size optional block size (m) for spatial CV
-#' @param cache_tag tag for spatial fold cache (default: "tune_gpr")
+#' @param cache_tag tag for spatial fold cache (default: "tune_gpr_cv")
 #' @param exclude_regions passed to get_cached_spatial_folds when block_size is used
+#' @param log_response if TRUE, log-transform the response before fitting and
+#'   back-transform predictions before computing RMSE (matches run_cv behaviour)
 #' @return list of best hyperparameters (kernel, nug.min, nug.max, nug.est) for fit_gpr
-tune_gpr <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
+tune_gpr_cv <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
                      value_var = "median_carbon_density",
-                     fold_indices = NULL, block_size = NULL, cache_tag = "tune_gpr",
-                     exclude_regions = character(0)) {
+                     fold_indices = NULL, block_size = NULL, cache_tag = "tune_gpr_cv",
+                     exclude_regions = character(0),
+                     log_response = isTRUE(get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE))) {
   if (!"median_carbon_density" %in% names(train_data) && value_var %in% names(train_data)) {
     train_data$median_carbon_density <- train_data[[value_var]]
   }
-  need_cols <- c(value_var, predictor_vars)
-  if (!all(need_cols %in% names(train_data))) {
-    stop("tune_gpr: train_data must contain ", paste(need_cols, collapse = ", "))
+  need_cols <- c("median_carbon_density", predictor_vars,
+                 intersect(c("longitude", "latitude"), names(train_data)))
+  if (!all(c("median_carbon_density", predictor_vars) %in% names(train_data))) {
+    stop("tune_gpr_cv: train_data must contain median_carbon_density and predictor_vars")
   }
   idx <- complete.cases(train_data[, need_cols, drop = FALSE])
   dat <- train_data[idx, need_cols, drop = FALSE]
@@ -1028,7 +988,7 @@ tune_gpr <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
   n_folds <- max(folds)
   kernels <- c("matern52", "matern32", "gaussian", "exponential")
   nug_min_vals <- c(1e-8, 1e-6, 1e-4)
-  nug_max_vals <- c(10, 100)
+  nug_max_vals <- c(10, 50, 100)
   best_rmse <- Inf
   best_params <- list(kernel = "matern52", nug.min = 1e-8, nug.max = 100, nug.est = TRUE)
   total <- length(kernels) * length(nug_min_vals) * length(nug_max_vals)
@@ -1041,14 +1001,26 @@ tune_gpr <- function(train_data, predictor_vars, n_folds = 3, verbose = FALSE,
         for (fold in seq_len(n_folds)) {
           train_fold <- dat[folds != fold, , drop = FALSE]
           test_fold <- dat[folds == fold, , drop = FALSE]
+          observed_orig <- test_fold$median_carbon_density
+
+          if (log_response) {
+            train_fold <- transform_response(train_fold, "median_carbon_density", log = TRUE)
+            test_fold  <- transform_response(test_fold, "median_carbon_density", log = TRUE)
+          }
+
           res <- fit_gpr(
             train_data = train_fold,
             test_data = test_fold,
             predictor_vars = predictor_vars,
-            value_var = value_var,
+            value_var = "median_carbon_density",
             hyperparams = list(kernel = kernel, nug.min = nug_min, nug.max = nug_max)
           )
-          cv_rmse[fold] <- if (!is.null(res$rmse) && is.finite(res$rmse)) res$rmse else NA_real_
+          pred <- res$predictions
+          if (log_response && !is.null(pred)) pred <- inverse_response_transform(pred, log = TRUE)
+          rmse_val <- if (!is.null(pred) && any(is.finite(pred))) {
+            sqrt(mean((observed_orig - pred)^2, na.rm = TRUE))
+          } else NA_real_
+          cv_rmse[fold] <- rmse_val
         }
         mean_rmse <- mean(cv_rmse, na.rm = TRUE)
         if (verbose) cat(sprintf("  kernel=%s, nug.min=%s, nug.max=%g: RMSE=%.4f\n",
@@ -1074,6 +1046,7 @@ folds_to_vector <- function(folds, n) {
     fv
   } else as.integer(folds)
 }
+
 #' Build pixel-grouped fold assignments: points with identical covariate
 #' vectors are placed in the same fold so the model never sees an exact
 #' duplicate input in the test set during training.
@@ -1136,7 +1109,9 @@ make_cv_folds <- function(dat, covariate_cols, n_folds, cv_type,
   }
 
   if (identical(cv_type, "pixel_grouped")) {
-    pf <- make_pixel_grouped_folds(dat, covariate_cols, n_folds, seed = NULL)
+    # Important: for pixel-grouped folds, propagate the `seed` so
+    # hyperparameter tuning and later CV evaluation use the same split.
+    pf <- make_pixel_grouped_folds(dat, covariate_cols, n_folds, seed = seed)
     cat("  CV folds: pixel-grouped random (", pf$n_groups,
         " unique covariate vectors -> ", n_folds, " folds).\n", sep = "")
     return(list(fold_indices = pf$fold_indices, method_name = "pixel_grouped_random", n_groups = pf$n_groups))
@@ -1257,6 +1232,7 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
 
   results_list <- list()
   preds_list   <- list()
+  pooled_list  <- list()
   n_folds      <- max(fold_indices)
 
   for (fold in seq_len(n_folds)) {
@@ -1318,7 +1294,10 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
             observed = observed_orig, predicted = pred,
             longitude = test_raw$longitude, latitude = test_raw$latitude,
             stringsAsFactors = FALSE
-          )
+          ),
+          pooled  = data.frame(model = m, fold = fold,
+                               observed = obs_sub, predicted = pred_sub,
+                               stringsAsFactors = FALSE)
         )
       }, error = function(e) {
         cat("    ", m, " fold ", fold, ": ", e$message, "\n", sep = "")
@@ -1327,10 +1306,33 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
       if (is.null(res)) next
       results_list[[length(results_list) + 1]] <- res$metrics
       if (!is.null(res$preds)) preds_list[[length(preds_list) + 1]] <- res$preds
+      pooled_list[[length(pooled_list) + 1]] <- res$pooled
     }
   }
 
   results_df <- dplyr::bind_rows(results_list)
+  pooled_df  <- dplyr::bind_rows(pooled_list)
+
+  pooled_r2_by_model <- if (nrow(pooled_df) > 0L) {
+    pooled_df %>%
+      dplyr::filter(is.finite(observed), is.finite(predicted)) %>%
+      dplyr::group_by(model) %>%
+      dplyr::summarise(
+        pooled_r2 = {
+          ss_res <- sum((observed - predicted)^2)
+          ss_tot <- sum((observed - mean(observed))^2)
+          if (ss_tot > 0) 1 - ss_res / ss_tot else NA_real_
+        },
+        pooled_rmse = sqrt(mean((observed - predicted)^2)),
+        n_predictions = dplyr::n(),
+        .groups = "drop"
+      )
+  } else {
+    data.frame(model = character(), pooled_r2 = numeric(),
+               pooled_rmse = numeric(), n_predictions = integer())
+  }
+  attr(results_df, "pooled_r2") <- pooled_r2_by_model
+
   if (return_predictions && length(preds_list) > 0)
     return(list(metrics = results_df, predictions = dplyr::bind_rows(preds_list)))
   results_df
