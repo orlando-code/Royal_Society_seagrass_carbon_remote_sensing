@@ -9,8 +9,16 @@ load_packages(c("GauPro", "xgboost", "mgcv", "randomForest"))
   if (is.null(x)) y else x
 }
 
+#' Quote variable names for safe use in formulas.
+quote_formula_terms <- function(vars) {
+  vars <- as.character(vars)
+  vars <- gsub("`", "\\\\`", vars, fixed = TRUE)
+  paste0("`", vars, "`")
+}
+
 # ================================ SCALING & ENCODING ================================
-# XGB/GPR: categoricals -> integer codes, then z-score scale (prepare_predictors_train / prepare_predictors_new).
+# XGB: categoricals -> integer codes, then z-score scale (prepare_predictors_train / prepare_predictors_new).
+# GPR: categoricals -> one-hot expansion, then z-score scale (prepare_predictors_train_onehot / prepare_predictors_new_onehot).
 # GAM/RF: scale numerics only, categoricals stay as factors (prepare_predictors_train_numeric_only).
 
 #' Compute z-score scaling parameters from training data (numeric columns only).
@@ -97,6 +105,57 @@ apply_categorical_encoding <- function(data, encoding, predictor_vars) {
   X
 }
 
+#' Build one-hot encoded design matrix for GPR.
+#' Keeps numeric predictors as-is and expands categorical predictors into indicator columns.
+prepare_predictors_train_onehot <- function(data, predictor_vars,
+                                            categorical_vars = c("seagrass_species", "region", "Region")) {
+  X <- as.data.frame(data[, predictor_vars, drop = FALSE])
+  cat_vars <- intersect(predictor_vars, categorical_vars)
+  cat_vars <- cat_vars[vapply(X[cat_vars], function(col) is.factor(col) || is.character(col), logical(1))]
+
+  levels_list <- list()
+  for (v in cat_vars) {
+    if (is.character(X[[v]])) X[[v]] <- factor(X[[v]])
+    lv <- levels(factor(X[[v]]))
+    levels_list[[v]] <- lv
+    X[[v]] <- factor(as.character(X[[v]]), levels = lv)
+  }
+
+  mm <- model.matrix(~ . - 1, data = X)
+  mm_df <- as.data.frame(mm)
+  encoded_names <- colnames(mm_df)
+  sp <- compute_scale_params(mm_df, encoded_names)
+
+  list(
+    data = apply_scaling(mm_df, sp, encoded_names),
+    scale_params = sp,
+    encoding = list(type = "one_hot", levels = levels_list, predictor_vars = predictor_vars),
+    encoded_names = encoded_names
+  )
+}
+
+#' Apply train-derived GPR one-hot encoding to new data and align columns.
+prepare_predictors_new_onehot <- function(data, encoding, encoded_names) {
+  pvars <- encoding$predictor_vars %||% names(data)
+  X <- as.data.frame(data[, pvars, drop = FALSE])
+
+  if (!is.null(encoding$levels) && length(encoding$levels) > 0L) {
+    for (v in names(encoding$levels)) {
+      if (!v %in% names(X)) next
+      X[[v]] <- factor(as.character(X[[v]]), levels = encoding$levels[[v]])
+    }
+  }
+
+  mm <- model.matrix(~ . - 1, data = X)
+  mm_df <- as.data.frame(mm)
+  if (!all(encoded_names %in% names(mm_df))) {
+    miss <- setdiff(encoded_names, names(mm_df))
+    for (m in miss) mm_df[[m]] <- 0
+  }
+  mm_df <- mm_df[, encoded_names, drop = FALSE]
+  mm_df
+}
+
 #' Prepare predictor matrix from training data: categoricals to codes + scale. Single source of truth for all models.
 #' @param data Training data (predictor columns only or full frame with predictor_vars).
 #' @param predictor_vars Character vector of predictor names.
@@ -131,7 +190,7 @@ prepare_predictors_train_numeric_only <- function(data, predictor_vars) {
 }
 
 #' Prepare train/test data for a given model.
-#' XGB/GPR: categoricals -> integer codes + scale. GAM/RF: scale numerics only, categoricals stay as factors.
+#' XGB: categoricals -> integer codes + scale. GAM/RF: scale numerics only, categoricals stay as factors.
 #' GPR returns raw so \code{fit_gpr} can do prep internally (formula, prediction_grid, etc.).
 prepare_data_for_model <- function(model_name, train, test, predictor_vars) {
   if (model_name == "GPR")
@@ -214,7 +273,11 @@ predict_model <- function(obj, newdata, se = TRUE) {
     if (!"latitude" %in% names(X)) X$latitude <- newdata$latitude
   }
   if (!is.null(obj$encoding)) {
-    X <- apply_categorical_encoding(X, obj$encoding, pvars)
+    if (!is.null(obj$encoding$type) && identical(obj$encoding$type, "one_hot")) {
+      X <- prepare_predictors_new_onehot(X, obj$encoding, obj$encoded_names %||% pvars)
+    } else {
+      X <- apply_categorical_encoding(X, obj$encoding, pvars)
+    }
   }
   model_cols <- obj$encoded_names %||% pvars
 
@@ -317,16 +380,18 @@ fit_gpr <- function(train_data,
     return(out)
   }
 
-  prep <- prepare_predictors_train(train_X, predictor_vars)
+  prep <- prepare_predictors_train_onehot(train_X, predictor_vars)
   train_sc <- prep$data
   sp <- prep$scale_params
+  encoded_names <- prep$encoded_names
 
   model_pvars <- if (!is.null(formula)) {
-    intersect(setdiff(all.vars(formula), value_var), predictor_vars)
-  } else predictor_vars
-  if (length(model_pvars) == 0L) model_pvars <- predictor_vars
+    intersect(setdiff(all.vars(formula), value_var), encoded_names)
+  } else encoded_names
+  if (length(model_pvars) == 0L) model_pvars <- encoded_names
 
-  form <- as.formula(paste(value_var, "~", paste(model_pvars, collapse = " + ")))
+  form <- as.formula(paste(quote_formula_terms(value_var), "~",
+                           paste(quote_formula_terms(model_pvars), collapse = " + ")))
   train_df <- cbind(setNames(data.frame(train_y), value_var), train_sc)
   train_df <- train_df[, c(value_var, model_pvars), drop = FALSE]
 
@@ -336,14 +401,14 @@ fit_gpr <- function(train_data,
     error = function(e) NULL
   )
   if (is.null(mdl)) {
-    out <- list(model = NULL, scale_params = sp, encoding = prep$encoding, encoded_names = predictor_vars,
+    out <- list(model = NULL, scale_params = sp, encoding = prep$encoding, encoded_names = encoded_names,
                 predictor_vars = predictor_vars, model_type = "GPR")
     if (!is.null(test_data)) out <- c(out, list(predictions = rep(NA_real_, nrow(test_data)), r2 = NA_real_, rmse = NA_real_))
     if (!is.null(prediction_grid)) out <- c(out, list(predictions = numeric(), se = numeric(), prediction_grid = prediction_grid, n_train = nrow(train_data), n_pred = 0L))
     return(out)
   }
 
-  base <- list(model = mdl, scale_params = sp, encoding = prep$encoding, encoded_names = predictor_vars,
+  base <- list(model = mdl, scale_params = sp, encoding = prep$encoding, encoded_names = encoded_names,
                predictor_vars = predictor_vars, model_type = "GPR")
 
   if (!is.null(test_data)) {
@@ -352,7 +417,8 @@ fit_gpr <- function(train_data,
     ok_test <- complete.cases(test_X)
     na_pred <- rep(NA_real_, nrow(test_data))
     if (sum(ok_test) > 0L) {
-      test_sc <- as.data.frame(prepare_predictors_new(test_X, predictor_vars, sp, prep$encoding))
+      test_sc <- prepare_predictors_new_onehot(test_X, prep$encoding, encoded_names)
+      test_sc <- as.data.frame(apply_scaling(test_sc, sp, encoded_names))
       X_mat <- as.matrix(test_sc[ok_test, model_pvars, drop = FALSE])
       storage.mode(X_mat) <- "double"
       preds <- na_pred
@@ -371,8 +437,9 @@ fit_gpr <- function(train_data,
     pred_ok <- complete.cases(prediction_grid[, predictor_vars, drop = FALSE])
     mu <- se <- rep(NA_real_, nrow(prediction_grid))
     if (sum(pred_ok) > 0L) {
-      pred_sc <- as.data.frame(prepare_predictors_new(
-        prediction_grid[pred_ok, predictor_vars, drop = FALSE], predictor_vars, sp, prep$encoding))
+      pred_sc <- prepare_predictors_new_onehot(
+        prediction_grid[pred_ok, predictor_vars, drop = FALSE], prep$encoding, encoded_names)
+      pred_sc <- as.data.frame(apply_scaling(pred_sc, sp, encoded_names))
       XX <- as.matrix(pred_sc[, model_pvars, drop = FALSE])
       storage.mode(XX) <- "double"
       pr <- mdl$pred(XX, se.fit = TRUE, return_df = TRUE)
@@ -388,24 +455,6 @@ fit_gpr <- function(train_data,
   base
 }
 
-#' @rdname fit_gpr
-#' @description \code{fit_gaussian_process_regression} is a backward-compatible alias for the spatial (prediction_grid) case.
-fit_gaussian_process_regression <- function(dat, value_var, coords, predictor_vars,
-                                            formula = NULL, prediction_grid,
-                                            include_spatial = FALSE,
-                                            kernel = "matern52", nug_min = 1e-8, nug_max = 100, nug_est = TRUE) {
-  fit_gpr(
-    train_data = dat,
-    test_data = NULL,
-    predictor_vars = predictor_vars,
-    value_var = value_var,
-    prediction_grid = prediction_grid,
-    coords = coords,
-    include_spatial = include_spatial,
-    formula = formula,
-    hyperparams = list(kernel = kernel, nug.min = nug_min, nug.max = nug_max, nug.est = nug_est)
-  )
-}
 
 # ================================ RF, XGB, GAM ================================
 
@@ -433,11 +482,14 @@ fit_xgboost <- function(train_data, test_data, predictor_vars, hyperparams = NUL
   colsample_bytree <- hyperparams$colsample_bytree %||% 0.8
   min_child_weight <- hyperparams$min_child_weight %||% 1L
   nthreads         <- hyperparams$nthreads         %||% 1L
+  min_split_loss            <- hyperparams$min_split_loss            %||% 0
+  reg_reg_lambda       <- hyperparams$reg_reg_lambda       %||% 1
 
   model <- xgboost(x = X_train, y = y_train, nrounds = nrounds,
     max_depth = max_depth, learning_rate = learning_rate,
     subsample = subsample, colsample_bytree = colsample_bytree,
     min_child_weight = min_child_weight,
+    min_split_loss = min_split_loss, reg_lambda = reg_reg_lambda,
     nthread = as.integer(nthreads), objective = "reg:squarederror")
 
   list(model = model, predictions = as.numeric(predict(model, newdata = X_test)))

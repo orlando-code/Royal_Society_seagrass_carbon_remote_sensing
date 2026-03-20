@@ -1,0 +1,286 @@
+## Fold sensitivity check: evaluate how mean±sd performance changes
+## when varying n_folds and re-instantiating grouped folds via different seeds.
+##
+## Scope (default):
+##   - splitting regimes: random_split, location_grouped_random, pixel_grouped_random
+##   - n_folds: 3, 5, 7
+##   - seed_list: 42, 43, 44 (controls random assignment for each regime)
+##
+## Important:
+##   This is a *diagnostic* check to justify fold count and quantify evaluation
+##   uncertainty. It does NOT retune covariates/hyperparameters; it holds the
+##   already selected model configs constant (from output/<cv_regime_name>).
+##
+## Outputs:
+##   output/<cv_regime_name>/cv_pipeline/fold_sensitivity_check/
+##     - fold_sensitivity_by_fold.csv
+##     - fold_sensitivity_summary_by_seed.csv
+##     - fold_sensitivity_summary_across_seeds.csv
+##     - fold_sensitivity_rmse_plot.png
+##     - fold_sensitivity_r2_plot.png
+
+project_root <- here::here()
+setwd(project_root)
+
+source(file.path(project_root, "modelling/R/helpers.R"))
+load_packages(c("here", "dplyr", "readr", "ggplot2", "tidyr"))
+
+cv_regime_name <- get0("cv_regime_name", envir = .GlobalEnv, ifnotfound = "pixel_grouped")
+target_var <- get0("target_var", envir = .GlobalEnv, ifnotfound = "median_carbon_density_100cm")
+log_response <- isTRUE(get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE))
+
+exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
+
+seed_list <- get0("fold_seed_list", envir = .GlobalEnv, ifnotfound = 42L:43L)
+n_folds_list <- get0("n_folds_list", envir = .GlobalEnv, ifnotfound = c(3L, 5L))
+
+cv_types_to_check <- get0(
+  "cv_types_to_check",
+  envir = .GlobalEnv,
+  ifnotfound = c("random", "location_grouped", "pixel_grouped")
+)
+
+# Only use models with tuned configs available.
+use_shap_per_model <- isTRUE(get0("use_shap_per_model", envir = .GlobalEnv, ifnotfound = TRUE))
+
+models_default <- get0("fold_sensitivity_models", envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB"))
+
+# CV parameter blocks
+n_folds_block_for_spatial <- NA_integer_
+cv_blocksize <- get0("cv_blocksize", envir = .GlobalEnv, ifnotfound = 5000L)
+
+out_base <- file.path(project_root, "output", cv_regime_name, "cv_pipeline", "fold_sensitivity_check")
+dir.create(out_base, recursive = TRUE, showWarnings = FALSE)
+
+cat("Fold sensitivity check\n")
+cat("  cv_regime_name:", cv_regime_name, "\n")
+cat("  target_var:", target_var, "\n")
+cat("  log_response:", log_response, "\n")
+cat("  exclude_regions:", ifelse(length(exclude_regions) == 0, "(none)", paste(exclude_regions, collapse = ", ")), "\n")
+cat("  seed_list:", paste(seed_list, collapse = ", "), "\n")
+cat("  n_folds_list:", paste(n_folds_list, collapse = ", "), "\n")
+cat("  cv_types_to_check:", paste(cv_types_to_check, collapse = ", "), "\n")
+
+# ---------------------------------------------------------------------------
+# Load and prepare data
+# ---------------------------------------------------------------------------
+dat <- readr::read_rds(file.path(project_root, "data/all_extracted_new.rds"))
+
+if (length(exclude_regions) > 0L) {
+  if (!"region" %in% names(dat)) dat <- assign_region_from_latlon(dat)
+  dat <- dat[is.na(dat$region) | !dat$region %in% exclude_regions, ]
+}
+
+coords_to_keep <- c("longitude", "latitude")
+species_region_cols <- intersect(c("seagrass_species", "region"), names(dat))
+
+# Predictors used for pixel-group hashing: everything except coords and identifiers
+predictor_vars_full <- setdiff(
+  colnames(dat),
+  c("latitude", "longitude", "number_id_final_version", "seagrass_species", "region", target_var)
+)
+predictor_vars_full <- predictor_vars_full[predictor_vars_full %in% colnames(dat)]
+
+complete_dat <- dat %>%
+  dplyr::select(
+    dplyr::all_of(coords_to_keep),
+    dplyr::all_of(target_var),
+    dplyr::all_of(predictor_vars_full),
+    dplyr::all_of(species_region_cols)
+  ) %>%
+  dplyr::filter(complete.cases(.))
+
+if (nrow(complete_dat) < 10L) stop("Too few complete-case rows after filtering.")
+
+complete_dat$median_carbon_density <- complete_dat[[target_var]]
+predictor_vars_full <- predictor_vars_full[predictor_vars_full %in% colnames(complete_dat)]
+
+cat("  Complete-case rows:", nrow(complete_dat), "\n")
+cat("  Full predictor count (hashing + run_cv predictor_vars):", length(predictor_vars_full), "\n")
+
+core_data <- as.data.frame(complete_dat)
+
+# ---------------------------------------------------------------------------
+# Load tuned covariate sets and hyperparameters (held fixed during sensitivity check)
+# ---------------------------------------------------------------------------
+cov_dir <- file.path(project_root, "output", cv_regime_name, "covariate_selection")
+config_dir <- file.path(project_root, "output", cv_regime_name, "cv_pipeline")
+
+per_model_vars <- get_per_model_vars(cov_dir, colnames(core_data), use_shap_first = use_shap_per_model)
+
+predictor_vars_by_model <- list()
+for (m in models_default) {
+  pvars <- load_model_vars(m, per_model_vars, use_shap_first = use_shap_per_model)
+  if (!is.null(pvars) && length(pvars) >= 2L) predictor_vars_by_model[[m]] <- pvars
+}
+models <- intersect(names(predictor_vars_by_model), models_default)
+
+load_best_config_xgb <- function() {
+  p1 <- file.path(config_dir, "best_config_xgb.rds")
+  p2 <- file.path(config_dir, "xgb_best_config.rds")
+  if (file.exists(p1)) readRDS(p1) else if (file.exists(p2)) readRDS(p2) else NULL
+}
+load_best_config_gam <- function() {
+  p1 <- file.path(config_dir, "best_config_gam.rds")
+  p2 <- file.path(config_dir, "gam_best_config.rds")
+  if (file.exists(p1)) readRDS(p1) else if (file.exists(p2)) readRDS(p2) else NULL
+}
+load_best_config_gpr <- function() {
+  p <- file.path(config_dir, "best_config_gpr.rds")
+  if (file.exists(p)) readRDS(p) else NULL
+}
+
+cfg_xgb <- load_best_config_xgb()
+cfg_gam <- load_best_config_gam()
+cfg_gpr <- load_best_config_gpr()
+
+hyperparams_by_model <- list()
+if (!is.null(cfg_gpr) && "GPR" %in% models) {
+  hyperparams_by_model[["GPR"]] <- list(
+    kernel = cfg_gpr$kernel,
+    nug.min = cfg_gpr$nug.min,
+    nug.max = cfg_gpr$nug.max,
+    nug.est = TRUE
+  )
+}
+if (!is.null(cfg_gam) && "GAM" %in% models) {
+  hyperparams_by_model[["GAM"]] <- list(k_covariate = cfg_gam$k_covariate %||% 6L)
+}
+if (!is.null(cfg_xgb) && "XGB" %in% models) {
+  hyperparams_by_model[["XGB"]] <- list(
+    nrounds = cfg_xgb$nrounds,
+    max_depth = cfg_xgb$max_depth,
+    learning_rate = cfg_xgb$learning_rate %||% 0.1,
+    subsample = cfg_xgb$subsample %||% 0.8,
+    colsample_bytree = cfg_xgb$colsample_bytree %||% 0.8,
+    min_child_weight = cfg_xgb$min_child_weight %||% 1L,
+    min_split_loss = cfg_xgb$min_split_loss %||% 0,
+    reg_reg_lambda = cfg_xgb$reg_reg_lambda %||% 1
+  )
+}
+
+models <- intersect(models, names(hyperparams_by_model))
+if (length(models) == 0L) stop("No models with both tuned covariate sets and tuned hyperparameters found.")
+
+cat("  Using models:", paste(models, collapse = ", "), "\n")
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+compute_fold_y_stats <- function(fold_indices, y) {
+  nf <- max(fold_indices, na.rm = TRUE)
+  fold_ids <- seq_len(nf)
+  idx_list <- lapply(fold_ids, function(k) which(fold_indices == k))
+  n_test <- vapply(idx_list, length, integer(1))
+  y_mean <- vapply(idx_list, function(ii) {
+    if (length(ii) == 0L) return(NA_real_)
+    mean(y[ii], na.rm = TRUE)
+  }, numeric(1))
+  y_sd <- vapply(idx_list, function(ii) {
+    if (length(ii) < 2L) return(NA_real_)
+    stats::sd(y[ii], na.rm = TRUE)
+  }, numeric(1))
+  tibble::tibble(fold = fold_ids, n_test = n_test, y_mean = y_mean, y_sd = y_sd)
+}
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+by_fold_rows <- list()
+
+for (n_folds in n_folds_list) {
+  for (seed in seed_list) {
+    for (cv_type in cv_types_to_check) {
+      cv_fold_info <- make_cv_folds(
+        dat = core_data,
+        covariate_cols = predictor_vars_full,
+        n_folds = n_folds,
+        cv_type = cv_type,
+        cv_blocksize = if (!is.na(n_folds_block_for_spatial)) n_folds_block_for_spatial else cv_blocksize,
+        cache_tag = paste0("fold_sens_", cv_type, "_n", n_folds, "_seed", seed),
+        exclude_regions = exclude_regions,
+        seed = seed
+      )
+
+      fold_indices <- cv_fold_info$fold_indices
+      method_name <- cv_fold_info$method_name
+
+      fold_y_stats <- compute_fold_y_stats(fold_indices, core_data$median_carbon_density)
+
+      res <- run_cv(
+        cv_method_name = paste0(method_name, "_n", n_folds, "_seed", seed),
+        fold_indices = fold_indices,
+        core_data = core_data,
+        predictor_vars = predictor_vars_full,
+        predictor_vars_by_model = predictor_vars_by_model,
+        hyperparams_by_model = hyperparams_by_model,
+        tune_hyperparams = FALSE,
+        nested_tuning = FALSE,
+        verbose = FALSE,
+        return_predictions = FALSE,
+        models = models,
+        log_response = log_response
+      )
+
+      if (is.null(res) || nrow(res) == 0L) next
+      res$fold_y_sd <- fold_y_stats$y_sd[match(res$fold, fold_y_stats$fold)]
+      res$fold_y_mean <- fold_y_stats$y_mean[match(res$fold, fold_y_stats$fold)]
+      res$n_folds <- n_folds
+      res$fold_seed <- seed
+      res$cv_type <- cv_type
+      res$method_name <- method_name
+
+      by_fold_rows[[length(by_fold_rows) + 1L]] <- res
+    }
+  }
+}
+
+by_fold <- dplyr::bind_rows(by_fold_rows)
+if (nrow(by_fold) == 0L) stop("No results produced; check inputs and tuned configs.")
+
+write.csv(by_fold, file.path(out_base, "fold_sensitivity_by_fold.csv"), row.names = FALSE)
+
+summary_by_seed <- by_fold %>%
+  group_by(method_name, cv_type, n_folds, fold_seed, model) %>%
+  summarise(
+    mean_r2 = mean(r2, na.rm = TRUE),
+    sd_r2 = sd(r2, na.rm = TRUE),
+    neg_r2_fraction = mean(r2 < 0, na.rm = TRUE),
+    mean_rmse = mean(rmse, na.rm = TRUE),
+    sd_rmse = sd(rmse, na.rm = TRUE),
+    mean_fold_y_sd = mean(fold_y_sd, na.rm = TRUE),
+    .groups = "drop"
+  )
+write.csv(summary_by_seed, file.path(out_base, "fold_sensitivity_summary_by_seed.csv"), row.names = FALSE)
+
+summary_across_seeds <- summary_by_seed %>%
+  group_by(method_name, cv_type, n_folds, model) %>%
+  summarise(
+    mean_mean_rmse = mean(mean_rmse, na.rm = TRUE),
+    sd_mean_rmse = sd(mean_rmse, na.rm = TRUE),
+    mean_mean_r2 = mean(mean_r2, na.rm = TRUE),
+    sd_mean_r2 = sd(mean_r2, na.rm = TRUE),
+    mean_neg_r2_fraction = mean(neg_r2_fraction, na.rm = TRUE),
+    .groups = "drop"
+  )
+write.csv(summary_across_seeds, file.path(out_base, "fold_sensitivity_summary_across_seeds.csv"), row.names = FALSE)
+
+# Plots
+rmse_plot <- ggplot(summary_across_seeds, aes(x = n_folds, y = mean_mean_rmse, colour = model)) +
+  geom_line() +
+  geom_point(size = 2.2) +
+  facet_wrap(~ method_name, scales = "free_y") +
+  theme_minimal(base_size = 12) +
+  labs(title = "Fold sensitivity (RMSE): mean across seeds", x = "n_folds", y = "Mean RMSE")
+ggsave(file.path(out_base, "fold_sensitivity_rmse_plot.png"), rmse_plot, width = 11, height = 6, dpi = 200)
+
+r2_plot <- ggplot(summary_across_seeds, aes(x = n_folds, y = mean_mean_r2, colour = model)) +
+  geom_line() +
+  geom_point(size = 2.2) +
+  facet_wrap(~ method_name, scales = "free_y") +
+  theme_minimal(base_size = 12) +
+  labs(title = "Fold sensitivity (R2): mean across seeds", x = "n_folds", y = "Mean R2")
+ggsave(file.path(out_base, "fold_sensitivity_r2_plot.png"), r2_plot, width = 11, height = 6, dpi = 200)
+
+cat("\nWrote fold sensitivity outputs to:\n", out_base, "\n", sep = "")
+
