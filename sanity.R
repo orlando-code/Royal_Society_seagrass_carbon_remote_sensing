@@ -3,6 +3,8 @@
 # If the coarse raster resolution (~4 km) maps many distinct (lat, lon)
 # locations to the same pixel, the covariate vectors will be identical and
 # location-grouped folds won't fully prevent leakage.
+
+# TODO: measure variance/similarity of covariate vectors across train and test for different folds under different seeds
 setwd(here::here())
 
 library(ggplot2)
@@ -139,6 +141,74 @@ ggplot(data.frame(ratio = unlist(ratio_list)), aes(x = ratio)) +
 predictor_vars <- raster_covariates[raster_covariates %in% names(dat)]
 predictor_vars <- prune_by_correlation(dat, predictor_vars, target_var,
   cor_threshold = 0.8)  # filter vars by correlation with target
+
+
+# === compute maximum possible R2 ===
+
+result <- estimate_r2_upper_bound(dat, predictor_vars, target_var)
+result$r2_max
+
+between_var <- var(result$stats$mean_y, na.rm = TRUE)
+
+within_var <- result$noise_variance
+total_var  <- result$total_variance
+
+c(
+  within = within_var,
+  between = between_var,
+  total = total_var
+)
+
+mean_within_var <- mean(result$stats$var_y[result$stats$n > 1], na.rm = TRUE)
+
+
+ggplot(result$stats, aes(x = n, y = var_y)) +
+  geom_point() +
+  scale_y_log10() +
+  labs(
+    x = "Number of replicates per covariate vector",
+    y = "Variance of carbon density",
+    title = "Within-group variance (noise) across environments"
+  )
+
+
+# checking distances between covariate vectors
+
+# scale predictor variables
+scale_params <- compute_scale_params(dat[, predictor_vars], predictor_vars)
+dat_scaled <- apply_scaling(dat[, predictor_vars], scale_params, predictor_vars)
+
+# get the variance of each column of the dat_scaled dataframe (should all be 1)
+var_list <- list()
+for (i in 1:ncol(dat_scaled)) {
+  var_list[[i]] <- var(dat_scaled[, i])
+}
+var_df <- data.frame(var = unlist(var_list), colnames(dat_scaled))
+summary(var_df$var)
+
+
+
+X <- dat_scaled[, predictor_vars]
+dists <- dist(X)
+summary(dists)
+
+# plot the distances between covariate vectors
+ggplot(data.frame(dists = dists), aes(x = dists)) +
+  geom_histogram(binwidth = 0.01) +
+  theme_minimal() +
+  labs(x = "Distance between covariate vectors", y = "Count")
+
+library(FNN)
+
+nn <- get.knn(X, k = 2)
+summary(nn$nn.dist[,2])
+
+# plot distribution of the distances between the second nearest neighbour and the first nearest neighbour
+ggplot(data.frame(dists = nn$nn.dist[,2]), aes(x = dists)) +
+  geom_histogram(binwidth = 0.01) +
+  theme_minimal() +
+  labs(x = "Distance between second nearest neighbour and first nearest neighbour", y = "Count")
+
 
 if ("seagrass_species" %in% names(dat)) predictor_vars <- unique(c(predictor_vars, "seagrass_species"))
 predictor_vars <- setdiff(predictor_vars, target_var)
