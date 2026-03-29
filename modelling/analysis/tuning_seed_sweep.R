@@ -1,0 +1,438 @@
+# Robust tuning seed-count sweep (standalone, tmux-friendly).
+#
+# Purpose:
+#   Re-run robust tuning + robust SHAP pruning + robust evaluation for different
+#   robust seed counts (e.g., 2/5/10/15/20), then write a combined summary CSV:
+#   output/<cv_regime>/cv_pipeline/sensitivity_suite/sensitivity_tuning_seed_sweep_summary.csv
+#
+# Typical tmux usage:
+#   tmux new -s seed_sweep
+#   cd /Users/rt582/Desktop/seagrass_mapping
+#   Rscript modelling/analysis/tuning_seed_sweep.R
+#
+# Optional overrides via .GlobalEnv before sourcing:
+#   cv_regime_name, robust_pruned_importance_type,
+#   tuning_seed_sweep_counts, tuning_seed_pool, tuning_sweep_eval_seed_list,
+#   tuning_seed_sampling, do_tuning_seed_sweep_refined_tuning,
+#   tuning_seed_sweep_repeats, tuning_seed_sweep_random_seed,
+#   tuning_seed_sweep_skip_existing, tuning_seed_sweep_unique_subsets,
+#   tuning_seed_sweep_parallel_jobs
+
+project_root <- here::here()
+setwd(project_root)
+
+source(file.path(project_root, "modelling/R/helpers.R"))
+source(file.path(project_root, "modelling/config/pipeline_config.R"))
+load_packages(c("here", "dplyr", "readr", "ggplot2", "tidyr"))
+
+cfg <- get_pipeline_config()
+apply_pipeline_defaults(
+  cfg,
+  c(
+    "cv_regime_name", "cv_type_label", "tuning_seed_sweep_counts", "tuning_seed_pool",
+    "tuning_sweep_eval_seed_list", "tuning_seed_sampling",
+    "do_tuning_seed_sweep_refined_tuning", "robust_pruned_importance_type",
+    "tuning_seed_sweep_repeats", "tuning_seed_sweep_random_seed",
+    "tuning_seed_sweep_skip_existing", "tuning_seed_sweep_unique_subsets",
+    "tuning_seed_sweep_parallel_jobs", "model_list",
+    "robust_rmse_lambda", "tuning_seed_sweep_force_recompute"
+  ),
+  envir = .GlobalEnv
+)
+
+cv_regime_name <- get("cv_regime_name", envir = .GlobalEnv)
+cv_type_label <- get("cv_type_label", envir = .GlobalEnv)
+tuning_seed_sweep_counts <- as.integer(get("tuning_seed_sweep_counts", envir = .GlobalEnv))
+tuning_seed_pool <- as.integer(get("tuning_seed_pool", envir = .GlobalEnv))
+tuning_sweep_eval_seed_list <- as.integer(get("tuning_sweep_eval_seed_list", envir = .GlobalEnv))
+tuning_seed_sampling <- match.arg(
+  get("tuning_seed_sampling", envir = .GlobalEnv),
+  choices = c("prefix", "random")
+)
+do_tuning_seed_sweep_refined_tuning <- isTRUE(get("do_tuning_seed_sweep_refined_tuning", envir = .GlobalEnv))
+robust_pruned_importance_type <- get("robust_pruned_importance_type", envir = .GlobalEnv)
+tuning_seed_sweep_repeats <- as.integer(get("tuning_seed_sweep_repeats", envir = .GlobalEnv))
+tuning_seed_sweep_random_seed <- as.integer(get("tuning_seed_sweep_random_seed", envir = .GlobalEnv))
+tuning_seed_sweep_skip_existing <- isTRUE(get("tuning_seed_sweep_skip_existing", envir = .GlobalEnv))
+tuning_seed_sweep_unique_subsets <- isTRUE(get("tuning_seed_sweep_unique_subsets", envir = .GlobalEnv))
+tuning_seed_sweep_parallel_jobs <- as.integer(get("tuning_seed_sweep_parallel_jobs", envir = .GlobalEnv))
+robust_rmse_lambda <- max(0, as.numeric(get("robust_rmse_lambda", envir = .GlobalEnv)))
+tuning_seed_sweep_force_recompute <- isTRUE(get("tuning_seed_sweep_force_recompute", envir = .GlobalEnv))
+model_list <- intersect(get("model_list", envir = .GlobalEnv), c("GPR", "GAM", "XGB"))
+
+out_dir <- file.path(project_root, "output", cv_regime_name, "cv_pipeline", "sensitivity_suite")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+cat("Running standalone tuning seed-count sweep\n")
+cat("  cv_regime_name:", cv_regime_name, "\n")
+cat("  tuning_seed_sweep_counts:", paste(tuning_seed_sweep_counts, collapse = ", "), "\n")
+cat("  tuning_seed_pool size:", length(tuning_seed_pool), "\n")
+cat("  tuning_sweep_eval_seed_list:", paste(tuning_sweep_eval_seed_list, collapse = ", "), "\n")
+cat("  tuning_seed_sampling:", tuning_seed_sampling, "\n")
+cat("  tuning_seed_sweep_repeats:", tuning_seed_sweep_repeats, "\n")
+cat("  tuning_seed_sweep_random_seed:", tuning_seed_sweep_random_seed, "\n")
+cat("  tuning_seed_sweep_skip_existing:", tuning_seed_sweep_skip_existing, "\n")
+cat("  tuning_seed_sweep_unique_subsets:", tuning_seed_sweep_unique_subsets, "\n")
+cat("  tuning_seed_sweep_parallel_jobs:", tuning_seed_sweep_parallel_jobs, "\n")
+cat("  tuning_seed_sweep_force_recompute:", tuning_seed_sweep_force_recompute, "\n")
+cat("  robust_rmse_lambda:", robust_rmse_lambda, "\n")
+cat("  do_tuning_seed_sweep_refined_tuning:", do_tuning_seed_sweep_refined_tuning, "\n")
+
+# Keep only feasible counts and in ascending unique order.
+tuning_seed_sweep_counts <- sort(unique(tuning_seed_sweep_counts[tuning_seed_sweep_counts >= 1L]))
+tuning_seed_sweep_counts <- tuning_seed_sweep_counts[tuning_seed_sweep_counts <= length(tuning_seed_pool)]
+if (length(tuning_seed_sweep_counts) == 0L) {
+  stop("No valid tuning_seed_sweep_counts after filtering by tuning_seed_pool length.")
+}
+
+if (identical(tuning_seed_sampling, "random")) set.seed(tuning_seed_sweep_random_seed)
+
+# Save and restore globals modified by this sweep.
+had_robust <- exists("robust_fold_seed_list", envir = .GlobalEnv, inherits = FALSE)
+old_robust <- if (had_robust) get("robust_fold_seed_list", envir = .GlobalEnv, inherits = FALSE) else NULL
+had_eval <- exists("eval_fold_seed_list", envir = .GlobalEnv, inherits = FALSE)
+old_eval <- if (had_eval) get("eval_fold_seed_list", envir = .GlobalEnv, inherits = FALSE) else NULL
+had_cv_type <- exists("cv_type", envir = .GlobalEnv, inherits = FALSE)
+old_cv_type <- if (had_cv_type) get("cv_type", envir = .GlobalEnv, inherits = FALSE) else NULL
+had_pruned_type <- exists("robust_pruned_importance_type", envir = .GlobalEnv, inherits = FALSE)
+old_pruned_type <- if (had_pruned_type) get("robust_pruned_importance_type", envir = .GlobalEnv, inherits = FALSE) else NULL
+had_tuning_dir_override <- exists("robust_tuning_dir_override", envir = .GlobalEnv, inherits = FALSE)
+old_tuning_dir_override <- if (had_tuning_dir_override) get("robust_tuning_dir_override", envir = .GlobalEnv, inherits = FALSE) else NULL
+had_run_output_dir <- exists("run_output_dir", envir = .GlobalEnv, inherits = FALSE)
+old_run_output_dir <- if (had_run_output_dir) get("run_output_dir", envir = .GlobalEnv, inherits = FALSE) else NULL
+on.exit({
+  if (had_robust) {
+    assign("robust_fold_seed_list", old_robust, envir = .GlobalEnv)
+  } else if (exists("robust_fold_seed_list", envir = .GlobalEnv, inherits = FALSE)) {
+    rm("robust_fold_seed_list", envir = .GlobalEnv)
+  }
+
+  if (had_eval) {
+    assign("eval_fold_seed_list", old_eval, envir = .GlobalEnv)
+  } else if (exists("eval_fold_seed_list", envir = .GlobalEnv, inherits = FALSE)) {
+    rm("eval_fold_seed_list", envir = .GlobalEnv)
+  }
+
+  if (had_cv_type) {
+    assign("cv_type", old_cv_type, envir = .GlobalEnv)
+  } else if (exists("cv_type", envir = .GlobalEnv, inherits = FALSE)) {
+    rm("cv_type", envir = .GlobalEnv)
+  }
+
+  if (had_pruned_type) {
+    assign("robust_pruned_importance_type", old_pruned_type, envir = .GlobalEnv)
+  } else if (exists("robust_pruned_importance_type", envir = .GlobalEnv, inherits = FALSE)) {
+    rm("robust_pruned_importance_type", envir = .GlobalEnv)
+  }
+
+  if (had_tuning_dir_override) {
+    assign("robust_tuning_dir_override", old_tuning_dir_override, envir = .GlobalEnv)
+  } else if (exists("robust_tuning_dir_override", envir = .GlobalEnv, inherits = FALSE)) {
+    rm("robust_tuning_dir_override", envir = .GlobalEnv)
+  }
+
+  if (had_run_output_dir) {
+    assign("run_output_dir", old_run_output_dir, envir = .GlobalEnv)
+  } else if (exists("run_output_dir", envir = .GlobalEnv, inherits = FALSE)) {
+    rm("run_output_dir", envir = .GlobalEnv)
+  }
+}, add = TRUE)
+
+make_subset_plan <- function(n_sel, repeats, seed_pool, sampling, enforce_unique = TRUE) {
+  repeats <- as.integer(max(1L, repeats))
+  if (identical(sampling, "prefix")) {
+    return(list(seed_pool[seq_len(n_sel)]))
+  }
+
+  out <- list()
+  seen <- character(0)
+  max_attempts <- max(20L, repeats * 20L)
+  attempts <- 0L
+  while (length(out) < repeats && attempts < max_attempts) {
+    attempts <- attempts + 1L
+    s <- sort(as.integer(sample(seed_pool, n_sel, replace = FALSE)))
+    key <- paste(s, collapse = "-")
+    if (!enforce_unique || !(key %in% seen)) {
+      out[[length(out) + 1L]] <- s
+      seen <- c(seen, key)
+    }
+  }
+  if (length(out) < repeats) {
+    warning(
+      "Requested ", repeats, " unique subsets for n=", n_sel,
+      " but generated ", length(out), ". Consider larger tuning_seed_pool or fewer repeats."
+    )
+  }
+  out
+}
+
+task_rows <- list()
+for (n_sel in tuning_seed_sweep_counts) {
+  subsets_for_n <- make_subset_plan(
+    n_sel = n_sel,
+    repeats = tuning_seed_sweep_repeats,
+    seed_pool = tuning_seed_pool,
+    sampling = tuning_seed_sampling,
+    enforce_unique = tuning_seed_sweep_unique_subsets
+  )
+  for (rep_idx in seq_along(subsets_for_n)) {
+    s <- as.integer(subsets_for_n[[rep_idx]])
+    task_rows[[length(task_rows) + 1L]] <- data.frame(
+      n_tuning_seeds = n_sel,
+      sweep_repeat_id = rep_idx,
+      tuning_seed_list = paste(s, collapse = "-"),
+      stringsAsFactors = FALSE
+    )
+  }
+}
+task_df <- dplyr::bind_rows(task_rows)
+if (nrow(task_df) == 0L) stop("No sweep tasks were generated.")
+task_df$sweep_subset_id <- paste0(
+  "n", task_df$n_tuning_seeds,
+  "_r", task_df$sweep_repeat_id,
+  "_", gsub("-", "_", task_df$tuning_seed_list)
+)
+task_df$sweep_sampling <- tuning_seed_sampling
+
+manifest_planned_csv <- file.path(out_dir, "sensitivity_tuning_seed_sweep_manifest_planned.csv")
+readr::write_csv(task_df, manifest_planned_csv)
+cat("Wrote planned subset manifest to:\n  ", manifest_planned_csv, "\n", sep = "")
+
+collect_eval_table <- function(eval_summary_csv, seeds_str, n_sel, rep_idx, subset_id, sampling) {
+  eval_tbl <- readr::read_csv(eval_summary_csv, show_col_types = FALSE)
+  eval_tbl$n_tuning_seeds <- n_sel
+  eval_tbl$tuning_seed_list <- seeds_str
+  eval_tbl$sweep_repeat_id <- rep_idx
+  eval_tbl$sweep_subset_id <- subset_id
+  eval_tbl$sweep_sampling <- sampling
+
+  shap_summary_csv <- file.path(
+    project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped",
+    paste0("shap_importance_summary_robust_pixel_grouped_seeds_", seeds_str, ".csv")
+  )
+  if (file.exists(shap_summary_csv)) {
+    shap_tbl <- readr::read_csv(shap_summary_csv, show_col_types = FALSE) %>%
+      dplyr::group_by(model) %>%
+      dplyr::summarise(
+        mean_shap_cv = mean(shap_importance_cv, na.rm = TRUE),
+        median_shap_cv = stats::median(shap_importance_cv, na.rm = TRUE),
+        .groups = "drop"
+      )
+    eval_tbl <- eval_tbl %>% dplyr::left_join(shap_tbl, by = "model")
+  }
+
+  pruned_csv <- file.path(
+    project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped",
+    paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_str, ".csv")
+  )
+  if (file.exists(pruned_csv)) {
+    nvars_tbl <- readr::read_csv(pruned_csv, show_col_types = FALSE) %>%
+      dplyr::count(model, name = "n_selected_vars")
+    eval_tbl <- eval_tbl %>% dplyr::left_join(nvars_tbl, by = "model")
+  }
+  eval_tbl
+}
+
+run_one_subset <- function(task_row) {
+  n_sel <- as.integer(task_row$n_tuning_seeds[[1]])
+  rep_idx <- as.integer(task_row$sweep_repeat_id[[1]])
+  seeds_str <- as.character(task_row$tuning_seed_list[[1]])
+  sel_seeds <- as.integer(strsplit(seeds_str, "-", fixed = TRUE)[[1]])
+  subset_id <- paste0("n", n_sel, "_r", rep_idx, "_", gsub("-", "_", seeds_str))
+  cat("  Sweep n_tuning_seeds =", n_sel, " | repeat=", rep_idx, " | robust seeds:", seeds_str, "\n")
+
+  eval_dir <- file.path(
+    project_root, "output", cv_regime_name, "cv_pipeline",
+    build_seeded_run_folder_name(
+      cv_type_label = cv_type_label,
+      folder_type = "evaluation",
+      repeat_seed_list = tuning_sweep_eval_seed_list,
+      robust_seed_list = sel_seeds,
+      include_seed_values = TRUE
+    )
+  )
+  eval_summary_csv <- file.path(eval_dir, "across_seeds_summary.csv")
+  tuning_dir_subset <- file.path(
+    project_root, "output", cv_regime_name, "cv_pipeline",
+    paste0("robust_pixel_grouped_tuning_robustSeeds_", seeds_str)
+  )
+  tune_cfg_paths <- file.path(
+    tuning_dir_subset,
+    paste0("best_config_", c("gpr", "gam", "xgb"), "_robust.rds")
+  )
+  tune_ready <- all(file.exists(tune_cfg_paths[match(tolower(model_list), c("gpr", "gam", "xgb"))]))
+
+  shap_pruned_csv <- file.path(
+    project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped",
+    paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_str, ".csv")
+  )
+  shap_summary_csv <- file.path(
+    project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped",
+    paste0("shap_importance_summary_robust_pixel_grouped_seeds_", seeds_str, ".csv")
+  )
+  shap_ready <- file.exists(shap_pruned_csv) && file.exists(shap_summary_csv)
+  eval_ready <- file.exists(eval_summary_csv)
+
+  determine_stage_mode <- function(eval_ready, tune_ready, shap_ready) {
+    if (!isTRUE(tuning_seed_sweep_skip_existing)) return("full")
+    if (isTRUE(tuning_seed_sweep_force_recompute)) {
+      if (tune_ready && shap_ready) return("eval_only")
+      if (!tune_ready && shap_ready) return("tune_only")
+      if (tune_ready && !shap_ready) return("shap_then_refine")
+      return("full")
+    }
+    if (eval_ready) return("reuse_eval")
+    if (tune_ready && shap_ready) return("eval_only")
+    if (!tune_ready && shap_ready) return("tune_only")
+    if (tune_ready && !shap_ready) return("shap_then_refine")
+    "full"
+  }
+
+  run_stage <- function(stage_mode) {
+    if (identical(stage_mode, "full")) {
+      source(file.path(project_root, "modelling/multiseed/robust_hyperparameter_tuning.R"))
+      source(file.path(project_root, "modelling/multiseed/robust_shap_covariate_pruning.R"))
+      if (isTRUE(do_tuning_seed_sweep_refined_tuning)) {
+        source(file.path(project_root, "modelling/multiseed/robust_hyperparameter_tuning.R"))
+      }
+      source(file.path(project_root, "modelling/multiseed/robust_evaluation.R"))
+      return(invisible(NULL))
+    }
+    if (identical(stage_mode, "tune_only")) {
+      source(file.path(project_root, "modelling/multiseed/robust_hyperparameter_tuning.R"))
+      source(file.path(project_root, "modelling/multiseed/robust_evaluation.R"))
+      return(invisible(NULL))
+    }
+    if (identical(stage_mode, "shap_then_refine")) {
+      source(file.path(project_root, "modelling/multiseed/robust_shap_covariate_pruning.R"))
+      if (isTRUE(do_tuning_seed_sweep_refined_tuning)) {
+        source(file.path(project_root, "modelling/multiseed/robust_hyperparameter_tuning.R"))
+      }
+      source(file.path(project_root, "modelling/multiseed/robust_evaluation.R"))
+      return(invisible(NULL))
+    }
+    if (identical(stage_mode, "eval_only")) {
+      source(file.path(project_root, "modelling/multiseed/robust_evaluation.R"))
+      return(invisible(NULL))
+    }
+    if (!identical(stage_mode, "reuse_eval")) {
+      stop("Unknown stage_mode: ", stage_mode)
+    }
+    invisible(NULL)
+  }
+
+  stage_mode <- determine_stage_mode(
+    eval_ready = eval_ready,
+    tune_ready = tune_ready,
+    shap_ready = shap_ready
+  )
+  cat("    stage_mode:", stage_mode, "\n")
+
+  if (!identical(stage_mode, "reuse_eval")) {
+    assign("robust_fold_seed_list", sel_seeds, envir = .GlobalEnv)
+    assign("eval_fold_seed_list", tuning_sweep_eval_seed_list, envir = .GlobalEnv)
+    assign("cv_type", "pixel_grouped", envir = .GlobalEnv)
+    assign("robust_pruned_importance_type", robust_pruned_importance_type, envir = .GlobalEnv)
+    assign("robust_tuning_dir_override", tuning_dir_subset, envir = .GlobalEnv)
+    assign("run_output_dir", eval_dir, envir = .GlobalEnv)
+
+    run_stage(stage_mode)
+  } else {
+    cat("    Reusing cached evaluation artifacts for seeds ", seeds_str, "\n", sep = "")
+  }
+
+  if (!file.exists(eval_summary_csv)) {
+    warning("Missing eval summary for subset ", subset_id, ": ", eval_summary_csv)
+    return(NULL)
+  }
+  out <- collect_eval_table(
+    eval_summary_csv = eval_summary_csv,
+    seeds_str = seeds_str,
+    n_sel = n_sel,
+    rep_idx = rep_idx,
+    subset_id = subset_id,
+    sampling = tuning_seed_sampling
+  )
+  out$stage_mode <- stage_mode
+  out
+}
+
+task_list <- split(task_df, seq_len(nrow(task_df)))
+jobs <- max(1L, as.integer(tuning_seed_sweep_parallel_jobs))
+if (jobs > 1L && .Platform$OS.type == "unix" && length(task_list) > 1L) {
+  jobs <- min(jobs, length(task_list))
+  cat("\nRunning subset jobs in parallel with", jobs, "workers (process-level isolation)\n")
+  sweep_rows <- parallel::mclapply(task_list, run_one_subset, mc.cores = jobs)
+} else {
+  if (jobs > 1L && .Platform$OS.type != "unix") {
+    cat("\nParallel workers requested but not available on this OS; running sequentially.\n")
+  }
+  sweep_rows <- lapply(task_list, run_one_subset)
+}
+sweep_rows <- sweep_rows[!vapply(sweep_rows, is.null, logical(1))]
+
+sweep_status_df <- task_df
+sweep_status_df$stage_mode <- NA_character_
+sweep_status_df$completed <- FALSE
+if (length(sweep_rows) > 0L) {
+  done_tbl <- dplyr::bind_rows(sweep_rows) %>%
+    dplyr::select(sweep_subset_id, stage_mode) %>%
+    dplyr::distinct()
+  sweep_status_df <- sweep_status_df %>%
+    dplyr::left_join(done_tbl, by = "sweep_subset_id", suffix = c("", "_done")) %>%
+    dplyr::mutate(
+      stage_mode = dplyr::coalesce(stage_mode_done, stage_mode),
+      completed = !is.na(stage_mode)
+    ) %>%
+    dplyr::select(-stage_mode_done)
+}
+manifest_run_csv <- file.path(out_dir, "sensitivity_tuning_seed_sweep_manifest_run.csv")
+readr::write_csv(sweep_status_df, manifest_run_csv)
+cat("Wrote run subset manifest to:\n  ", manifest_run_csv, "\n", sep = "")
+
+sweep_df <- dplyr::bind_rows(sweep_rows)
+if (nrow(sweep_df) > 0L) {
+  sweep_csv <- file.path(out_dir, "sensitivity_tuning_seed_sweep_summary.csv")
+  readr::write_csv(sweep_df, sweep_csv)
+  cat("Wrote tuning seed sweep summary to:\n  ", sweep_csv, "\n", sep = "")
+  source(file.path(project_root, "modelling/R/plot_tuning_seed_sweep.R"))
+  plot_tuning_seed_sweep_summary(sweep_df, out_dir)
+  rep5 <- pick_representative_tuning_seed_subset(
+    sweep_df,
+    n_tuning_seeds = 5L,
+    metric_col = "mean_mean_rmse",
+    metric_sd_col = "sd_mean_rmse",
+    rmse_lambda = robust_rmse_lambda
+  )
+  if (!is.null(rep5)) {
+    rep_row <- data.frame(
+      robust_fold_seed_list = paste(rep5$robust_fold_seed_list, collapse = "-"),
+      tuning_seed_list = rep5$tuning_seed_list,
+      n_tuning_seeds = rep5$n_tuning_seeds,
+      mean_mean_rmse_across_models = rep5$mean_metric_across_models,
+      mean_sd_rmse_across_models = rep5$mean_sd_metric_across_models,
+      robust_rmse_score_across_models = rep5$robust_rmse_score_across_models,
+      mean_pooled_rmse_mean_across_models = rep5$mean_metric_across_models,
+      median_pooled_rmse_mean_across_subsets_at_n = NA_real_,
+      robust_rmse_lambda = rep5$robust_rmse_lambda,
+      selection_rule = rep5$selection_rule,
+      stringsAsFactors = FALSE
+    )
+    rep_csv <- file.path(out_dir, "sensitivity_tuning_seed_sweep_representative_n5.csv")
+    readr::write_csv(rep_row, rep_csv)
+    cat(
+      "Representative 5-seed subset (min robust RMSE score across models):\n  ",
+      rep_row$robust_fold_seed_list[1], "\n",
+      "Wrote:\n  ", rep_csv, "\n",
+      "score = mean_mean_rmse + ", rep_row$robust_rmse_lambda[1], " * mean_sd_rmse\n",
+      "Set pipeline_config robust_fold_seed_list to c(",
+      paste0(rep5$robust_fold_seed_list, "L", collapse = ", "),
+      ") if promoting this sweep.\n",
+      sep = ""
+    )
+  } else {
+    message("No n_tuning_seeds == 5 rows; skipped representative subset file.")
+  }
+} else {
+  warning("Tuning seed sweep produced no rows.")
+}
