@@ -1,0 +1,99 @@
+## Plot robust multi-seed SHAP importance with error bars.
+##
+## Inputs:
+##   output/<cv_regime_name>/covariate_selection/robust_pixel_grouped/
+##     shap_importance_summary_robust_pixel_grouped_seeds_<...>.csv
+##
+## Outputs:
+##   output/<cv_regime_name>/covariate_selection/robust_pixel_grouped/
+##     shap_importance_robust_errorbars_by_model.png
+##     shap_importance_robust_errorbars_combined.png
+
+project_root <- here::here()
+setwd(project_root)
+
+source(file.path(project_root, "modelling/R/helpers.R"))
+source(file.path(project_root, "modelling/R/plot_config.R"))
+load_packages(c("dplyr", "ggplot2", "patchwork", "readr", "here", "ggtext"))
+model_colours <- get0("model_colours", ifnotfound = c())
+
+cv_regime_name <- get0("cv_regime_name", envir = .GlobalEnv, ifnotfound = "pixel_grouped")
+dpi_val <- as.integer(get0("dpi", envir = .GlobalEnv, ifnotfound = 150L))
+robust_fold_seed_list <- as.integer(get0("robust_fold_seed_list", envir = .GlobalEnv, ifnotfound = integer()))
+if (length(robust_fold_seed_list) == 0L) {
+  stop("robust_fold_seed_list is missing in .GlobalEnv; run from robust pipeline driver.")
+}
+
+seeds_str <- paste(robust_fold_seed_list, collapse = "-")
+robust_cov_dir <- file.path(project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped")
+in_summary <- file.path(
+  robust_cov_dir,
+  paste0("shap_importance_summary_robust_pixel_grouped_seeds_", seeds_str, ".csv")
+)
+if (!file.exists(in_summary)) {
+  stop("Missing SHAP summary CSV: ", in_summary)
+}
+
+imp <- readr::read_csv(in_summary, show_col_types = FALSE)
+req <- c("model", "variable", "shap_importance_mean", "shap_importance_sd")
+if (!all(req %in% names(imp))) {
+  stop("SHAP summary CSV missing required columns: ", paste(setdiff(req, names(imp)), collapse = ", "))
+}
+
+top_n <- as.integer(get0("robust_shap_plot_top_n", envir = .GlobalEnv, ifnotfound = 15L))
+imp_top <- imp %>%
+  dplyr::group_by(model) %>%
+  dplyr::slice_max(order_by = shap_importance_mean, n = top_n, with_ties = FALSE) %>%
+  dplyr::arrange(model, dplyr::desc(shap_importance_mean)) %>%
+  dplyr::ungroup()
+
+shared_counts <- imp_top %>%
+  dplyr::distinct(model, variable) %>%
+  dplyr::count(variable, name = "n_models")
+
+imp_top <- imp_top %>%
+  dplyr::left_join(shared_counts, by = "variable") %>%
+  dplyr::mutate(
+    variable_label = label_vars(variable),
+    variable_styled = dplyr::case_when(
+      n_models >= 3L ~ paste0("**", variable_label, "**"),
+      n_models == 1L ~ paste0("*", variable_label, "*"),
+      TRUE ~ variable_label
+    ),
+    ymin = pmax(0, shap_importance_mean - shap_importance_sd),
+    ymax = shap_importance_mean + shap_importance_sd
+  )
+
+make_model_plot <- function(dfm, m) {
+  m_col <- model_colours[[m]] %||% "#444444"
+  dfm <- dplyr::arrange(dfm, shap_importance_mean)
+  ggplot2::ggplot(dfm, ggplot2::aes(x = shap_importance_mean, y = reorder(variable_styled, shap_importance_mean))) +
+    ggplot2::geom_col(fill = m_col, alpha = 0.85) +
+    ggplot2::geom_errorbar(ggplot2::aes(xmin = ymin, xmax = ymax), width = 0.2, colour = "black", linewidth = 0.35) +
+    ggplot2::labs(
+      title = m,
+      x = "Mean SHAP",
+      y = NULL
+    ) +
+    ggplot2::theme_minimal(base_size = 10) +
+    ggplot2::theme(
+      axis.text.y = ggtext::element_markdown(),
+      axis.text.y.left = ggtext::element_markdown()
+    )
+}
+
+models <- unique(imp_top$model)
+plots <- lapply(models, function(m) make_model_plot(imp_top %>% dplyr::filter(model == m), m))
+names(plots) <- models
+
+combined <- patchwork::wrap_plots(plots, ncol = length(plots)) +
+  patchwork::plot_annotation(
+    title = "Robust multi-seed SHAP importance (mean +/- SD)",
+    subtitle = paste0("Top ", top_n, " variables per model; seeds=", seeds_str)
+  )
+
+out_combined <- file.path(robust_cov_dir, "shap_importance_robust_errorbars_combined.png")
+ggsave(out_combined, combined, width = max(10, 4 * length(plots)), height = 7, dpi = dpi_val)
+
+cat("Saved robust SHAP error-bar plots:\n")
+cat("  ", out_combined, "\n", sep = "")
