@@ -28,15 +28,17 @@ if (length(exclude_regions) > 0L) {
 target_var <- get0("target_var", envir = .GlobalEnv, ifnotfound = "median_carbon_density_100cm")
 log_transform_target <- get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE)
 predictor_vars <- raster_covariates[raster_covariates %in% colnames(dat)]
+include_seagrass_species <- isTRUE(get0("include_seagrass_species", envir = .GlobalEnv, ifnotfound = TRUE))
+extra_cols <- c(if (isTRUE(include_seagrass_species)) "seagrass_species" else character(0), "region")
 
 core_data <- dat %>%
   dplyr::select(longitude, latitude, target_var, dplyr::all_of(predictor_vars),
-                dplyr::all_of(intersect(c("seagrass_species", "region"), names(dat)))) %>%
+                dplyr::all_of(intersect(extra_cols, names(dat)))) %>%
   dplyr::filter(complete.cases(.))
 core_data$median_carbon_density <- core_data[[target_var]]
 predictor_vars <- predictor_vars[predictor_vars %in% colnames(core_data)]
 
-if ("seagrass_species" %in% names(core_data)) {
+if (isTRUE(include_seagrass_species) && "seagrass_species" %in% names(core_data)) {
   cat("Including seagrass_species as factor in hyperparameter tuning.\n")
 }
 

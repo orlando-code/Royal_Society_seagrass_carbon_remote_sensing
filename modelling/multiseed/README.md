@@ -1,7 +1,7 @@
 # Multi-seed robustness scripts
 
-This directory contains the `pixel_grouped_random` multi-seed workflow used by
-`modelling/run_robust_pixel_grouped_random.R`.
+This directory contains the seeded `pixel_grouped` multi-seed workflow used by
+the robust pipeline driver script.
 
 - `robust_shap_covariate_pruning.R`: robust SHAP-based variable selection across multiple fold seeds.
 - `robust_hyperparameter_tuning.R`: robust hyperparameter selection across multiple fold seeds.

@@ -13,7 +13,7 @@
 #   $cv_metrics       – data.frame of tuning fold metrics when loaded from tuning
 #   $train_metrics    – r2 / rmse on the full training set (in-sample)
 #   $scale_params     – list(means, sds) for z-score re-prediction
-#   $encoding         – categorical encoding (levels) for seagrass_species, region
+#   $encoding         – categorical encoding (levels) for factor predictors used
 #   $encoded_names    – same as predictor_vars (no one-hot expansion)
 #
 # Usage: sourced from run_paper.R (step 5), or run standalone.
@@ -25,11 +25,26 @@ set.seed(42)
 source("modelling/R/helpers.R")
 source("modelling/R/extract_covariates_from_rasters.R")
 source("modelling/R/assign_region_from_latlon.R")
+source("modelling/config/pipeline_config.R")
 load_packages(c("here", "mgcv", "tidyverse", "randomForest", "GauPro", "xgboost", "sf"))
 
-cv_out  <- get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output")
+cfg <- get_pipeline_config()
+apply_pipeline_defaults(
+  cfg,
+  c(
+    "cv_output_dir", "target_var", "use_shap_per_model", "log_transform_target",
+    "n_folds", "cv_type", "cv_blocksize", "exclude_regions",
+    "robust_pruned_csv_override", "use_robust_final_configs",
+    "include_seagrass_species"
+  ),
+  envir = .GlobalEnv
+)
+
+cv_out  <- get("cv_output_dir", envir = .GlobalEnv)
 out_dir <- file.path(cv_out, "final_models")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+use_robust_final_configs <- isTRUE(get("use_robust_final_configs", envir = .GlobalEnv))
+robust_tune_dir <- file.path(cv_out, "cv_pipeline", "robust_pixel_grouped_tuning")
 
 # ---------------------------------------------------------------------------
 # Data (same pipeline as cv_pipeline / covariate_pruning_pipeline)
@@ -44,19 +59,21 @@ if (exists("exclude_regions", envir = .GlobalEnv)) {
   }
 }
 
-target_var <- get0("target_var", envir = .GlobalEnv, ifnotfound = "median_carbon_density_100cm")
+target_var <- get("target_var", envir = .GlobalEnv)
 predictor_vars <- raster_covariates[raster_covariates %in% colnames(dat)]
+include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
+extra_cols <- c(if (include_seagrass_species) "seagrass_species" else character(0), "region")
 
 core_data <- dat %>%
   dplyr::mutate(median_carbon_density = .data[[target_var]]) %>%
   dplyr::select(longitude, latitude, median_carbon_density,
                 dplyr::all_of(predictor_vars),
-                dplyr::all_of(intersect(c("seagrass_species", "region"), names(dat))))
+                dplyr::all_of(intersect(extra_cols, names(dat))))
 core_data <- as.data.frame(
   core_data %>%
     dplyr::select(longitude, latitude, median_carbon_density,
                   dplyr::all_of(predictor_vars),
-                  dplyr::all_of(intersect(c("seagrass_species", "region"), names(core_data)))) %>%
+                  dplyr::all_of(intersect(extra_cols, names(core_data)))) %>%
     dplyr::filter(complete.cases(.))
 )
 predictor_vars <- predictor_vars[predictor_vars %in% colnames(core_data)]
@@ -65,7 +82,7 @@ cov_dir <- file.path(cv_out, "covariate_selection")
 
 # Load shared and per-model pruned covariates (helpers: get_per_model_vars, load_model_vars)
 shared_file <- file.path(cov_dir, "pruned_variables_to_include.csv")
-use_shap_per_model <- isTRUE(get0("use_shap_per_model", envir = .GlobalEnv, ifnotfound = FALSE))
+use_shap_per_model <- isTRUE(get("use_shap_per_model", envir = .GlobalEnv))
 
 # Shared covariates (fallback)
 shared_vars <- if (file.exists(shared_file)) {
@@ -74,13 +91,30 @@ shared_vars <- if (file.exists(shared_file)) {
 } else predictor_vars
 
 per_model_vars <- get_per_model_vars(cov_dir, colnames(core_data), use_shap_first = use_shap_per_model)
+robust_pruned_csv_override <- get("robust_pruned_csv_override", envir = .GlobalEnv)
+robust_vars_by_model <- NULL
+if (!is.na(robust_pruned_csv_override) && nzchar(robust_pruned_csv_override) && file.exists(robust_pruned_csv_override)) {
+  robust_df <- read.csv(robust_pruned_csv_override, stringsAsFactors = FALSE)
+  if (all(c("model", "variable") %in% names(robust_df))) {
+    robust_vars_by_model <- lapply(split(robust_df$variable, robust_df$model), function(v) intersect(v, colnames(core_data)))
+    cat("Loaded robust pruned covariates from:", robust_pruned_csv_override, "\n")
+  }
+}
+
+load_model_vars_final <- function(model_name) {
+  if (is.list(robust_vars_by_model) && model_name %in% names(robust_vars_by_model)) {
+    vv <- robust_vars_by_model[[model_name]]
+    if (!is.null(vv) && length(vv) >= 2L) return(vv)
+  }
+  load_model_vars(model_name, per_model_vars, use_shap_first = use_shap_per_model)
+}
 
 # Model/general settings
-log_response   <- isTRUE(get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE))
-n_tune_folds   <- as.integer(get0("n_folds", envir = .GlobalEnv, ifnotfound = 5L))
-cv_type        <- get0("cv_type", envir = .GlobalEnv, ifnotfound = "spatial")
-cv_blocksize  <- get0("cv_blocksize", envir = .GlobalEnv, ifnotfound = 5000L)
-exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
+log_response   <- isTRUE(get("log_transform_target", envir = .GlobalEnv))
+n_tune_folds   <- as.integer(get("n_folds", envir = .GlobalEnv))
+cv_type        <- get("cv_type", envir = .GlobalEnv)
+cv_blocksize  <- get("cv_blocksize", envir = .GlobalEnv)
+exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
 
 cat("Training rows:", nrow(core_data),
     " | Shared predictors:", length(shared_vars),
@@ -98,20 +132,21 @@ tune_folds <- cv_fold_info$fold_indices
 # XGBoost: load best config from hyperparameter_tuning_pipeline.R
 # ---------------------------------------------------------------------------
 cat("=== XGBoost: hyperparameter tuning ===\n")
-predictor_vars <- load_model_vars("XGB", per_model_vars, use_shap_first = use_shap_per_model)
+predictor_vars <- load_model_vars_final("XGB")
 xgb_pvars <- predictor_vars
 cat("  Predictors (", length(predictor_vars), "): ", paste(predictor_vars, collapse = ", "), "\n", sep = "")
 config_dir <- file.path(cv_out, "cv_pipeline")
-xgb_config_path <- file.path(config_dir, "best_config_xgb.rds")
-if (!file.exists(xgb_config_path)) xgb_config_path <- file.path(config_dir, "xgb_best_config.rds")
-if (file.exists(xgb_config_path)) {
-  xgb_cfg <- readRDS(xgb_config_path)
-  best_xgb_hp <- list(nrounds = xgb_cfg$nrounds, max_depth = xgb_cfg$max_depth,
-    learning_rate = xgb_cfg$learning_rate %||% 0.1, subsample = xgb_cfg$subsample %||% 0.8,
-    colsample_bytree = xgb_cfg$colsample_bytree %||% 0.8,
-    min_child_weight = xgb_cfg$min_child_weight %||% 1L,
-    min_split_loss = xgb_cfg$min_split_loss %||% 0,
-    reg_reg_lambda = xgb_cfg$reg_reg_lambda %||% 1)
+xgb_cfg <- load_best_model_config(
+  model_name = "xgb",
+  config_dir = config_dir,
+  robust_config_dir = robust_tune_dir,
+  prefer_robust = isTRUE(use_robust_final_configs),
+  include_baseline = TRUE,
+  include_legacy = TRUE
+)
+best_xgb_hp <- model_hyperparams_from_config("XGB", xgb_cfg)
+xgb_cv_metrics <- NULL
+if (!is.null(xgb_cfg)) {
   xgb_cv_metrics <- xgb_cfg$cv_metrics
   cat("  Loaded best config: nrounds =", best_xgb_hp$nrounds,
       ", max_depth =", best_xgb_hp$max_depth,
@@ -120,7 +155,8 @@ if (file.exists(xgb_config_path)) {
       ", min_split_loss =", best_xgb_hp$min_split_loss,
       ", reg_lambda =", best_xgb_hp$reg_reg_lambda, "\n\n")
 } else {
-  cat("  No best config found; make sure to run hyperparameter_tuning_pipeline.R first).\n")}
+  cat("  No saved XGB config found; using default XGB hyperparameters.\n")
+}
 
 
 xgb_data <- if (log_response) transform_response(core_data, "median_carbon_density", log = TRUE) else core_data
@@ -148,18 +184,25 @@ cat("Saved XGB_final.rds  (train R2=", round(xgb_train_metrics$r2, 3),
 # GAM: load best config from hyperparameter_tuning_pipeline.R
 # ---------------------------------------------------------------------------
 cat("=== GAM: hyperparameter tuning ===\n")
-predictor_vars <- load_model_vars("GAM", per_model_vars, use_shap_first = use_shap_per_model)
+predictor_vars <- load_model_vars_final("GAM")
 gam_pvars <- predictor_vars
 cat("  Predictors (", length(predictor_vars), "): ", paste(predictor_vars, collapse = ", "), "\n", sep = "")
-gam_config_path <- file.path(config_dir, "best_config_gam.rds")
-if (!file.exists(gam_config_path)) gam_config_path <- file.path(config_dir, "gam_best_config.rds")
-if (file.exists(gam_config_path)) {
-  gam_cfg <- readRDS(gam_config_path)
-  best_gam_hp <- list(k_covariate = gam_cfg$k_covariate)
+gam_cfg <- load_best_model_config(
+  model_name = "gam",
+  config_dir = config_dir,
+  robust_config_dir = robust_tune_dir,
+  prefer_robust = isTRUE(use_robust_final_configs),
+  include_baseline = TRUE,
+  include_legacy = TRUE
+)
+best_gam_hp <- model_hyperparams_from_config("GAM", gam_cfg)
+gam_cv_metrics <- NULL
+if (!is.null(gam_cfg)) {
   gam_cv_metrics <- gam_cfg$cv_metrics
   cat("  Loaded best config: k_covariate =", best_gam_hp$k_covariate, "\n\n")
 } else {
-  cat("  No best config found; make sure to run hyperparameter_tuning_pipeline.R first).\n")}
+  cat("  No saved GAM config found; using default GAM hyperparameters.\n")
+}
 
 
 gam_data <- if (log_response) transform_response(core_data, "median_carbon_density", log = TRUE) else core_data
@@ -186,23 +229,26 @@ cat("Saved GAM_final.rds  (train R2=", round(gam_train_metrics$r2, 3),
 # GPR: use best config from hyperparameter_tuning_pipeline.R
 # ---------------------------------------------------------------------------
 cat("=== GPR: loading best config and fitting final model ===\n")
-predictor_vars <- load_model_vars("GPR", per_model_vars, use_shap_first = use_shap_per_model)
+predictor_vars <- load_model_vars_final("GPR")
 gpr_pvars <- predictor_vars
 cat("  Predictors (", length(predictor_vars), "): ", paste(predictor_vars, collapse = ", "), "\n", sep = "")
-best_config_path <- file.path(config_dir, "best_config_gpr.rds")
-if (!file.exists(best_config_path)) best_config_path <- file.path(config_dir, "gpr_best_config.rds")
-if (file.exists(best_config_path)) {
-  best_config <- readRDS(best_config_path)
-  gpr_kernel  <- if (!is.null(best_config$kernel))  best_config$kernel  else "matern52"
-  gpr_nug_max <- if (!is.null(best_config$nug_max)) best_config$nug_max else 100
-  gpr_nug_min <- if (!is.null(best_config$nug_min)) best_config$nug_min else 1e-8
-  gpr_cv_metrics <- best_config$cv_metrics
-  cat("  Loaded best GPR config: kernel=", gpr_kernel,
-      " nug_max=", gpr_nug_max, "\n")
+gpr_cfg <- load_best_model_config(
+  model_name = "gpr",
+  config_dir = config_dir,
+  robust_config_dir = robust_tune_dir,
+  prefer_robust = isTRUE(use_robust_final_configs),
+  include_baseline = TRUE,
+  include_legacy = TRUE
+)
+gpr_hp <- model_hyperparams_from_config("GPR", gpr_cfg)
+gpr_cv_metrics <- NULL
+if (!is.null(gpr_cfg)) {
+  gpr_cv_metrics <- gpr_cfg$cv_metrics
+  cat("  Loaded best GPR config: kernel=", gpr_hp$kernel,
+      " nug_max=", gpr_hp$nug.max, "\n")
 } else {
-  cat("  No best config found; make sure to run hyperparameter_tuning_pipeline.R first).\n")}
-
-gpr_hp <- list(kernel = gpr_kernel, nug.min = gpr_nug_min, nug.max = gpr_nug_max)
+  cat("  No saved GPR config found; using default GPR hyperparameters.\n")
+}
 gpr_data <- if (log_response) transform_response(core_data, "median_carbon_density", log = TRUE) else core_data
 gpr_final_fit <- fit_gpr(
   train_data = gpr_data,
@@ -238,7 +284,7 @@ summary_tbl <- data.frame(
   best_hp      = c(
     paste0("nrounds=", best_xgb_hp$nrounds, " max_depth=", best_xgb_hp$max_depth),
     paste0("k_covariate=", best_gam_hp$k_covariate),
-    paste0("kernel=", gpr_kernel, " nug_max=", gpr_nug_max)
+    paste0("kernel=", gpr_hp$kernel, " nug_max=", gpr_hp$nug.max)
   ),
   variables    = c(
     paste(xgb_pvars, collapse = ", "),

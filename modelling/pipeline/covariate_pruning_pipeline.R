@@ -43,12 +43,14 @@ permutation_coverage <- get0("permutation_coverage",  envir = .GlobalEnv, ifnotf
 permutation_max_vars <- get0("permutation_max_vars",  envir = .GlobalEnv, ifnotfound = 15L)
 n_permutations       <- get0("n_permutations",       envir = .GlobalEnv, ifnotfound = 1L) # TODO: increase for paper figures
 use_shap_per_model   <- isTRUE(get0("use_shap_per_model", ifnotfound = FALSE))
+include_seagrass_species <- isTRUE(get0("include_seagrass_species", envir = .GlobalEnv, ifnotfound = TRUE))
 
 # All predictor candidates (always defined, even if correlation filter is skipped)
 cor_predictor_vars <- setdiff(
   colnames(dat),
   c("latitude", "longitude", "number_id_final_version",
-    "seagrass_species", "region", target_var)
+    "seagrass_species",
+    "region", target_var)
 )
 
 # ---------------------------------------------------------------------------
@@ -67,9 +69,9 @@ if (isTRUE(get0("use_correlation_filter"))) {
 #          Both methods use env vars (cor_predictor_vars) + species as factor when present. Species are not pruned from models.
 # ---------------------------------------------------------------------------
 
-# Include species as a factor in the importance step (models fit with species by default)
+# Include species as a factor in the importance step only when requested.
 importance_predictor_vars <- cor_predictor_vars
-if ("seagrass_species" %in% names(dat)) {
+if (isTRUE(include_seagrass_species) && "seagrass_species" %in% names(dat)) {
   importance_predictor_vars <- c(importance_predictor_vars, "seagrass_species")
   cat("Including seagrass_species as an unprunable factor in importance ranking.\n")
 }
@@ -176,7 +178,7 @@ if (!is.null(imp_shap) && length(imp_shap) > 0L) {
   if (!is.null(s_combined)) cat("Saved importance_shap_<model>.csv +", basename(s_combined), "\n")
 }
 
-# Combined pruned sets (top env vars per model + all species vars; species is not pruned)
+# Combined pruned sets (top env vars per model + optional species factor when enabled)
 if (!is.null(imp_perm)) {
   perm_rows <- lapply(names(imp_perm), function(imp_perm_names) {
     v <- select_top_env_then_species(imp_perm[[imp_perm_names]], "rmse_increase", permutation_max_vars, permutation_coverage)
@@ -222,7 +224,9 @@ if (file.exists(file.path(covariate_dir, "pruned_model_variables_shap.csv"))) {
 # Report on variable overlap between methods: Find variables shared by 3 models in both methods, 2 models, etc.
 if (!is.null(perm_pruned_df) && !is.null(shap_pruned_df)) {
   cat("\nVARIABLE OVERLAP BETWEEN METHODS (variables shared by k models in BOTH methods):")
-  if ("seagrass_species" %in% names(dat)) cat("\nN.B. Species variables are not pruned and are always included.\n\n")
+  if (isTRUE(include_seagrass_species) && "seagrass_species" %in% names(dat)) {
+    cat("\nN.B. Species variables are not pruned and are always included.\n\n")
+  }
   
   get_shared_vars <- function(overlaps, k) {
     tab <- overlaps[[as.character(k)]]

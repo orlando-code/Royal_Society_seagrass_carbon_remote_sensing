@@ -32,6 +32,7 @@ quick_cv_check <- get0("quick_cv_check", envir = .GlobalEnv, ifnotfound = FALSE)
 model_list <- get0("model_list", envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB"))
 post_tuning_validation <- isTRUE(get0("post_tuning_validation", envir = .GlobalEnv, ifnotfound = FALSE))
 exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
+include_seagrass_species <- isTRUE(get0("include_seagrass_species", envir = .GlobalEnv, ifnotfound = TRUE))
 
 
 # Block sizes for spatial diagnostics (run in both Step 2 and Step 4).
@@ -60,45 +61,16 @@ dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 hyperparams_by_model <- list()
 if (post_tuning_validation) {
   config_dir <- out_dir
-  load_best_config <- function(model_name) {
-    base <- file.path(config_dir, "best_config")
-    paths <- switch(model_name,
-      XGB = c(paste0(base, "_xgb.rds"), file.path(config_dir, "xgb_best_config.rds")),
-      GAM = c(paste0(base, "_gam.rds"), file.path(config_dir, "gam_best_config.rds")),
-      GPR = c(paste0(base, "_gpr.rds"), file.path(config_dir, "gpr_best_config.rds")),
-      NULL
-    )
-    if (is.null(paths)) return(NULL)
-    for (p in paths) if (file.exists(p)) return(readRDS(p))
-    NULL
-  }
-  for (m in model_list) {
-    cfg <- load_best_config(m)
-    if (is.null(cfg)) next
-    if (m == "GPR") {
-      hyperparams_by_model[[m]] <- list(
-        kernel = cfg$kernel,
-        nug.min = cfg$nug.min,
-        nug.max = cfg$nug.max,
-        nug.est = TRUE
-      )
-    } else if (m == "XGB") {
-      hyperparams_by_model[[m]] <- list(
-        nrounds = cfg$nrounds,
-        max_depth = cfg$max_depth,
-        learning_rate = cfg$learning_rate %||% 0.1,
-        subsample = cfg$subsample %||% 0.8,
-        colsample_bytree = cfg$colsample_bytree %||% 0.8,
-        min_child_weight = cfg$min_child_weight %||% 1L,
-        min_split_loss = cfg$min_split_loss %||% 0,
-        reg_reg_lambda = cfg$reg_reg_lambda %||% 1
-      )
-    } else if (m == "GAM") {
-      hyperparams_by_model[[m]] <- list(
-        k_covariate = cfg$k_covariate %||% 6L
-      )
-    }
-  }
+  hp_bundle <- build_hyperparams_by_model(
+    models = model_list,
+    config_dir = config_dir,
+    robust_config_dir = NULL,
+    prefer_robust = FALSE,
+    include_baseline = TRUE,
+    include_legacy = TRUE,
+    include_only_with_config = TRUE
+  )
+  hyperparams_by_model <- hp_bundle$hyperparams_by_model
   cat("Post-tuning validation: using best hyperparameters for models:",
       paste(names(hyperparams_by_model), collapse = ", "), "\n")
 }
@@ -124,7 +96,9 @@ if (length(predictor_vars) == 0) {
 
 # select columns in predictor_vars; ensure median_carbon_density for run_cv
 extra_cols <- c()
-if ("seagrass_species" %in% names(dat)) extra_cols <- c(extra_cols, "seagrass_species")
+if (isTRUE(include_seagrass_species) && "seagrass_species" %in% names(dat)) {
+  extra_cols <- c(extra_cols, "seagrass_species")
+}
 if ("region" %in% names(dat)) extra_cols <- c(extra_cols, "region")
 complete_dat <- dat %>%
   dplyr::select(longitude, latitude, target_var, dplyr::all_of(predictor_vars), dplyr::all_of(extra_cols)) %>%
@@ -189,7 +163,7 @@ unique_loc_ids <- unique(loc_id)
 loc_fold_assign <- sample(rep(seq_len(n_folds), length.out = length(unique_loc_ids)))
 loc_grouped_folds <- loc_fold_assign[match(loc_id, unique_loc_ids)]
 
-# 3. Pixel-grouped random: all rows sharing identical covariate vectors go to the
+# 3. Pixel-grouped: all rows sharing identical covariate vectors go to the
 #    same fold (strictly more conservative than location-grouped, since distinct
 #    locations that map to same raster pixel will also be grouped together)
 pixel_info <- make_pixel_grouped_folds(complete_dat, predictor_vars, n_folds, seed = 42L)
@@ -197,7 +171,7 @@ pixel_grouped_folds <- pixel_info$fold_indices
 
 cat("  True random folds:", n_cores, "rows ->", n_folds, "folds.\n")
 cat("  Location-grouped random folds:", length(unique_loc_ids), "unique locations ->", n_folds, "folds.\n")
-cat("  Pixel-grouped random folds:", pixel_info$n_groups, "unique covariate vectors ->", n_folds, "folds.\n")
+cat("  Pixel-grouped folds:", pixel_info$n_groups, "unique covariate vectors ->", n_folds, "folds.\n")
 if (!is.null(pixel_info$fold_sizes)) {
   cat("    Pixel fold row counts:", paste(pixel_info$fold_sizes, collapse = "/"),
       "(target ~", round(n_cores / n_folds), "per fold)\n")
@@ -206,7 +180,7 @@ if (!is.null(pixel_info$fold_sizes)) {
 cv_strategies <- list(
   list(method = "random_split", folds = true_random_folds, block_size_m = NA),
   list(method = "location_grouped_random", folds = loc_grouped_folds, block_size_m = NA),
-  list(method = "pixel_grouped_random", folds = pixel_grouped_folds, block_size_m = NA)
+  list(method = "pixel_grouped", folds = pixel_grouped_folds, block_size_m = NA)
 )
 if (length(block_sizes_m) > 0) {
   cat("\tCreating spatial folds (spatial block diagnostics)\n")

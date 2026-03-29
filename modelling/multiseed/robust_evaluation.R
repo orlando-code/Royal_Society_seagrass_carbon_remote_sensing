@@ -1,11 +1,11 @@
-## Evaluate robustly-selected covariates + hyperparameters for `pixel_grouped_random`.
+## Evaluate robustly-selected covariates + hyperparameters for seeded `pixel_grouped`.
 ##
 ## Uses:
 ##   - Robust covariate selection output from
-##       output/<cv_regime_name>/covariate_selection/robust_pixel_grouped_random/
-##       pruned_model_variables_perm_robust_pixel_grouped_random_seeds_<...>.csv
+##       output/<cv_regime_name>/covariate_selection/robust_pixel_grouped/
+##       pruned_model_variables_perm_robust_pixel_grouped_seeds_<...>.csv
 ##   - Robust tuning output from
-##       output/<cv_regime_name>/cv_pipeline/robust_pixel_grouped_random_tuning/
+##       output/<cv_regime_name>/cv_pipeline/robust_pixel_grouped_tuning/
 ##       best_config_<model>_robust.rds
 ##
 ## Then evaluates across `eval_fold_seed_list` by re-instantiating the
@@ -16,26 +16,43 @@ setwd(project_root)
 
 source(file.path(project_root, "modelling/R/helpers.R"))
 source(file.path(project_root, "modelling/R/assign_region_from_latlon.R"))
+source(file.path(project_root, "modelling/config/pipeline_config.R"))
 load_packages(c("here", "dplyr", "readr", "patchwork", "mgcv", "GauPro", "xgboost", "sf", "randomForest"))
 
-cv_regime_name <- get0("cv_regime_name", envir = .GlobalEnv, ifnotfound = "pixel_grouped")
-cv_type <- get0("cv_type", envir = .GlobalEnv, ifnotfound = "pixel_grouped_random")
-stopifnot(identical(cv_type, "pixel_grouped_random"))
+cfg <- get_pipeline_config()
+apply_pipeline_defaults(
+  cfg,
+  c(
+    "cv_regime_name", "cv_type", "target_var", "log_transform_target",
+    "exclude_regions", "n_folds", "cv_blocksize",
+    "robust_fold_seed_list", "eval_fold_seed_list",
+    "robust_pruned_importance_type", "correlation_filter_threshold",
+    "robust_pruned_csv_override", "include_seagrass_species"
+  ),
+  envir = .GlobalEnv
+)
+
+cv_regime_name <- get("cv_regime_name", envir = .GlobalEnv)
+cv_type <- get("cv_type", envir = .GlobalEnv)
+stopifnot(identical(cv_type, "pixel_grouped"))
 cv_type_hash <- "pixel_grouped"
 
-target_var <- get0("target_var", envir = .GlobalEnv, ifnotfound = "median_carbon_density_100cm")
-log_response <- isTRUE(get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE))
+target_var <- get("target_var", envir = .GlobalEnv)
+log_response <- isTRUE(get("log_transform_target", envir = .GlobalEnv))
 
-exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
-n_folds <- as.integer(get0("n_folds", envir = .GlobalEnv, ifnotfound = 5L))
-cv_blocksize <- get0("cv_blocksize", envir = .GlobalEnv, ifnotfound = 5000L)
+exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
+n_folds <- as.integer(get("n_folds", envir = .GlobalEnv))
+cv_blocksize <- get("cv_blocksize", envir = .GlobalEnv)
 
-robust_fold_seed_list <- as.integer(get0("robust_fold_seed_list", envir = .GlobalEnv, ifnotfound = c(42L, 43L)))
-eval_fold_seed_list <- as.integer(get0("eval_fold_seed_list", envir = .GlobalEnv, ifnotfound = 42L:46L))
+robust_fold_seed_list <- as.integer(get("robust_fold_seed_list", envir = .GlobalEnv))
+eval_fold_seed_list <- as.integer(get("eval_fold_seed_list", envir = .GlobalEnv))
+include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
+cv_type_label <- get0("cv_type_label", envir = .GlobalEnv, ifnotfound = cv_type_hash)
 
-cat("Robust evaluation for pixel_grouped_random\n")
+cat("Robust evaluation for pixel_grouped\n")
 cat("  robust_fold_seed_list:", paste(robust_fold_seed_list, collapse = ", "), "\n")
 cat("  eval_fold_seed_list:", paste(eval_fold_seed_list, collapse = ", "), "\n")
+cat("  include_seagrass_species:", include_seagrass_species, "\n")
 
 seeds_str <- paste(robust_fold_seed_list, collapse = "-")
 
@@ -47,11 +64,18 @@ if (length(exclude_regions) > 0L) {
 
 predictor_vars_full <- setdiff(
   colnames(dat),
-  c("latitude", "longitude", "number_id_final_version", "seagrass_species", "region", target_var)
+  c(
+    "latitude", "longitude", "number_id_final_version",
+    "seagrass_species",
+    "region", target_var
+  )
 )
 predictor_vars_full <- predictor_vars_full[predictor_vars_full %in% colnames(dat)]
 
-species_region_cols <- intersect(c("seagrass_species", "region"), names(dat))
+species_region_cols <- intersect(
+  c(if (include_seagrass_species) "seagrass_species" else character(0), "region"),
+  names(dat)
+)
 complete_dat <- dat %>%
   dplyr::select(
     longitude,
@@ -69,16 +93,16 @@ core_data <- as.data.frame(complete_dat)
 cat("  Complete-case rows:", nrow(core_data), "\n")
 
 # Load robust pruned variables
-robust_cov_dir <- file.path(project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped_random")
-robust_pruned_csv_override <- get0("robust_pruned_csv_override", envir = .GlobalEnv, ifnotfound = NA_character_)
-robust_pruned_importance_type <- get0("robust_pruned_importance_type", envir = .GlobalEnv, ifnotfound = "perm")
+robust_cov_dir <- file.path(project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped")
+robust_pruned_csv_override <- get("robust_pruned_csv_override", envir = .GlobalEnv)
+robust_pruned_importance_type <- get("robust_pruned_importance_type", envir = .GlobalEnv)
 robust_pruned_importance_type <- match.arg(robust_pruned_importance_type, choices = c("perm", "shap"))
 
 default_robust_pruned_csv <- if (identical(robust_pruned_importance_type, "shap")) {
   file.path(
     robust_cov_dir,
     paste0(
-      "pruned_model_variables_shap_robust_pixel_grouped_random_seeds_",
+      "pruned_model_variables_shap_robust_pixel_grouped_seeds_",
       seeds_str,
       ".csv"
     )
@@ -87,7 +111,7 @@ default_robust_pruned_csv <- if (identical(robust_pruned_importance_type, "shap"
   file.path(
     robust_cov_dir,
     paste0(
-      "pruned_model_variables_perm_robust_pixel_grouped_random_seeds_",
+      "pruned_model_variables_perm_robust_pixel_grouped_seeds_",
       seeds_str,
       ".csv"
     )
@@ -103,81 +127,99 @@ if (!file.exists(robust_pruned_csv)) {
     project_root, "output", cv_regime_name, "covariate_selection",
     if (identical(robust_pruned_importance_type, "shap")) "pruned_model_variables_shap.csv" else "pruned_model_variables_perm.csv"
   )
-  if (!file.exists(fallback_csv)) stop("Missing fallback pruned vars CSV: ", fallback_csv)
-  cat("\nWARNING: robust pruned vars not found:\n  ", robust_pruned_csv,
-      "\nFalling back to:\n  ", fallback_csv, "\n")
-  robust_pruned_csv <- fallback_csv
+  if (file.exists(fallback_csv)) {
+    cat("\nWARNING: robust pruned vars not found:\n  ", robust_pruned_csv,
+        "\nFalling back to:\n  ", fallback_csv, "\n")
+    robust_pruned_csv <- fallback_csv
+  } else {
+    cat("\nWARNING: no pruned-vars CSV found; falling back to correlation-only covariates.\n")
+    robust_pruned_csv <- NA_character_
+  }
 }
-
-pruned_df <- read.csv(robust_pruned_csv, stringsAsFactors = FALSE)
-stopifnot(all(c("model", "variable") %in% names(pruned_df)))
 
 predictor_vars_by_model <- list()
-for (m in unique(pruned_df$model)) {
-  vars <- intersect(pruned_df$variable[pruned_df$model == m], colnames(core_data))
-  if (length(vars) >= 2L) predictor_vars_by_model[[m]] <- vars
+if (!is.na(robust_pruned_csv) && file.exists(robust_pruned_csv)) {
+  pruned_df <- read.csv(robust_pruned_csv, stringsAsFactors = FALSE)
+  stopifnot(all(c("model", "variable") %in% names(pruned_df)))
+  for (m in unique(pruned_df$model)) {
+    vars <- intersect(pruned_df$variable[pruned_df$model == m], colnames(core_data))
+    if (length(vars) >= 2L) predictor_vars_by_model[[m]] <- vars
+  }
+}
+# Final fallback to correlation-only covariates if pruned sets are unavailable.
+if (length(predictor_vars_by_model) == 0L) {
+  corr_vars <- prune_by_correlation(
+    data = core_data,
+    predictor_vars = predictor_vars_full,
+    target_var = "median_carbon_density",
+    cor_threshold = as.numeric(get("correlation_filter_threshold", envir = .GlobalEnv))
+  )
+  if (isTRUE(include_seagrass_species) && "seagrass_species" %in% names(core_data)) {
+    corr_vars <- unique(c(corr_vars, "seagrass_species"))
+  }
+  for (m in c("GPR", "GAM", "XGB")) {
+    vars <- intersect(corr_vars, colnames(core_data))
+    if (length(vars) >= 2L) predictor_vars_by_model[[m]] <- vars
+  }
 }
 models <- intersect(names(predictor_vars_by_model), c("GPR", "GAM", "XGB"))
-eval_models <- get0("eval_models", envir = .GlobalEnv, ifnotfound = models)
-eval_models <- intersect(eval_models, models)
-if (length(eval_models) == 0L) stop("No usable robust pruned predictor sets found for requested eval_models.")
-models <- eval_models
+# eval_models <- get("eval_models", envir = .GlobalEnv)
+# eval_models <- intersect(eval_models, models)
+# if (length(eval_models) == 0L) stop("No usable robust pruned predictor sets found for requested eval_models.")
+# models <- eval_models
 
 cat("  Models to evaluate:", paste(models, collapse = ", "), "\n")
 
 # Load robust hyperparameter configs
-robust_tuning_dir <- file.path(project_root, "output", cv_regime_name, "cv_pipeline", "robust_pixel_grouped_random_tuning")
-load_best_config <- function(model_name) {
-  p <- file.path(robust_tuning_dir, paste0("best_config_", tolower(model_name), "_robust.rds"))
-  if (file.exists(p)) return(readRDS(p))
-  # fallback naming (just in case)
-  p2 <- file.path(robust_tuning_dir, paste0("best_config_", model_name, "_robust.rds"))
-  if (file.exists(p2)) return(readRDS(p2))
-  NULL
+robust_tuning_dir_default <- file.path(project_root, "output", cv_regime_name, "cv_pipeline", "robust_pixel_grouped_tuning")
+robust_tuning_dir_override <- if (exists("robust_tuning_dir_override", envir = .GlobalEnv, inherits = FALSE)) {
+  get("robust_tuning_dir_override", envir = .GlobalEnv)
+} else {
+  NA_character_
 }
-
-hyperparams_by_model <- list()
-for (m in models) {
-  cfg <- load_best_config(m)
-  if (is.null(cfg)) stop("Missing robust tuning config for ", m, " in ", robust_tuning_dir)
-  if (m == "XGB") {
-    hyperparams_by_model[[m]] <- list(
-      nrounds = cfg$nrounds,
-      max_depth = cfg$max_depth,
-      learning_rate = cfg$learning_rate,
-      subsample = cfg$subsample,
-      colsample_bytree = cfg$colsample_bytree,
-      min_child_weight = cfg$min_child_weight,
-      min_split_loss = cfg$min_split_loss,
-      reg_reg_lambda = cfg$reg_reg_lambda
-    )
-  } else if (m == "GAM") {
-    hyperparams_by_model[[m]] <- list(k_covariate = cfg$k_covariate %||% cfg$k_covariate)
-  } else if (m == "GPR") {
-    hyperparams_by_model[[m]] <- list(
-      kernel = cfg$kernel,
-      nug.min = cfg$nug.min,
-      nug.max = cfg$nug.max,
-      nug.est = TRUE
-    )
-  }
+robust_tuning_dir <- if (!is.na(robust_tuning_dir_override) && nzchar(robust_tuning_dir_override)) {
+  robust_tuning_dir_override
+} else {
+  robust_tuning_dir_default
 }
+hp_bundle <- build_hyperparams_by_model(
+  models = models,
+  config_dir = file.path(project_root, "output", cv_regime_name, "cv_pipeline"),
+  robust_config_dir = robust_tuning_dir,
+  prefer_robust = TRUE,
+  include_baseline = FALSE,
+  include_legacy = FALSE,
+  include_case_variant_robust = TRUE,
+  include_only_with_config = FALSE
+)
+hyperparams_by_model <- hp_bundle$hyperparams_by_model
 
 out_dir <- file.path(
-  project_root,
-  "output",
-  cv_regime_name,
-  "cv_pipeline",
-  paste0(
-    "robust_pixel_grouped_random_evaluation_robustSeeds_",
-    seeds_str
-  )
+  if (!is.null(get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NULL))) {
+    get("run_output_dir", envir = .GlobalEnv)
+  } else {
+    file.path(
+      project_root,
+      "output",
+      cv_regime_name,
+      "cv_pipeline",
+      build_seeded_run_folder_name(
+        cv_type_label = cv_type_label,
+        folder_type = "evaluation",
+        repeat_seed_list = eval_fold_seed_list,
+        robust_seed_list = robust_fold_seed_list,
+        include_seed_values = TRUE
+      )
+    )
+  }
 )
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+assign("run_output_dir", out_dir, envir = .GlobalEnv)
 
 by_seed_detailed_list <- list()
 by_seed_summary_list <- list()
 pooled_r2_list       <- list()
+pooled_counts_list  <- list()
 
 for (seed in eval_fold_seed_list) {
   cat("\n--- eval fold_seed =", seed, " ---\n")
@@ -194,7 +236,7 @@ for (seed in eval_fold_seed_list) {
   fold_indices <- fold_info$fold_indices
 
   res <- run_cv(
-    cv_method_name = paste0("pixel_grouped_random_eval_seed_", seed),
+    cv_method_name = paste0("pixel_grouped_eval_seed_", seed),
     fold_indices = fold_indices,
     core_data = core_data,
     predictor_vars = predictor_vars_full,
@@ -213,6 +255,12 @@ for (seed in eval_fold_seed_list) {
   if (!is.null(seed_pooled_r2) && nrow(seed_pooled_r2) > 0L) {
     seed_pooled_r2$fold_seed <- seed
     pooled_r2_list[[length(pooled_r2_list) + 1L]] <- seed_pooled_r2
+  }
+
+  seed_pooled_counts <- attr(res, "pooled_counts_by_model_fold")
+  if (!is.null(seed_pooled_counts) && nrow(seed_pooled_counts) > 0L) {
+    seed_pooled_counts$fold_seed <- seed
+    pooled_counts_list[[length(pooled_counts_list) + 1L]] <- seed_pooled_counts
   }
 
   by_seed_detailed <- res %>%
@@ -253,6 +301,15 @@ if (nrow(pooled_r2_all) > 0L) {
   write.csv(pooled_r2_all, file.path(out_dir, "pooled_r2_by_seed.csv"), row.names = FALSE)
 }
 
+pooled_counts_all <- dplyr::bind_rows(pooled_counts_list)
+if (nrow(pooled_counts_all) > 0L) {
+  write.csv(
+    pooled_counts_all,
+    file.path(out_dir, "n_predictions_by_model_fold_seed.csv"),
+    row.names = FALSE
+  )
+}
+
 has_pooled <- "pooled_r2" %in% names(by_seed_summary_all)
 if (!has_pooled) {
   by_seed_summary_all$pooled_r2   <- NA_real_
@@ -269,6 +326,7 @@ across_seeds_summary <- by_seed_summary_all %>%
     mean_pooled_r2         = mean(pooled_r2, na.rm = TRUE),
     sd_pooled_r2           = sd(pooled_r2, na.rm = TRUE),
     mean_pooled_rmse       = mean(pooled_rmse, na.rm = TRUE),
+    sd_pooled_rmse         = sd(pooled_rmse, na.rm = TRUE),
     mean_bias              = mean(mean_bias, na.rm = TRUE),
     sd_bias                = sd(mean_bias, na.rm = TRUE),
     neg_r2_fraction        = mean(mean_r2 < 0, na.rm = TRUE),

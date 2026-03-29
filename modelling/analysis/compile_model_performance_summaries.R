@@ -2,7 +2,7 @@
 ##
 ## Writes:
 ##   output/<cv_regime>/cv_pipeline/model_performance_across_methods_summary.csv
-##   output/<cv_regime>/cv_pipeline/deployment_robustness_pixel_grouped_random.csv
+##   output/<cv_regime>/cv_pipeline/deployment_robustness_pixel_grouped.csv
 
 project_root <- here::here()
 setwd(project_root)
@@ -44,11 +44,13 @@ write.csv(
 # ---------------------------------------------------------------------------
 # Deployment robustness check (multi-seed robust evaluation outputs)
 # ---------------------------------------------------------------------------
-robust_eval_candidates <- Sys.glob(
-  file.path(base_dir, "robust_pixel_grouped_random_evaluation_robustSeeds_*")
+robust_eval_candidates <- c(
+  Sys.glob(file.path(base_dir, "pixel_grouped_evaluation_*x_*_seeds*")),
+  Sys.glob(file.path(base_dir, "robust_pixel_grouped_evaluation_robustSeeds_*"))
 )
+robust_eval_candidates <- unique(robust_eval_candidates)
 robust_eval_candidates <- robust_eval_candidates[dir.exists(robust_eval_candidates)]
-legacy_repeated_dir <- file.path(base_dir, "repeated_pixel_grouped_random_seed_check")
+legacy_repeated_dir <- file.path(base_dir, "repeated_pixel_grouped_seed_check")
 
 if (length(robust_eval_candidates) > 0L) {
   # Prefer the newest robust run directory if multiple exist.
@@ -75,13 +77,13 @@ if (file.exists(rob_sum_path) && file.exists(rob_detail_path)) {
 
   write.csv(
     rob_tbl,
-    file.path(base_dir, "deployment_robustness_pixel_grouped_random.csv"),
+    file.path(base_dir, "deployment_robustness_pixel_grouped.csv"),
     row.names = FALSE
   )
 }
 
 cat("Wrote summaries to:\n",
     file.path(base_dir, "model_performance_across_methods_summary.csv"), "\n",
-    file.path(base_dir, "deployment_robustness_pixel_grouped_random.csv"), "\n",
+    file.path(base_dir, "deployment_robustness_pixel_grouped.csv"), "\n",
     sep = "")
 

@@ -35,3 +35,9 @@ For_modeling_df*
 GAM_top_reduced*
 all_extracted_new.rds
 testing.R
+
+eezs/
+hotosm_fra_waterways_lines_geojson/
+seagrass_eov/
+eov_cache/
+testing.ipynb
