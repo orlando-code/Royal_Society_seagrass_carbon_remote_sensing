@@ -679,27 +679,49 @@ test_rows_with_factors_in_train <- function(train, test, factor_vars = c("seagra
 #'
 #' @param observed vector of observed (true) values
 #' @param predicted vector of predicted values
-#' @return data frame with r2, rmse, mae, and bias metrics
+#' @return data frame with r2, rmse, mae, bias, n_eval, ss_residual, ss_total,
+#'         sum_y, and sum_y2 (sufficient stats for pooled reconstruction)
 calculate_metrics <- function(observed, predicted) {
   ok <- is.finite(observed) & is.finite(predicted)
   observed <- observed[ok]
   predicted <- predicted[ok]
+  n_eval <- length(observed)
 
-  if (length(observed) < 2L) {
+  if (n_eval < 2L) {
     return(data.frame(
-      r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_
+      r2 = NA_real_,
+      rmse = NA_real_,
+      mae = NA_real_,
+      bias = NA_real_,
+      n_eval = n_eval,
+      ss_residual = NA_real_,
+      ss_total = NA_real_,
+      sum_y = sum(observed, na.rm = TRUE),
+      sum_y2 = sum(observed^2, na.rm = TRUE)
     ))
   }
 
   ss_res <- sum((observed - predicted)^2)
   ss_tot <- sum((observed - mean(observed))^2)
+  sum_y <- sum(observed)
+  sum_y2 <- sum(observed^2)
   r2 <- if (ss_tot > 0) 1 - ss_res / ss_tot else NA_real_
 
   rmse <- sqrt(mean((observed - predicted)^2))
   mae <- mean(abs(observed - predicted))
   bias <- mean(predicted - observed)
 
-  data.frame(r2 = r2, rmse = rmse, mae = mae, bias = bias)
+  data.frame(
+    r2 = r2,
+    rmse = rmse,
+    mae = mae,
+    bias = bias,
+    n_eval = n_eval,
+    ss_residual = ss_res,
+    ss_total = ss_tot,
+    sum_y = sum_y,
+    sum_y2 = sum_y2
+  )
 }
 
 #' Read per-model predictor variables from a CSV (e.g. pruned_model_variables_shap.csv).
@@ -747,6 +769,198 @@ load_model_vars <- function(model_name, per_model_vars, use_shap_first = TRUE) {
     if (!is.null(v) && length(v) >= 2L) return(v)
   }
   stop("No pruned variables for ", model_name, " in SHAP or permutation CSV. Run covariate selection first.")
+}
+
+#' Load one model's predictor vars from baseline files, with robust fallback.
+#'
+#' @param model_name Model name (e.g. \code{"GAM"}).
+#' @param cov_dir Covariate-selection directory.
+#' @param valid_cols Optional allowed columns.
+#' @param use_shap_first Prefer SHAP over permutation when both available.
+#' @param robust_fold_seed_list Robust seed list used to identify robust fallback file.
+#' @return Character vector of predictor names (length >= 2), or an error if unavailable.
+load_model_vars_with_fallback <- function(model_name, cov_dir, valid_cols = NULL,
+                                          use_shap_first = TRUE,
+                                          robust_fold_seed_list = integer()) {
+  per_model_vars <- tryCatch(
+    get_per_model_vars(cov_dir, valid_cols = valid_cols, use_shap_first = use_shap_first),
+    error = function(e) NULL
+  )
+  pvars <- tryCatch(
+    load_model_vars(model_name, per_model_vars, use_shap_first = use_shap_first),
+    error = function(e) NULL
+  )
+  if (!is.null(pvars) && length(pvars) >= 2L) return(pvars)
+
+  robust_cov_dir <- file.path(cov_dir, "robust_pixel_grouped")
+  robust_seed_str <- paste(as.integer(robust_fold_seed_list), collapse = "-")
+  robust_pruned_csv <- file.path(
+    robust_cov_dir,
+    paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", robust_seed_str, ".csv")
+  )
+  if (!file.exists(robust_pruned_csv)) {
+    candidates <- Sys.glob(file.path(robust_cov_dir, "pruned_model_variables_shap_robust_pixel_grouped_seeds_*.csv"))
+    candidates <- candidates[file.exists(candidates)]
+    robust_pruned_csv <- if (length(candidates) > 0L) candidates[[1]] else NA_character_
+    if (!is.na(robust_pruned_csv)) {
+      warning(
+        "Expected robust pruned-vars file not found for configured seeds ",
+        robust_seed_str, "; falling back to first available robust file:\n  ",
+        robust_pruned_csv
+      )
+    }
+  }
+  robust_vars_by_model <- NULL
+  if (!is.na(robust_pruned_csv) && file.exists(robust_pruned_csv)) {
+    robust_df <- tryCatch(read.csv(robust_pruned_csv, stringsAsFactors = FALSE), error = function(e) NULL)
+    if (!is.null(robust_df) && all(c("model", "variable") %in% names(robust_df))) {
+      robust_vars_by_model <- lapply(split(robust_df$variable, robust_df$model), function(v) {
+        vals <- unique(v)
+        if (!is.null(valid_cols)) vals <- intersect(vals, valid_cols)
+        vals
+      })
+      robust_vars_by_model <- robust_vars_by_model[vapply(robust_vars_by_model, length, integer(1)) >= 2L]
+      cat("  Using robust pruned covariates from:\n    ", robust_pruned_csv, "\n", sep = "")
+    }
+  }
+  if (is.list(robust_vars_by_model) && model_name %in% names(robust_vars_by_model)) {
+    pvars <- robust_vars_by_model[[model_name]]
+  }
+  if (is.null(pvars) || length(pvars) < 2L) {
+    stop(
+      "No valid pruned covariates for ", model_name, ". ",
+      "Expected baseline files in ", cov_dir,
+      " or robust files in ", file.path(cov_dir, "robust_pixel_grouped"), "."
+    )
+  }
+  pvars
+}
+
+#' Load best config object for one model from robust/baseline/legacy paths.
+#'
+#' @param model_name Model name, e.g. "GAM", "xgb".
+#' @param config_dir Baseline config directory.
+#' @param robust_config_dir Optional robust config directory.
+#' @param prefer_robust If TRUE, robust file is checked before baseline.
+#' @param include_baseline If TRUE, check best_config_<model>.rds in config_dir.
+#' @param include_legacy If TRUE, check <model>_best_config.rds in config_dir.
+#' @param include_case_variant_robust If TRUE, also check best_config_<MODEL>_robust.rds.
+#' @return Config list, or NULL if no file found/readable.
+load_best_model_config <- function(model_name,
+                                   config_dir,
+                                   robust_config_dir = NULL,
+                                   prefer_robust = TRUE,
+                                   include_baseline = TRUE,
+                                   include_legacy = TRUE,
+                                   include_case_variant_robust = FALSE) {
+  model_lower <- tolower(model_name)
+  robust_paths <- character(0)
+  if (!is.null(robust_config_dir) && nzchar(robust_config_dir)) {
+    robust_paths <- c(robust_paths, file.path(robust_config_dir, paste0("best_config_", model_lower, "_robust.rds")))
+    if (isTRUE(include_case_variant_robust)) {
+      robust_paths <- c(robust_paths, file.path(robust_config_dir, paste0("best_config_", model_name, "_robust.rds")))
+    }
+  }
+  baseline_paths <- character(0)
+  if (isTRUE(include_baseline)) baseline_paths <- c(baseline_paths, file.path(config_dir, paste0("best_config_", model_lower, ".rds")))
+  if (isTRUE(include_legacy)) baseline_paths <- c(baseline_paths, file.path(config_dir, paste0(model_lower, "_best_config.rds")))
+  candidates <- if (isTRUE(prefer_robust)) c(robust_paths, baseline_paths) else c(baseline_paths, robust_paths)
+  for (p in unique(candidates)) {
+    if (file.exists(p)) {
+      cfg <- tryCatch(readRDS(p), error = function(e) NULL)
+      if (!is.null(cfg)) return(cfg)
+    }
+  }
+  NULL
+}
+
+#' Build model hyperparameter list from config with defaults.
+#'
+#' @param model_name Model name: GPR/GAM/XGB.
+#' @param cfg Config list (or NULL).
+#' @param defaults_by_model Optional named list to override defaults.
+#' @return Hyperparameter list suitable for fit_* functions.
+model_hyperparams_from_config <- function(model_name, cfg = NULL, defaults_by_model = NULL) {
+  defaults <- list(
+    XGB = list(
+      nrounds = 100L, max_depth = 6L, learning_rate = 0.1,
+      subsample = 0.8, colsample_bytree = 0.8, min_child_weight = 1L,
+      min_split_loss = 0, reg_reg_lambda = 1
+    ),
+    GAM = list(k_covariate = 6L),
+    GPR = list(kernel = "matern52", nug.min = 1e-8, nug.max = 100, nug.est = TRUE)
+  )
+  if (is.list(defaults_by_model) && model_name %in% names(defaults_by_model)) {
+    defaults[[model_name]] <- modifyList(defaults[[model_name]], defaults_by_model[[model_name]])
+  }
+  cfg <- cfg %||% list()
+  if (model_name == "XGB") {
+    d <- defaults$XGB
+    return(list(
+      nrounds = cfg$nrounds %||% d$nrounds,
+      max_depth = cfg$max_depth %||% d$max_depth,
+      learning_rate = cfg$learning_rate %||% d$learning_rate,
+      subsample = cfg$subsample %||% d$subsample,
+      colsample_bytree = cfg$colsample_bytree %||% d$colsample_bytree,
+      min_child_weight = cfg$min_child_weight %||% d$min_child_weight,
+      min_split_loss = cfg$min_split_loss %||% d$min_split_loss,
+      reg_reg_lambda = cfg$reg_reg_lambda %||% d$reg_reg_lambda
+    ))
+  }
+  if (model_name == "GAM") {
+    d <- defaults$GAM
+    return(list(k_covariate = cfg$k_covariate %||% d$k_covariate))
+  }
+  if (model_name == "GPR") {
+    d <- defaults$GPR
+    return(list(
+      kernel = cfg$kernel %||% d$kernel,
+      nug.min = cfg$nug.min %||% d$nug.min,
+      nug.max = cfg$nug.max %||% d$nug.max,
+      nug.est = cfg$nug.est %||% d$nug.est
+    ))
+  }
+  NULL
+}
+
+#' Build per-model hyperparams by loading best config files.
+#'
+#' @param models Character vector of model names.
+#' @param config_dir Baseline config directory.
+#' @param robust_config_dir Optional robust config directory.
+#' @param prefer_robust If TRUE, robust file is preferred.
+#' @param include_baseline If TRUE, allow baseline best_config files.
+#' @param include_legacy If TRUE, allow legacy *_best_config files.
+#' @param include_case_variant_robust If TRUE, include case-variant robust path.
+#' @param defaults_by_model Optional defaults overrides passed to model_hyperparams_from_config.
+#' @param include_only_with_config If TRUE, include model only when a config file was found.
+#' @return List with \code{hyperparams_by_model} and \code{configs_by_model}.
+build_hyperparams_by_model <- function(models,
+                                       config_dir,
+                                       robust_config_dir = NULL,
+                                       prefer_robust = TRUE,
+                                       include_baseline = TRUE,
+                                       include_legacy = TRUE,
+                                       include_case_variant_robust = FALSE,
+                                       defaults_by_model = NULL,
+                                       include_only_with_config = FALSE) {
+  hyperparams_by_model <- list()
+  configs_by_model <- list()
+  for (m in models) {
+    cfg <- load_best_model_config(
+      model_name = m,
+      config_dir = config_dir,
+      robust_config_dir = robust_config_dir,
+      prefer_robust = prefer_robust,
+      include_baseline = include_baseline,
+      include_legacy = include_legacy,
+      include_case_variant_robust = include_case_variant_robust
+    )
+    if (isTRUE(include_only_with_config) && is.null(cfg)) next
+    configs_by_model[[m]] <- cfg
+    hyperparams_by_model[[m]] <- model_hyperparams_from_config(m, cfg, defaults_by_model = defaults_by_model)
+  }
+  list(hyperparams_by_model = hyperparams_by_model, configs_by_model = configs_by_model)
 }
 
 # ================================ HYPERPARAMETER TUNING ================================
@@ -1090,7 +1304,11 @@ make_pixel_grouped_folds <- function(dat, covariate_cols, n_folds, seed = 42L) {
 make_cv_folds <- function(dat, covariate_cols, n_folds, cv_type,
                           cv_blocksize = NULL, exclude_regions = character(0),
                           cache_tag = "cv_folds", seed = 42L) {
-  if (!is.null(seed)) set.seed(seed)
+  # set.seed once here for random/location_grouped; pixel_grouped delegates
+  # to make_pixel_grouped_folds which calls set.seed(seed) internally.
+  if (identical(cv_type, "random") || identical(cv_type, "location_grouped")) {
+    if (!is.null(seed)) set.seed(seed)
+  }
 
   if (identical(cv_type, "random")) {
     fi <- sample(rep(seq_len(n_folds), length.out = nrow(dat)))
@@ -1109,12 +1327,10 @@ make_cv_folds <- function(dat, covariate_cols, n_folds, cv_type,
   }
 
   if (identical(cv_type, "pixel_grouped")) {
-    # Important: for pixel-grouped folds, propagate the `seed` so
-    # hyperparameter tuning and later CV evaluation use the same split.
     pf <- make_pixel_grouped_folds(dat, covariate_cols, n_folds, seed = seed)
-    cat("  CV folds: pixel-grouped random (", pf$n_groups,
+    cat("  CV folds: pixel-grouped (", pf$n_groups,
         " unique covariate vectors -> ", n_folds, " folds).\n", sep = "")
-    return(list(fold_indices = pf$fold_indices, method_name = "pixel_grouped_random", n_groups = pf$n_groups))
+    return(list(fold_indices = pf$fold_indices, method_name = "pixel_grouped", n_groups = pf$n_groups))
   }
 
   if (identical(cv_type, "spatial")) {
@@ -1157,7 +1373,7 @@ method_to_display <- function(m) {
   switch(m,
     random_split = "Random split",
     location_grouped_random = "Location-grouped random",
-    pixel_grouped_random = "Pixel-grouped random",
+    pixel_grouped = "Pixel-grouped",
     env_cluster = "Env. cluster",
     paste0(toupper(substring(m, 1, 1)), substring(m, 2))
   )
@@ -1166,7 +1382,7 @@ method_to_display <- function(m) {
 method_block_size_km <- function(m) {
   if (m == "random_split") return(-1)
   if (m == "location_grouped_random") return(-0.5)
-  if (m == "pixel_grouped_random") return(0)
+  if (m == "pixel_grouped") return(0)
   if (grepl("^spatial_block_.+m$", m)) {
     size_str <- sub("^spatial_block_(.+)m$", "\\1", m)
     size_m <- as.numeric(size_str)
@@ -1286,9 +1502,31 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
         keep <- test_rows_with_factors_in_train(train_raw, test_raw, intersect(pvars, c("seagrass_species", "region")))
         obs_sub <- observed_orig[keep]
         pred_sub <- pred[keep]
-        metrics <- if (sum(keep) < 2L) data.frame(r2 = NA_real_, rmse = NA_real_, mae = NA_real_, bias = NA_real_) else calculate_metrics(obs_sub, pred_sub)
+        metrics <- if (sum(keep) < 2L) {
+          data.frame(
+            r2 = NA_real_,
+            rmse = NA_real_,
+            mae = NA_real_,
+            bias = NA_real_,
+            n_eval = sum(keep),
+            ss_residual = NA_real_,
+            ss_total = NA_real_,
+            sum_y = sum(obs_sub, na.rm = TRUE),
+            sum_y2 = sum(obs_sub^2, na.rm = TRUE)
+          )
+        } else {
+          calculate_metrics(obs_sub, pred_sub)
+        }
         list(
-          metrics = data.frame(method = cv_method_name, fold = fold, model = m, metrics),
+          metrics = data.frame(
+            method = cv_method_name,
+            fold = fold,
+            model = m,
+            n_test_raw = nrow(test_raw),
+            n_train_raw = nrow(train_raw),
+            n_kept_factor_levels = sum(keep),
+            metrics
+          ),
           preds   = if (return_predictions) data.frame(
             method = cv_method_name, fold = fold, model = m,
             observed = observed_orig, predicted = pred,
@@ -1332,6 +1570,18 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
                pooled_rmse = numeric(), n_predictions = integer())
   }
   attr(results_df, "pooled_r2") <- pooled_r2_by_model
+
+  # Fold-level held-out prediction counts used to compute pooled metrics.
+  # This lets downstream reporting explain why "pooled" vs "mean-of-folds" metrics can differ.
+  pooled_counts_by_model_fold <- if (nrow(pooled_df) > 0L) {
+    pooled_df %>%
+      dplyr::filter(is.finite(observed), is.finite(predicted)) %>%
+      dplyr::group_by(model, fold) %>%
+      dplyr::summarise(n_predictions = dplyr::n(), .groups = "drop")
+  } else {
+    data.frame(model = character(), fold = integer(), n_predictions = integer())
+  }
+  attr(results_df, "pooled_counts_by_model_fold") <- pooled_counts_by_model_fold
 
   if (return_predictions && length(preds_list) > 0)
     return(list(metrics = results_df, predictions = dplyr::bind_rows(preds_list)))

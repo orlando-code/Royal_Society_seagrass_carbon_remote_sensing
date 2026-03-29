@@ -40,6 +40,14 @@ MODEL_COLOURS <- c(
   "GPR" = "#fd8d3c" # Orange
 )
 
+# Standard line styles for pooled vs mean-fold metrics across plots.
+METRIC_LINESTYLES <- c(
+  "Pooled R2" = "solid",
+  "Mean-fold R2" = "22",
+  "Pooled RMSE" = "solid",
+  "Mean-fold RMSE" = "22"
+)
+
 
 VAR_LABELS <- c(
   # Response variable

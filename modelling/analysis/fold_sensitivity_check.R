@@ -2,7 +2,7 @@
 ## when varying n_folds and re-instantiating grouped folds via different seeds.
 ##
 ## Scope (default):
-##   - splitting regimes: random_split, location_grouped_random, pixel_grouped_random
+##   - splitting regimes: random_split, location_grouped_random, pixel_grouped
 ##   - n_folds: 3, 5, 7
 ##   - seed_list: 42, 43, 44 (controls random assignment for each regime)
 ##
@@ -23,31 +23,61 @@ project_root <- here::here()
 setwd(project_root)
 
 source(file.path(project_root, "modelling/R/helpers.R"))
+source(file.path(project_root, "modelling/config/pipeline_config.R"))
 load_packages(c("here", "dplyr", "readr", "ggplot2", "tidyr"))
 
-cv_regime_name <- get0("cv_regime_name", envir = .GlobalEnv, ifnotfound = "pixel_grouped")
-target_var <- get0("target_var", envir = .GlobalEnv, ifnotfound = "median_carbon_density_100cm")
-log_response <- isTRUE(get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE))
-
-exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
-
-seed_list <- get0("fold_seed_list", envir = .GlobalEnv, ifnotfound = 42L:43L)
-n_folds_list <- get0("n_folds_list", envir = .GlobalEnv, ifnotfound = c(3L, 5L))
-
-cv_types_to_check <- get0(
-  "cv_types_to_check",
-  envir = .GlobalEnv,
-  ifnotfound = c("random", "location_grouped", "pixel_grouped")
+cfg <- get_pipeline_config()
+apply_pipeline_defaults(
+  cfg,
+  c(
+    "cv_regime_name", "target_var", "log_transform_target", "exclude_regions",
+    "fold_seed_list", "n_folds_list", "cv_types_to_check",
+    "use_shap_per_model", "cv_blocksize", "fold_sensitivity_models",
+    "include_seagrass_species"
+  ),
+  envir = .GlobalEnv
 )
 
-# Only use models with tuned configs available.
-use_shap_per_model <- isTRUE(get0("use_shap_per_model", envir = .GlobalEnv, ifnotfound = TRUE))
+# Guard against leaking loop variables (e.g. n_folds/cv_type) into .GlobalEnv
+# when sourced from a long-lived R session.
+had_global_n_folds <- exists("n_folds", envir = .GlobalEnv, inherits = FALSE)
+old_global_n_folds <- if (had_global_n_folds) get("n_folds", envir = .GlobalEnv, inherits = FALSE) else NULL
+had_global_cv_type <- exists("cv_type", envir = .GlobalEnv, inherits = FALSE)
+old_global_cv_type <- if (had_global_cv_type) get("cv_type", envir = .GlobalEnv, inherits = FALSE) else NULL
+on.exit({
+  if (had_global_n_folds) {
+    assign("n_folds", old_global_n_folds, envir = .GlobalEnv)
+  } else if (exists("n_folds", envir = .GlobalEnv, inherits = FALSE)) {
+    rm("n_folds", envir = .GlobalEnv)
+  }
 
-models_default <- get0("fold_sensitivity_models", envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB"))
+  if (had_global_cv_type) {
+    assign("cv_type", old_global_cv_type, envir = .GlobalEnv)
+  } else if (exists("cv_type", envir = .GlobalEnv, inherits = FALSE)) {
+    rm("cv_type", envir = .GlobalEnv)
+  }
+}, add = TRUE)
+
+cv_regime_name <- get("cv_regime_name", envir = .GlobalEnv)
+target_var <- get("target_var", envir = .GlobalEnv)
+log_response <- isTRUE(get("log_transform_target", envir = .GlobalEnv))
+
+exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
+
+seed_list <- get("fold_seed_list", envir = .GlobalEnv)
+n_folds_list <- get("n_folds_list", envir = .GlobalEnv)
+
+cv_types_to_check <- get("cv_types_to_check", envir = .GlobalEnv)
+
+# Only use models with tuned configs available.
+use_shap_per_model <- isTRUE(get("use_shap_per_model", envir = .GlobalEnv))
+include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
+
+models_default <- get("fold_sensitivity_models", envir = .GlobalEnv)
 
 # CV parameter blocks
 n_folds_block_for_spatial <- NA_integer_
-cv_blocksize <- get0("cv_blocksize", envir = .GlobalEnv, ifnotfound = 5000L)
+cv_blocksize <- get("cv_blocksize", envir = .GlobalEnv)
 
 out_base <- file.path(project_root, "output", cv_regime_name, "cv_pipeline", "fold_sensitivity_check")
 dir.create(out_base, recursive = TRUE, showWarnings = FALSE)
@@ -72,12 +102,19 @@ if (length(exclude_regions) > 0L) {
 }
 
 coords_to_keep <- c("longitude", "latitude")
-species_region_cols <- intersect(c("seagrass_species", "region"), names(dat))
+species_region_cols <- intersect(
+  c(if (include_seagrass_species) "seagrass_species" else character(0), "region"),
+  names(dat)
+)
 
 # Predictors used for pixel-group hashing: everything except coords and identifiers
 predictor_vars_full <- setdiff(
   colnames(dat),
-  c("latitude", "longitude", "number_id_final_version", "seagrass_species", "region", target_var)
+  c(
+    "latitude", "longitude", "number_id_final_version",
+    "seagrass_species",
+    "region", target_var
+  )
 )
 predictor_vars_full <- predictor_vars_full[predictor_vars_full %in% colnames(dat)]
 
@@ -115,49 +152,16 @@ for (m in models_default) {
 }
 models <- intersect(names(predictor_vars_by_model), models_default)
 
-load_best_config_xgb <- function() {
-  p1 <- file.path(config_dir, "best_config_xgb.rds")
-  p2 <- file.path(config_dir, "xgb_best_config.rds")
-  if (file.exists(p1)) readRDS(p1) else if (file.exists(p2)) readRDS(p2) else NULL
-}
-load_best_config_gam <- function() {
-  p1 <- file.path(config_dir, "best_config_gam.rds")
-  p2 <- file.path(config_dir, "gam_best_config.rds")
-  if (file.exists(p1)) readRDS(p1) else if (file.exists(p2)) readRDS(p2) else NULL
-}
-load_best_config_gpr <- function() {
-  p <- file.path(config_dir, "best_config_gpr.rds")
-  if (file.exists(p)) readRDS(p) else NULL
-}
-
-cfg_xgb <- load_best_config_xgb()
-cfg_gam <- load_best_config_gam()
-cfg_gpr <- load_best_config_gpr()
-
-hyperparams_by_model <- list()
-if (!is.null(cfg_gpr) && "GPR" %in% models) {
-  hyperparams_by_model[["GPR"]] <- list(
-    kernel = cfg_gpr$kernel,
-    nug.min = cfg_gpr$nug.min,
-    nug.max = cfg_gpr$nug.max,
-    nug.est = TRUE
-  )
-}
-if (!is.null(cfg_gam) && "GAM" %in% models) {
-  hyperparams_by_model[["GAM"]] <- list(k_covariate = cfg_gam$k_covariate %||% 6L)
-}
-if (!is.null(cfg_xgb) && "XGB" %in% models) {
-  hyperparams_by_model[["XGB"]] <- list(
-    nrounds = cfg_xgb$nrounds,
-    max_depth = cfg_xgb$max_depth,
-    learning_rate = cfg_xgb$learning_rate %||% 0.1,
-    subsample = cfg_xgb$subsample %||% 0.8,
-    colsample_bytree = cfg_xgb$colsample_bytree %||% 0.8,
-    min_child_weight = cfg_xgb$min_child_weight %||% 1L,
-    min_split_loss = cfg_xgb$min_split_loss %||% 0,
-    reg_reg_lambda = cfg_xgb$reg_reg_lambda %||% 1
-  )
-}
+hp_bundle <- build_hyperparams_by_model(
+  models = models,
+  config_dir = config_dir,
+  robust_config_dir = NULL,
+  prefer_robust = FALSE,
+  include_baseline = TRUE,
+  include_legacy = TRUE,
+  include_only_with_config = TRUE
+)
+hyperparams_by_model <- hp_bundle$hyperparams_by_model
 
 models <- intersect(models, names(hyperparams_by_model))
 if (length(models) == 0L) stop("No models with both tuned covariate sets and tuned hyperparameters found.")

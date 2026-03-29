@@ -11,7 +11,20 @@ setwd(here::here())
 source("modelling/R/helpers.R")
 source("modelling/R/plot_config.R")
 source("modelling/R/assign_region_from_latlon.R")
+source("modelling/config/pipeline_config.R")
+source("modelling/R/extract_covariates_from_rasters.R")
 load_packages(c("here", "ggplot2", "dplyr", "tidyr", "maps", "sf", "patchwork", "FNN"))
+
+cfg <- get_pipeline_config()
+apply_pipeline_defaults(
+  cfg,
+  c(
+    "dpi", "target_var", "exclude_regions", "use_correlation_filter",
+    "correlation_filter_threshold", "n_lons", "n_lats",
+    "robust_fold_seed_list", "cv_regime_name", "model_list"
+  ),
+  envir = .GlobalEnv
+)
 if (!"dplyr" %in% loadedNamespaces()) suppressPackageStartupMessages(library(dplyr))
 if (exists("dpi", envir = .GlobalEnv)) dpi <- get("dpi", envir = .GlobalEnv) else dpi <- 150
 
@@ -33,10 +46,10 @@ theme_supplement <- function(base_size = 11) {
 # -----------------------------------------------------------------------------
 # Data (load once; used by multiple figures)
 # -----------------------------------------------------------------------------
-target_var <- get0("target_var", envir = .GlobalEnv, ifnotfound = "median_carbon_density_100cm")
-exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
-use_correlation_filter <- isTRUE(get0("use_correlation_filter", envir = .GlobalEnv, ifnotfound = TRUE))
-cor_threshold <- get0("correlation_filter_threshold", envir = .GlobalEnv, ifnotfound = 0.8)
+target_var <- get("target_var", envir = .GlobalEnv)
+exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
+use_correlation_filter <- isTRUE(get("use_correlation_filter", envir = .GlobalEnv))
+cor_threshold <- get("correlation_filter_threshold", envir = .GlobalEnv)
 
 dat <- readr::read_rds("data/all_extracted_new.rds")
 dat <- process_rs_covariates(dat)
@@ -52,8 +65,8 @@ all_pred_vars <- setdiff(
 )
 all_pred_vars <- all_pred_vars[vapply(dat[all_pred_vars], is.numeric, logical(1))]
 
-n_lons <- as.integer(get0("n_lons", envir = .GlobalEnv, ifnotfound = 500L))
-n_lats <- as.integer(get0("n_lats", envir = .GlobalEnv, ifnotfound = 500L))
+n_lons <- as.integer(get("n_lons", envir = .GlobalEnv))
+n_lats <- as.integer(get("n_lats", envir = .GlobalEnv))
 lon_min <- min(dat$longitude, na.rm = TRUE)
 lon_max <- max(dat$longitude, na.rm = TRUE)
 lat_min <- min(dat$latitude, na.rm = TRUE)
@@ -163,7 +176,7 @@ p_log <- ggplot(dat_hist, aes(x = log(pmax(.data[[target_var]], .Machine$double.
   labs(x = paste("Log(", y_lab, ")"), y = "Count", title = "Log-transformed") +
   theme_supplement()
 p_target_hist <- p_raw + p_log +
-  plot_annotation(title = "Distribution of target variable", theme = theme(plot.title = element_text(face = "bold", hjust = 0.5)))
+  patchwork::plot_annotation(title = "Distribution of target variable", theme = theme(plot.title = element_text(face = "bold", hjust = 0.5)))
 ggsave(file.path(OUT_DIR, "target_and_log_target_histogram.png"), p_target_hist, width = 10, height = 5, dpi = dpi)
 cat("Saved", file.path(OUT_DIR, "target_and_log_target_histogram.png"), "\n")
 
@@ -273,101 +286,144 @@ cat("Saved", file.path(OUT_DIR, "correlation_with_target_bar.png"), "\n")
 # -----------------------------------------------------------------------------
 # Figure 6: Environmental similarity (raster map + histogram). N.B. this uses all the predictor variables: would be more informative to use only the pruned variables for each model.
 # -----------------------------------------------------------------------------
-similarity <- compute_environmental_similarity(
-  dat, prediction_grid, raster_covariates,
-  method = "euclidean", verbose = TRUE
-)
 
-# Print summary of similarity scores
-if (!is.null(similarity$summary)) {
-  cat("\nSimilarity scores summary:\n")
-  print(similarity$summary)
-  cat("\n")
+cat("\n==============================\n")
+# for each model, get the pruned variables and calculate/save the environmental similarity scores
+robust_fold_seed_list <- get("robust_fold_seed_list", envir = .GlobalEnv)
+cv_regime_name_supp <- get("cv_regime_name", envir = .GlobalEnv)
+seeds_str_supp <- paste(robust_fold_seed_list, collapse = "-")
+robust_pruned_path <- file.path(
+  "output", cv_regime_name_supp, "covariate_selection", "robust_pixel_grouped",
+  paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_str_supp, ".csv")
+)
+# Fall back to non-robust SHAP vars if robust file doesn't exist
+if (!file.exists(robust_pruned_path)) {
+  robust_pruned_path <- file.path("output", cv_regime_name_supp, "covariate_selection", "pruned_model_variables_shap.csv")
 }
+model_list <- get("model_list", envir = .GlobalEnv)
 
-flags <- flag_outside_applicability_domain(
-  dat, prediction_grid, raster_covariates, strict=FALSE
-)
-p <- plot_applicability_domain(
-  prediction_grid,
-  similarity_scores = similarity$similarity_scores,
-  flag_outside = flags,
-  plot_data_points = TRUE,
-  dat = dat,
-  data_similarity_scores = similarity$data_similarity_scores,
-  world = world,
-  xlim = c(lon_min, lon_max),
-  ylim = c(lat_min, lat_max),
-  use_raster = TRUE
-)
-ggsave(file.path(OUT_DIR, "applicability_domain.png"), p, width = 8, height = 6)
-cat("Saved", file.path(OUT_DIR, "applicability_domain.png"), "\n")
+for (model in model_list) {
+  cat("\nComputing environmental similarity for", model, "\n\n")
+  pruned_variables <- read.csv(robust_pruned_path, stringsAsFactors = FALSE)
+  pruned_variables <- pruned_variables[pruned_variables$model == model, "variable"]
+  similarity <- compute_environmental_similarity(
+    dat, prediction_grid, pruned_variables,
+    method = "euclidean", verbose = TRUE
+  )
+
+  # # Print summary of similarity scores
+  # if (!is.null(similarity$summary)) {
+  #   cat("\nSimilarity scores summary:\n")
+  #   print(similarity$summary)
+  #   cat("\n")
+  # }
+
+  flags <- flag_outside_applicability_domain(
+    dat, prediction_grid, raster_covariates, strict = FALSE
+  )
+  p <- plot_applicability_domain(
+    prediction_grid,
+    similarity_scores = similarity$similarity_scores,
+    flag_outside = flags,
+    plot_data_points = TRUE,
+    dat = dat,
+    data_similarity_scores = similarity$data_similarity_scores,
+    world = world,
+    xlim = c(lon_min, lon_max),
+    ylim = c(lat_min, lat_max),
+    use_raster = TRUE
+  )
+  ggsave(file.path(OUT_DIR, paste0("applicability_domain_", model, ".png")), p, width = 8, height = 6)
+  cat("Saved", file.path(OUT_DIR, paste0("applicability_domain_", model, ".png")), "\n")
 
 
-# calculate the 5th percentile similarity score in data
-# get indices of gebco cells between -70 and 0 depth
-in_range_indices <- which(prediction_grid$gebco_2025_n61.0_s34.0_w_10.0_e35.0 >= -70 & prediction_grid$gebco_2025_n61.0_s34.0_w_10.0_e35.0 <= 0)
+  # calculate the 5th percentile similarity score in data
+  # get indices of gebco cells between -70 and 0 depth
+  in_range_indices <- which(prediction_grid$gebco_2025_n61.0_s34.0_w_10.0_e35.0 >= -70 & prediction_grid$gebco_2025_n61.0_s34.0_w_10.0_e35.0 <= 0)
 
-# filter similarity scores to only include the in_range_indices
-in_range_similarity_scores <- similarity$similarity_scores[in_range_indices]
+  # filter similarity scores to only include the in_range_indices
+  in_range_similarity_scores <- similarity$similarity_scores[in_range_indices]
 
-# calculate the 5th percentile similarity score in the gebco cells
-data_similarity_score_cutoff <- quantile(similarity$data_similarity_scores, 0.1, na.rm = TRUE)
+  # calculate the 5th percentile similarity score in the gebco cells
+  data_similarity_score_cutoff <- quantile(similarity$data_similarity_scores, 0.1, na.rm = TRUE)
 
 
-# plot histogram of data similarity scores
-p <- ggplot(data.frame(data_similarity_scores = similarity$data_similarity_scores), aes(x = data_similarity_scores)) +
-  geom_histogram(binwidth = 0.01, fill = "steelblue", color = "black", alpha = 0.7) +
-  geom_vline(
-    xintercept = data_similarity_score_cutoff,
-    linetype = "dashed",
-    color = "red",
-    linewidth = 1
-  ) +
-  annotate(
-    "text",
-    x = data_similarity_score_cutoff,
-    y = Inf,
-    label = "10th percentile of core data similarity scores",
-    color = "red",
-    angle = 90,
-    vjust = -0.5,
-    hjust = 1.1,
-    size = 4
-  ) +
-  labs(
-    x = "Euclidean Distance Similarity Score",
-    y = "Count",
-    title = "Histogram of core data similarity scores"
-  ) +
-  theme_minimal()
-ggsave(file.path(OUT_DIR, "data_similarity_scores_histogram.png"), p, width = 8, height = 6)
-cat("Saved", file.path(OUT_DIR, "data_similarity_scores_histogram.png"), "\n")
-
-# plot a histogram of the similarity scores
-p <- ggplot(data.frame(similarity_scores = in_range_similarity_scores), aes(x = similarity_scores)) +
-  geom_histogram(binwidth = 0.01, fill = "steelblue", color = "black", alpha = 0.7) +
-  geom_vline(xintercept = data_similarity_score_cutoff, linetype = "dashed", color = "red", linewidth = 1) +
-  labs(x = "Similarity Score", y = "Count", title = "Histogram of similarity scores") +
+  # plot histogram of data similarity scores
+  p <- ggplot(data.frame(data_similarity_scores = similarity$data_similarity_scores), aes(x = data_similarity_scores)) +
+    geom_histogram(binwidth = 0.01, fill = "steelblue", color = "black", alpha = 0.7) +
+    geom_vline(
+      xintercept = data_similarity_score_cutoff,
+      linetype = "dashed",
+      color = "red",
+      linewidth = 1
+    ) +
     annotate(
-    "text",
-    x = data_similarity_score_cutoff,
-    y = Inf,
-    label = "10th percentile of core data similarity scores",
-    color = "red",
-    angle = 90,
-    vjust = -0.5,
-    hjust = 1.1,
-    size = 4
-  ) +
-  labs(
-    x = "Euclidean Distance Similarity Score",
-    y = "Count",
-    title = "Histogram of data similarity scores"
-  ) +
-  theme_minimal()
-ggsave(file.path(OUT_DIR, "similarity_scores_histogram.png"), p, width = 8, height = 6)
+      "text",
+      x = data_similarity_score_cutoff,
+      y = Inf,
+      label = "10th percentile of core data similarity scores",
+      color = "red",
+      angle = 90,
+      vjust = -0.5,
+      hjust = 1.1,
+      size = 4
+    ) +
+    labs(
+      x = "Euclidean Distance Similarity Score",
+      y = "Count",
+      title = "Histogram of core data similarity scores"
+    ) +
+    theme_minimal()
+  ggsave(file.path(OUT_DIR, paste0("data_similarity_scores_histogram_", model, ".png")), p, width = 8, height = 6)
+  cat("Saved", file.path(OUT_DIR, paste0("data_similarity_scores_histogram_", model, ".png")), "\n")
 
+  # plot a histogram of the similarity scores
+  p <- ggplot(data.frame(similarity_scores = in_range_similarity_scores), aes(x = similarity_scores)) +
+    geom_histogram(binwidth = 0.01, fill = "steelblue", color = "black", alpha = 0.7) +
+    geom_vline(xintercept = data_similarity_score_cutoff, linetype = "dashed", color = "red", linewidth = 1) +
+    labs(x = "Similarity Score", y = "Count", title = "Histogram of similarity scores") +
+      annotate(
+      "text",
+      x = data_similarity_score_cutoff,
+      y = Inf,
+      label = "10th percentile of core data similarity scores",
+      color = "red",
+      angle = 90,
+      vjust = -0.5,
+      hjust = 1.1,
+      size = 4
+    ) +
+    labs(
+      x = "Euclidean Distance Similarity Score",
+      y = "Count",
+      title = "Histogram of data similarity scores"
+    ) +
+    theme_minimal()
+  ggsave(file.path(OUT_DIR, paste0("similarity_scores_histogram_", model, ".png")), p, width = 8, height = 6)
+  cat("Saved", file.path(OUT_DIR, paste0("similarity_scores_histogram_", model, ".png")), "\n")
+}
 # TODO: this could be used to mask prediction grid so that only cells with a high-enough similarity score are used for prediction
 
+# -----------------------------------------------------------------------------
+# Figure 7: Scatter plot and correlation of surface pCO2 (95th percentile) and surface pCO2 (mean)
+# -----------------------------------------------------------------------------
+
+p <- ggplot(dat, aes(x = spco2_monthly_mean_pa, y = surf_spco2_mean_uatm)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  labs(x = expression("Surface pCO"[2]*" (mean, Pa)"), 
+       y = expression("Surface pCO"[2]*" (mean, µatm)")) +
+  annotate(
+    "text",
+    x = Inf, y = Inf, 
+    label = paste0("Correlation: ", round(cor(dat$spco2_monthly_p95_pa, dat$surf_spco2_p95_uatm, use = "complete.obs"), 2)),
+    hjust = 1, vjust = 1, color = "red"
+  ) +
+  theme_minimal()
+
+ggsave(file.path(OUT_DIR, "scatter_spco2_monthly_mean_pa_vs_surf_spco2_mean_uatm.png"), p, width = 5, height = 5, dpi = 300)
+cat("Saved", file.path(OUT_DIR, "scatter_spco2_monthly_p95_pa_vs_surf_spco2_p95_uatm.png"), "\n")
+
 cat("\nSupplement figures complete. Outputs in", OUT_DIR, "\n")
+
+

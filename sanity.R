@@ -19,6 +19,72 @@ source("modelling/R/helpers.R")
 
 target_var <- "median_carbon_density_100cm"
 
+# === Seagrass map ===
+# open csv of seagrass
+fp <- "data/seagrass_eov_poly_2025.csv"
+seagrass_eov_poly_2025 <- read.csv(fp)
+
+
+v1 <- dat$spco2_monthly_p95_pa
+v2 <- dat$surf_spco2_p95_uatm
+
+# calculate correlation between v1 and v2
+var_cor <- cor(v1, v2)
+
+
+# plot a scatter of spco2_monthly_p95_pa vs surf_spco2_mean_uatm
+p <- ggplot(dat, aes(x = spco2_monthly_p95_pa, y = surf_spco2_p95_uatm)) +
+  geom_point() +
+  geom_abline(slope = 1, color = "black", linetype = "dashed") +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  labs(
+    x = "Surface pCO2 (95th percentile, µatm)",
+    y = "Surface pCO2 (mean, µatm)"
+  ) +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = paste0("Correlation: ", round(var_cor, 2)),
+    hjust = 1, vjust = 1, color = "red", size = 5
+  ) +
+  theme_minimal()
+
+ggsave(file.path("supplement", "scatter_spco2_monthly_p95_pa_vs_surf_spco2_p95_uatm.png"), p, width = 10, height = 10, dpi = 300)
+# === Convert model parameter choice to nice readable versions === 
+
+model_list <- c("GPR", "GAM", "XGB")
+if (!exists("robust_fold_seed_list", inherits = TRUE)) {
+  source("modelling/config/pipeline_config.R")
+  robust_fold_seed_list <- get_pipeline_config()$robust_fold_seed_list
+}
+model_covariates <- read.csv(sprintf("output/pixel_grouped/covariate_selection/robust_pixel_grouped/pruned_model_variables_shap_robust_pixel_grouped_seeds_%s.csv", paste(robust_fold_seed_list, collapse = "-")))
+
+# use plot_config.R to map the model covariates to human readable names
+source("modelling/R/plot_config.R")
+# Goal: one row per selected variable with neat label and number of models sharing it.
+library(dplyr)
+
+# Write to csv
+out_dir_labels <- sprintf("output/pixel_grouped/covariate_selection/robust_pixel_grouped/seeds_%s", paste(robust_fold_seed_list, collapse = "-"))
+dir.create(out_dir_labels, recursive = TRUE, showWarnings = FALSE)
+
+out_df <- model_covariates %>%
+  dplyr::mutate(variable = as.character(variable), model = as.character(model)) %>%
+  dplyr::distinct(model, variable) %>%
+  dplyr::group_by(variable) %>%
+  dplyr::summarise(
+    n_models_shared = dplyr::n_distinct(model),
+    models = paste(sort(unique(model)), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    label = unname(label_vars(variable))
+  ) %>%
+  dplyr::select(variable, label, n_models_shared, models) %>%
+  dplyr::arrange(dplyr::desc(n_models_shared), variable)
+
+write.csv(out_df, file.path(out_dir_labels, "model_covariates_shared_counts.csv"), row.names = FALSE)
+
 # === Covariate uniqueness diagnostic ===
 
 exclude_regions <- c("Black Sea")
@@ -78,9 +144,82 @@ dat$id <- match(
   do.call(paste, c(dat_clustered[, raster_covariates, drop = FALSE], sep = "|"))
 )
 
+# === R2 craziness ===
+
+# load by_seed_detailed for largest seed sweep
+by_seed_detailed <- read.csv("output/pixel_grouped/cv_pipeline/robust_pixel_grouped_random_evaluation_robustSeeds_42-43-44-45-46-47-48-49-50/by_seed_detailed.csv")
+
+# plot a histogram of r2 values
+ggplot(by_seed_detailed, aes(x = r2)) +
+  geom_histogram(binwidth = 0.1) +
+  theme_minimal() +
+  labs(x = "Mean R2", y = "Count")
+
+
+# average r2 values over seeds and folds (the poor performance)
+mean_r2 <- by_seed_detailed %>%
+  group_by(model) %>%
+  summarise(mean_r2 = mean(r2, na.rm = TRUE))
+ggplot(mean_r2, aes(x = model, y = mean_r2)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(x = "Model", y = "Mean R2")
+
+
+
+
+# reconstruct the pooled r2 values
+pooled_reconstructed <- by_seed_detailed %>%
+  group_by(model, fold_seed) %>%
+  summarise(
+    N = sum(n_eval, na.rm = TRUE),
+    SS_res = sum(ss_residual, na.rm = TRUE),
+    S1 = sum(sum_y, na.rm = TRUE),
+    S2 = sum(sum_y2, na.rm = TRUE),
+    SS_tot = S2 - (S1^2 / N),
+    pooled_r2_reconstructed = ifelse(N >= 2 & SS_tot > 0, 1 - SS_res / SS_tot, NA_real_),
+    .groups = "drop"
+  )
+# average pooled_r2_reconstructed over seeds
+pooled_reconstructed %>%
+  group_by(model) %>%
+  summarise(mean_pooled_r2_reconstructed = mean(pooled_r2_reconstructed, na.rm = TRUE))
+
+
+
+
+# Compute per-model pooled R2 using (1 - sum(ss_residual) / sum(ss_total)), grouped by model
+pooled_r2_by_model <- by_seed_detailed %>%
+  group_by(model) %>%
+  summarise(
+    pooled_r2 = 1 - (sum(ss_residual, na.rm = TRUE) / sum(ss_total, na.rm = TRUE))
+  )
+print(pooled_r2_by_model)
+
+
+# Compute per-model pooled R2 within each seed, then average across seeds
+pooled_r2_by_seed <- by_seed_detailed %>%
+  group_by(model, fold_seed) %>%
+  summarise(
+    pooled_r2 = 1 - (sum(ss_residual, na.rm = TRUE) / sum(ss_total, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+# Now average the pooled R2 over the seeds for each model
+pooled_r2_by_model_avg <- pooled_r2_by_seed %>%
+  group_by(model) %>%
+  summarise(
+    mean_pooled_r2 = mean(pooled_r2, na.rm = TRUE),
+    sd_pooled_r2   = sd(pooled_r2, na.rm = TRUE),
+    n_seeds        = dplyr::n(),
+    .groups = "drop"
+  )
+
+print(pooled_r2_by_model_avg)
+
+
+
 ### splitting regimes
-
-
 split_dat_list <- list()
 for (i in 1:100) {
   split_dat_list[[i]] <- cov_id_split(dat, seed=i)
