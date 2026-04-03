@@ -29,7 +29,7 @@ cat("NFOLDS:", n_folds, " | CV type:", cv_type, "\n")
 use_hyperparameter_tuning <- FALSE
 nested_tuning <- FALSE
 quick_cv_check <- get0("quick_cv_check", envir = .GlobalEnv, ifnotfound = FALSE)
-model_list <- get0("model_list", envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB"))
+model_list <- get0("model_list", envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB", "LR"))
 post_tuning_validation <- isTRUE(get0("post_tuning_validation", envir = .GlobalEnv, ifnotfound = FALSE))
 exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
 include_seagrass_species <- isTRUE(get0("include_seagrass_species", envir = .GlobalEnv, ifnotfound = TRUE))

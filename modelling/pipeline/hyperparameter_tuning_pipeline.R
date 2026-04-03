@@ -1,4 +1,4 @@
-# Unified hyperparameter tuning for all models (GPR, GAM, XGB).
+# Unified hyperparameter tuning for all models (GPR, GAM, XGB) plus LR baseline config.
 #
 # Tunes GPR (kernel + nugget grid), XGB (random grid search), and GAM
 # (k_covariate grid) using the same CV folds derived from the global
@@ -11,6 +11,7 @@
 
 project_root <- here::here()
 source(file.path(project_root, "modelling/R/helpers.R"))
+source(file.path(project_root, "modelling/R/extract_covariates_from_rasters.R"))
 load_packages(c("here", "mgcv", "dplyr", "randomForest", "GauPro", "xgboost", "sf"))
 
 out_dir <- file.path(get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output"), "cv_pipeline")
@@ -46,7 +47,7 @@ n_folds       <- as.integer(get0("n_folds", envir = .GlobalEnv, ifnotfound = 5L)
 cv_type       <- get0("cv_type", envir = .GlobalEnv, ifnotfound = "spatial")
 cv_blocksize <- get0("cv_blocksize", envir = .GlobalEnv, ifnotfound = 5000L)
 log_response  <- isTRUE(get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE))
-model_list    <- get0("model_list", envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB"))
+model_list    <- get0("model_list", envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB", "LR"))
 
 cov_dir <- file.path(get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output"), "covariate_selection")
 use_shap_per_model <- isTRUE(get0("use_shap_per_model", envir = .GlobalEnv, ifnotfound = FALSE))
@@ -145,6 +146,16 @@ if ("GAM" %in% model_list) {
   gam_config <- list(k_covariate = best_gam$k_covariate, cv_metrics = best_gam$cv_metrics)
   saveRDS(gam_config, file.path(out_dir, "best_config_gam.rds"))
   cat("  Saved best_config_gam.rds: k_covariate =", best_gam$k_covariate, "\n")
+}
+
+# ---------------------------------------------------------------------------
+# Linear model baseline (no hyperparameter tuning)
+# ---------------------------------------------------------------------------
+if ("LR" %in% model_list) {
+  lm_config <- list(cv_metrics = NULL)
+  saveRDS(lm_config, file.path(out_dir, "best_config_lr.rds"))
+  cat("\n=== LR baseline (no tuning) ===\n")
+  cat("  Saved best_config_lr.rds\n")
 }
 
 cat("\nHyperparameter tuning complete. Best configs in", out_dir, "\n")

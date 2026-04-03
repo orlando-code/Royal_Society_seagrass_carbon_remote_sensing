@@ -1,4 +1,4 @@
-# Fit and save final models (GPR, GAM, XGB) on all training data.
+# Fit and save final models (GPR, GAM, XGB, LR) on all training data.
 #
 # For each model:
 #   1. Tune key hyperparameters via 5-fold random CV on the full training set.
@@ -275,21 +275,60 @@ cat("Saved GPR_final.rds  (train R2=", round(gpr_train_metrics$r2, 3),
     " RMSE=", round(gpr_train_metrics$rmse, 4), ")\n\n")
 
 # ---------------------------------------------------------------------------
+# LR baseline: no hyperparameter tuning (uses LR-specific covariates)
+# ---------------------------------------------------------------------------
+cat("=== LR: fitting linear baseline model ===\n")
+predictor_vars <- load_model_vars_final("LR")
+lm_pvars <- predictor_vars
+cat("  Predictors (", length(predictor_vars), "): ", paste(predictor_vars, collapse = ", "), "\n", sep = "")
+
+lm_cfg <- load_best_model_config(
+  model_name = "lr",
+  config_dir = config_dir,
+  robust_config_dir = robust_tune_dir,
+  prefer_robust = isTRUE(use_robust_final_configs),
+  include_baseline = TRUE,
+  include_legacy = TRUE
+)
+lm_cv_metrics <- if (!is.null(lm_cfg)) lm_cfg$cv_metrics else NULL
+
+lm_data <- if (log_response) transform_response(core_data, "median_carbon_density", log = TRUE) else core_data
+lm_prep <- prepare_data_for_model("LR", lm_data, lm_data, predictor_vars)
+lm_final <- fit_lm(lm_prep$train, lm_prep$test, lm_prep$predictor_vars)
+lm_pred <- lm_final$predictions
+if (log_response) lm_pred <- inverse_response_transform(lm_pred, log = TRUE)
+lm_train_metrics <- calculate_metrics(core_data$median_carbon_density, lm_pred)
+saveRDS(list(
+  model              = lm_final$model,
+  predictor_vars     = predictor_vars,
+  best_covariate_set = predictor_vars,
+  hyperparams        = list(),
+  cv_metrics         = lm_cv_metrics,
+  train_metrics      = lm_train_metrics,
+  scale_params       = lm_prep$scale_params,
+  log_response       = log_response
+), file.path(out_dir, "LR_final.rds"))
+cat("Saved LR_final.rds  (train R2=", round(lm_train_metrics$r2, 3),
+    " RMSE=", round(lm_train_metrics$rmse, 4), ")\n\n")
+
+# ---------------------------------------------------------------------------
 # Summary table (with variables included per model)
 # ---------------------------------------------------------------------------
 summary_tbl <- data.frame(
-  model        = c("XGB", "GAM", "GPR"),
-  train_r2     = round(c(xgb_train_metrics$r2,  gam_train_metrics$r2,  gpr_train_metrics$r2),  3),
-  train_rmse   = round(c(xgb_train_metrics$rmse, gam_train_metrics$rmse, gpr_train_metrics$rmse), 4),
+  model        = c("XGB", "GAM", "GPR", "LR"),
+  train_r2     = round(c(xgb_train_metrics$r2,  gam_train_metrics$r2,  gpr_train_metrics$r2, lm_train_metrics$r2),  3),
+  train_rmse   = round(c(xgb_train_metrics$rmse, gam_train_metrics$rmse, gpr_train_metrics$rmse, lm_train_metrics$rmse), 4),
   best_hp      = c(
     paste0("nrounds=", best_xgb_hp$nrounds, " max_depth=", best_xgb_hp$max_depth),
     paste0("k_covariate=", best_gam_hp$k_covariate),
-    paste0("kernel=", gpr_hp$kernel, " nug_max=", gpr_hp$nug.max)
+    paste0("kernel=", gpr_hp$kernel, " nug_max=", gpr_hp$nug.max),
+    "none (linear baseline)"
   ),
   variables    = c(
     paste(xgb_pvars, collapse = ", "),
     paste(gam_pvars, collapse = ", "),
-    paste(gpr_pvars, collapse = ", ")
+    paste(gpr_pvars, collapse = ", "),
+    paste(lm_pvars, collapse = ", ")
   ),
   stringsAsFactors = FALSE
 )

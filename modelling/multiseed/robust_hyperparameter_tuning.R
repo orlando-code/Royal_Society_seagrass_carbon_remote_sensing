@@ -170,12 +170,12 @@ if (file.exists(robust_pruned_csv)) {
   if (isTRUE(include_seagrass_species) && "seagrass_species" %in% names(core_data)) {
     corr_vars <- unique(c(corr_vars, "seagrass_species"))
   }
-  for (m in c("GPR", "GAM", "XGB")) {
+  for (m in c("GPR", "GAM", "XGB", "LR")) {
     vars <- intersect(corr_vars, colnames(core_data))
     if (length(vars) >= 2) predictor_vars_by_model[[m]] <- vars
   }
 }
-models <- intersect(names(predictor_vars_by_model), c("GPR", "GAM", "XGB"))
+models <- intersect(names(predictor_vars_by_model), c("GPR", "GAM", "XGB", "LR"))
 if (length(models) == 0L) stop("No models found after loading robust pruned variables.")
 cat("  Robust predictor sets loaded for:", paste(models, collapse = ", "), "\n")
 
@@ -511,6 +511,25 @@ if ("GPR" %in% models) {
   )
   saveRDS(gpr_config, file.path(robust_dir, "best_config_gpr_robust.rds"))
   write.csv(gpr_tbl, file.path(robust_dir, "robust_cv_metrics_gpr.csv"), row.names = FALSE)
+}
+
+# ---------------------------------------------------------------------------
+# Tune LR robustly (no hyperparameters; evaluate robust RMSE directly)
+# ---------------------------------------------------------------------------
+if ("LR" %in% models) {
+  cat("\n=== Robust tuning: LR (no hyperparameters) ===\n")
+  obj <- robust_rmse_stats("LR", list())
+  lm_tbl <- data.frame(
+    robust_mean_rmse = obj$robust_mean_rmse,
+    robust_sd_rmse = obj$robust_sd_rmse,
+    robust_n_rmse = obj$robust_n_rmse,
+    robust_rmse_lambda = obj$robust_rmse_lambda,
+    robust_rmse_score = obj$robust_rmse_score,
+    stringsAsFactors = FALSE
+  )
+  lm_config <- list(robust_cv_metrics = lm_tbl)
+  saveRDS(lm_config, file.path(robust_dir, "best_config_lr_robust.rds"))
+  write.csv(lm_tbl, file.path(robust_dir, "robust_cv_metrics_lr.csv"), row.names = FALSE)
 }
 
 cat("\nRobust tuning complete.\n  Output dir:", robust_dir, "\n")
