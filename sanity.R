@@ -11,6 +11,7 @@ library(ggplot2)
 library(maps)
 library(tidyverse)
 source("modelling/R/extract_covariates_from_rasters.R")
+source("modelling/config/pipeline_config.R")
 
 dat <- readr::read_rds("data/all_extracted_new.rds")
 source("sanity_helpers.R")
@@ -19,40 +20,48 @@ source("modelling/R/helpers.R")
 
 target_var <- "median_carbon_density_100cm"
 
+library(ncdf4)
+library(raster)
+# load gam model
+cfg <- get_pipeline_config()
+cv_regime_name <- cfg$cv_regime_name
+final_models_dir <- file.path("output", cv_regime_name, "final_models")
+gam_model <- readRDS(file.path(final_models_dir, "GAM_final.rds"))
+
+
+# plot maps of the predictor variables
+pred_vars <- gam_model$predictor_vars
+for (pred_var in pred_vars) {
+  fp <- file.path("data/env_rasters", paste0(pred_var, ".nc"))
+  raster_data <- raster::raster(fp) # read .nc file directly with raster
+  raster_points <- raster::rasterToPoints(raster_data)
+  raster_points <- as.data.frame(raster_points)
+  colnames(raster_points) <- c("longitude", "latitude", "value")
+  p <- ggplot(raster_points, aes(x = longitude, y = latitude, fill = value)) +
+    geom_raster() +
+    theme_minimal() +
+    labs(title = pred_var)
+  ggsave(
+    file.path(final_models_dir, "GAM_final", paste0(pred_var, ".png")),
+    plot = p
+  )
+}
+
+for (model in c("GAM", "XGB", "GPR")) {
+  obj <- readRDS(file.path(final_models_dir, paste0(model, "_final.rds")))
+  print(toupper(model))
+  print(obj$hyperparams)
+}
+
+
 # === Seagrass map ===
 # open csv of seagrass
 fp <- "data/seagrass_eov_poly_2025.csv"
 seagrass_eov_poly_2025 <- read.csv(fp)
 
-
-v1 <- dat$spco2_monthly_p95_pa
-v2 <- dat$surf_spco2_p95_uatm
-
-# calculate correlation between v1 and v2
-var_cor <- cor(v1, v2)
-
-
-# plot a scatter of spco2_monthly_p95_pa vs surf_spco2_mean_uatm
-p <- ggplot(dat, aes(x = spco2_monthly_p95_pa, y = surf_spco2_p95_uatm)) +
-  geom_point() +
-  geom_abline(slope = 1, color = "black", linetype = "dashed") +
-  geom_smooth(method = "lm", color = "red", se = FALSE) +
-  labs(
-    x = "Surface pCO2 (95th percentile, µatm)",
-    y = "Surface pCO2 (mean, µatm)"
-  ) +
-  annotate(
-    "text",
-    x = Inf, y = Inf,
-    label = paste0("Correlation: ", round(var_cor, 2)),
-    hjust = 1, vjust = 1, color = "red", size = 5
-  ) +
-  theme_minimal()
-
-ggsave(file.path("supplement", "scatter_spco2_monthly_p95_pa_vs_surf_spco2_p95_uatm.png"), p, width = 10, height = 10, dpi = 300)
 # === Convert model parameter choice to nice readable versions === 
 
-model_list <- c("GPR", "GAM", "XGB")
+model_list <- c("GPR", "GAM", "XGB", "LR")
 if (!exists("robust_fold_seed_list", inherits = TRUE)) {
   source("modelling/config/pipeline_config.R")
   robust_fold_seed_list <- get_pipeline_config()$robust_fold_seed_list

@@ -1,3 +1,4 @@
+rm(list = ls())
 project_root <- here::here()
 setwd(project_root)
 
@@ -7,11 +8,10 @@ library(readr)
 library(tidyr)
 source(file.path(project_root, "modelling/config/pipeline_config.R"))
 source(file.path(project_root, "modelling/R/plot_config.R"))
-
 cfg <- get_pipeline_config()
 apply_pipeline_defaults(
   cfg,
-  c("cv_regime_name", "cv_type_label", "robust_fold_seed_list", "eval_fold_seed_list"),
+  c("cv_regime_name", "cv_type_label", "robust_fold_seed_list", "eval_fold_seed_list", "dpi", "show_titles"),
   envir = .GlobalEnv
 )
 
@@ -84,6 +84,8 @@ resolve_robust_eval_dir <- function() {
   if (length(candidates) == 0L) {
     stop("No robust evaluation directory found in ", cv_pipeline_dir)
   }
+  # Deterministic preference cannot be inferred when multiple candidates exist
+  # and no explicit run_output_dir is supplied; fall back to newest mtime.
   candidates[which.max(file.info(candidates)$mtime)]
 }
 
@@ -154,7 +156,7 @@ tuning_seed_sweep_df <- if (!is.na(tuning_seed_sweep_path) && file.exists(tuning
   NULL
 }
 
-theme_set(theme_minimal(base_size = 12))
+# Default ggplot theme: theme_paper() from modelling/R/plot_config.R (sourced above).
 
 if (has_full_sensitivity_inputs) {
 # 1) Fold-count sensitivity: pooled vs mean-fold R2 by k
@@ -167,21 +169,21 @@ p_fold_count <- ggplot(
   geom_line(aes(y = mean_mean_fold_r2, linetype = "Mean-fold R2"), linewidth = 0.8, alpha = 0.8) +
   geom_point(aes(y = mean_mean_fold_r2, shape = "Mean-fold R2"), size = 1.8, alpha = 0.8) +
   facet_wrap(~ cv_type, scales = "free_y", labeller = labeller(cv_type = function(x) ifelse(x == "pixel_grouped", "", x))) +
-  scale_color_discrete(name = "Model") +
-  scale_linetype_manual(name = "R2 type", values = METRIC_LINESTYLES[c("Pooled R2", "Mean-fold R2")]) +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
+  scale_linetype_manual(name = expression("R"^2*" type"), values = METRIC_LINESTYLES[c("Pooled R2", "Mean-fold R2")]) +
   scale_shape_manual(
-    name = "R2 type",
+    name = expression("R"^2*" type"),
     values = c("Pooled R2" = 16, "Mean-fold R2" = 17)
   ) +
   labs(
-    title = "Sensitivity of R2 to fold count",
+    title = if (show_titles) expression("Sensitivity of " * R^2 * " to fold count") else NULL,
     x = "Number of folds",
-    y = "R2"
+    y = expression("R"^2)
   )
 
 ggsave(
   filename = file.path(sens_dir, "sensitivity_r2_fold_count.png"),
-  plot = p_fold_count, width = 11, height = 6, dpi = 220
+  plot = p_fold_count, width = 11, height = 6, dpi = dpi
 )
 
 # 2) Gap between pooled and mean-fold R2 vs k
@@ -193,17 +195,17 @@ p_gap <- ggplot(
   geom_line(linewidth = 0.9) +
   geom_point(size = 2.1) +
   facet_wrap(~ cv_type, scales = "free_y", labeller = labeller(cv_type = function(x) ifelse(x == "pixel_grouped", "", x))) +
-  scale_color_discrete(name = "Model") +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
 
   labs(
-    title = ("Gap: pooled R2 - mean-fold R2"),
+    title = if (show_titles) expression("Gap: pooled " * R^2 * " - mean-fold " * R^2) else NULL,
     x = "Number of folds",
-    y = ("Change in R2 from pooled to mean-fold R2")
+    y = expression("Change in " * R^2 * " from pooled to mean-fold " * R^2)
   )
 
 ggsave(
   filename = file.path(sens_dir, "sensitivity_r2_gap_by_fold_count.png"),
-  plot = p_gap, width = 11, height = 6, dpi = 220
+  plot = p_gap, width = 11, height = 6, dpi = dpi
 )
 
 # 3) Training size vs fold R2 (raw fold points + linear trend)
@@ -214,17 +216,17 @@ p_train_size <- ggplot(
   geom_point(alpha = 0.55, size = 1.6) +
   geom_smooth(method = "lm", se = FALSE, linewidth = 0.9) +
   facet_grid(cv_type ~ n_folds, scales = "free_x", labeller = labeller(cv_type = function(x) ifelse(x == "pixel_grouped", "", x))) +
-  scale_color_discrete(name = "Model") +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
   labs(
-    title = "Training-set size vs fold R2",
-    subtitle = "Each point is one model-fold-seed result",
+    title = if (show_titles) expression("Training-set size vs fold " * R^2) else NULL,
+    # Each point is one model-fold-seed result
     x = "Training rows in fold",
-    y = "Fold R2"
+    y = expression("Fold " * R^2)
   )
 
 ggsave(
   filename = file.path(sens_dir, "sensitivity_train_size_vs_r2.png"),
-  plot = p_train_size, width = 13, height = 8, dpi = 220
+  plot = p_train_size, width = 13, height = 8, dpi = dpi
 )
 
 # 4) Fold composition sensitivity: SS_total and y spread against fold R2
@@ -235,16 +237,16 @@ p_ss_fold <- ggplot(
   geom_point(alpha = 0.55, size = 1.6) +
   geom_smooth(method = "lm", se = FALSE, linewidth = 0.9) +
   facet_grid(cv_type ~ n_folds, scales = "free",  labeller = labeller(cv_type = function(x) ifelse(x == "pixel_grouped", "", x))) +
-  scale_color_discrete(name = "Model") +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
   labs(
-    title = "A. Fold composition sensitivity: SS_total vs fold R2",
+    title = expression("A. Fold composition sensitivity: SS_total vs fold " * R^2),
     x = "Fold SS_total",
-    y = ("Fold R2")
+    y = expression("Fold " * R^2)
   )
 
 ggsave(
   filename = file.path(sens_dir, "sensitivity_ss_total_vs_r2.png"),
-  plot = p_ss_fold, width = 13, height = 8, dpi = 220
+  plot = p_ss_fold, width = 13, height = 8, dpi = dpi
 )
 
 p_yspread_fold <- ggplot(
@@ -254,16 +256,16 @@ p_yspread_fold <- ggplot(
   geom_point(alpha = 0.55, size = 1.6) +
   geom_smooth(method = "lm", se = FALSE, linewidth = 0.9) +
   facet_grid(cv_type ~ n_folds, scales = "free", labeller = labeller(cv_type = function(x) ifelse(x == "pixel_grouped", "", x))) +
-  scale_color_discrete(name = "Model") +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
   labs(
-    title = "B. Fold composition sensitivity: sd(y) vs fold R2",
-    x = "Fold sd(observed)",
-    y = ("Fold R2")
+    title = expression("B. Fold composition sensitivity: SD of observed values vs fold " * R^2),
+    x = "Fold SD of observed values",
+    y = expression("Fold " * R^2)
   )
 
 ggsave(
   filename = file.path(sens_dir, "sensitivity_y_sd_vs_r2.png"),
-  plot = p_yspread_fold, width = 13, height = 8, dpi = 220
+  plot = p_yspread_fold, width = 13, height = 8, dpi = dpi
 )
 
 combine_fold_comp_plots(
@@ -282,17 +284,16 @@ p_train_effect <- ggplot(
   geom_line(linewidth = 0.9) +
   geom_point(size = 2.1) +
   facet_wrap(~ cv_type, scales = "free_y", labeller = labeller(cv_type = function(x) ifelse(x == "pixel_grouped", "", x))) +
-  scale_color_discrete(name = "Model") +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
   labs(
-    title = "Aggregate training-size effect",
-    subtitle = "Correlation between training size and fold R2",
+    title = if (show_titles) "Aggregate training-size effect" else NULL,
     x = "Number of folds",
-    y = "Correlation between training size and fold R2"
+    y = expression("Correlation between training size and fold " * R^2)
   )
 
 ggsave(
   filename = file.path(sens_dir, "sensitivity_train_size_effect_summary.png"),
-  plot = p_train_effect, width = 11, height = 6, dpi = 220
+  plot = p_train_effect, width = 11, height = 6, dpi = dpi
 )
 
 p_ss_effect <- ggplot(
@@ -303,20 +304,25 @@ p_ss_effect <- ggplot(
   geom_line(linewidth = 0.9) +
   geom_point(size = 2.1) +
   facet_wrap(~ cv_type, scales = "free_y", labeller = labeller(cv_type = function(x) ifelse(x == "pixel_grouped", "", x))) +
-  scale_color_discrete(name = "Model") +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
   labs(
-    title = "Aggregate fold-composition effect",
-    subtitle = "Correlation between fold SS_total and fold R2 (averaged across seeds)",
+    title = if (show_titles) "Aggregate fold-composition effect" else NULL,
+    # subtitle = "Correlation between fold SS_total and fold R2 (averaged across seeds)",
     x = "Number of folds",
-    y = "Correlation between fold SS_total and fold R2"
+    y = expression("Correlation between fold SS_total and fold " * R^2)
   )
 
 ggsave(
   filename = file.path(sens_dir, "sensitivity_ss_total_effect_summary.png"),
-  plot = p_ss_effect, width = 11, height = 6, dpi = 220
+  plot = p_ss_effect, width = 11, height = 6, dpi = dpi
 )
 
 # 6) Seed-count sensitivity: convergence and plateau
+# Strip labels: metric is pooled_r2 vs mean_fold_r2 (see sensitivity_suite.R).
+metric_strip_labels <- c(
+  mean_fold_r2 = "Mean fold R\u00b2",
+  pooled_r2 = "Pooled R\u00b2"
+)
 p_seed_conv <- ggplot(
   seed_conv_df,
   aes(x = n_seeds, y = cumulative_mean, color = model)
@@ -327,18 +333,25 @@ p_seed_conv <- ggplot(
     aes(ymin = cumulative_mean - cumulative_se, ymax = cumulative_mean + cumulative_se),
     width = 0.12, alpha = 0.5
   ) +
-  facet_grid(metric ~ n_folds, scales = "free_y", labeller = labeller(metric = function(x) ifelse(x == "cumulative_mean", "Cumulative mean", x))) +
-  scale_color_discrete(name = "Model") +
+  facet_grid(
+    metric ~ n_folds,
+    scales = "free_y",
+    labeller = labeller(
+      metric = as_labeller(metric_strip_labels, default = label_value),
+      n_folds = function(x) paste0("k = ", x)
+    )
+  ) +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
   labs(
-    title = "Seed-count sensitivity: cumulative performance convergence",
-    subtitle = "Error bars are cumulative standard errors across seeds",
+    title = if (show_titles) "Seed-count sensitivity: cumulative performance convergence" else NULL,
+    # subtitle = "Error bars are cumulative standard errors across seeds",
     x = "Number of seeds included",
-    y = "Cumulative mean metric"
+    y = "Cumulative mean (R\u00b2)"
   )
 
 ggsave(
   filename = file.path(sens_dir, "sensitivity_seed_count_convergence.png"),
-  plot = p_seed_conv, width = 13, height = 8, dpi = 220
+  plot = p_seed_conv, width = 13, height = 8, dpi = dpi
 )
 
 p_seed_plateau <- ggplot(
@@ -347,18 +360,22 @@ p_seed_plateau <- ggplot(
 ) +
   geom_point(size = 2.2, alpha = 0.9) +
   geom_line(linewidth = 0.9, alpha = 0.9) +
-  facet_wrap(~ metric, scales = "free_y", labeller = labeller(metric = function(x) ifelse(x == "cumulative_mean", "Cumulative mean", x))) +
-  scale_color_discrete(name = "Model") +
+  facet_wrap(
+    ~ metric,
+    scales = "free_y",
+    labeller = labeller(metric = as_labeller(metric_strip_labels, default = label_value))
+  ) +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
   labs(
-    title = "Estimated seeds needed to reach plateau",
-    subtitle = "Plateau defined by cumulative-mean changes below tolerance for consecutive steps",
+    title = if (show_titles) "Estimated seeds needed to reach performance plateau" else NULL,
+    # subtitle = "Plateau defined by cumulative-mean changes below tolerance for consecutive steps",
     x = "Number of folds",
     y = "Estimated seeds-to-plateau"
   )
 
 ggsave(
   filename = file.path(sens_dir, "sensitivity_seed_count_plateau.png"),
-  plot = p_seed_plateau, width = 11, height = 6, dpi = 220
+  plot = p_seed_plateau, width = 11, height = 6, dpi = dpi
 )
 
 # 7) Environmental summaries
@@ -369,17 +386,17 @@ p_env_pairdist_vs_r2 <- ggplot(
   geom_point(alpha = 0.3, size = 1.6) +
   geom_smooth(method = "lm", se = FALSE, linewidth = 0.9) +
   facet_grid(cv_type ~ n_folds, scales = "free", labeller = labeller(cv_type = function(x) ifelse(x == "pixel_grouped", "", x))) +
-  scale_color_discrete(name = "Model") +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
   labs(
-    title = "A. Environmental spread vs fold R2",
-    subtitle = "Environmental spread measured by mean pairwise distance in scaled predictor space",
+    title = expression("A. Environmental spread vs fold " * R^2),
+    # subtitle = "Environmental spread measured by mean pairwise distance in scaled predictor space",
     x = "Fold mean pairwise environmental distance",
-    y = "Fold R2"
+    y = expression("Fold " * R^2)
   )
-p_env_pairdist_vs_r2
+
 ggsave(
   filename = file.path(sens_dir, "sensitivity_env_pairdist_vs_r2.png"),
-  plot = p_env_pairdist_vs_r2, width = 13, height = 8, dpi = 220
+  plot = p_env_pairdist_vs_r2, width = 13, height = 8, dpi = dpi
 )
 
 p_env_predictor_sd_vs_r2 <- ggplot(
@@ -389,16 +406,16 @@ p_env_predictor_sd_vs_r2 <- ggplot(
   geom_point(alpha = 0.3, size = 1.6) +
   geom_smooth(method = "lm", se = FALSE, linewidth = 0.9) +
   facet_grid(cv_type ~ n_folds, scales = "free", labeller = labeller(cv_type = function(x) ifelse(x == "pixel_grouped", "", x))) +
-  scale_color_discrete(name = "Model") +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
   labs(
-    title = ("B. Within-fold predictor spread vs fold R2"),
+    title = expression("B. Within-fold predictor spread vs fold " * R^2),
     x = "Mean predictor SD within fold (scaled predictors)",
-    y = ("Fold R2")
+    y = expression("Fold " * R^2)
   )
 
 ggsave(
   filename = file.path(sens_dir, "sensitivity_env_predictor_sd_vs_r2.png"),
-  plot = p_env_predictor_sd_vs_r2, width = 13, height = 8, dpi = 220
+  plot = p_env_predictor_sd_vs_r2, width = 13, height = 8, dpi = dpi
 )
 
 combine_env_r2_plots(
@@ -416,17 +433,17 @@ p_env_effect <- ggplot(
   geom_line(linewidth = 0.9) +
   geom_point(size = 2.1) +
   facet_wrap(~ cv_type, scales = "free_y", labeller = labeller(cv_type = function(x) ifelse(x == "pixel_grouped", "", x))) +
-  scale_color_discrete(name = "Model") +
+  scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
   labs(
-    title = ("Aggregate environmental-spread effect on R2"),
-    subtitle = "Correlation between fold environmental pairwise distance and fold R2 (averaged across seeds)",
+    title = if (show_titles) expression("Aggregate environmental-spread effect on " * R^2) else NULL,
+    # subtitle = "Correlation between fold environmental pairwise distance and fold R2 (averaged across seeds)",
     x = "Number of folds",
-    y = "Correlation between fold environmental pairwise distance and fold R2"
+    y = expression("Correlation between fold environmental pairwise distance and fold " * R^2)
   )
 
 ggsave(
   filename = file.path(sens_dir, "sensitivity_env_effect_summary.png"),
-  plot = p_env_effect, width = 11, height = 6, dpi = 220
+  plot = p_env_effect, width = 11, height = 6, dpi = dpi
 )
 
 env_dist_long <- env_dist_df %>%
@@ -461,8 +478,7 @@ p_env_dist <- ggplot(
   env_dist_long,
   aes(x = n_folds, y = env_pairdist,
       linetype = quantile,
-      group = interaction(model, quantile),
-      color = model)
+      group = interaction(model, quantile))
 ) +
   geom_line(linewidth = 0.9, alpha = 0.9) +
   facet_wrap(~ cv_type, scales = "free_y", labeller = labeller(cv_type = function(x) ifelse(x == "pixel_grouped", "", x))) +
@@ -479,11 +495,11 @@ p_env_dist <- ggplot(
     name = "Quantile"
   ) +
   labs(
-    title = "Distribution of fold environmental spread across k",
-    subtitle = "Percentile curves shown from the 1st to 99th percentile",
+    title = if (show_titles) "Distribution of fold environmental spread across k" else NULL,
+    # subtitle = "Percentile curves shown from the 1st to 99th percentile",
     x = "Number of folds",
     y = "Fold mean pairwise environmental distance",
-    color = "Model"
+    # color = "Model"
   )
 
 ggsave(
@@ -495,7 +511,7 @@ ggsave(
 # 8) Optional: tuning seed-count sweep performance plots
 if (!is.null(tuning_seed_sweep_df) && nrow(tuning_seed_sweep_df) > 0L &&
     !is.na(tuning_seed_sweep_path) && nzchar(tuning_seed_sweep_path)) {
-  source(file.path(project_root, "modelling/R/plot_tuning_seed_sweep.R"))
+  source(file.path(project_root, "modelling/plots/plot_tuning_seed_sweep.R"))
   sweep_plot_dir <- dirname(tuning_seed_sweep_path)
   dir.create(sweep_plot_dir, recursive = TRUE, showWarnings = FALSE)
   plot_tuning_seed_sweep_summary(tuning_seed_sweep_df, sweep_plot_dir)
