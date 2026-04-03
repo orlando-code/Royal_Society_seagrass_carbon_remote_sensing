@@ -19,7 +19,9 @@ modelling_issues.md
 
 # ignoring working/unnecessary directories
 deprecated/
-report/
+# report/
+*.pptx
+*.numbers
 env_rasters/
 Updated_df/
 output/
