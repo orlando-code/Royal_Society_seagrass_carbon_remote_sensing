@@ -1,14 +1,14 @@
 # Pipeline scripts
 
-These scripts are run in sequence by **`run_paper.R`**. Each one expects globals (e.g. `target_var`, `exclude_regions`, `model_list`, `n_folds`, `cv_type`) to be set by the driver; they read from **`data/all_extracted_new.rds`** and write under **`output/`**. Regime-specific outputs live under **`output/<cv_regime>/`** (derived from `cv_type` in `run_paper.R`), while shared caches live under **`output/cache/`**.
+These scripts are orchestrated by `modelling/run_multiseed_pixel_grouped.R` and configured via `modelling/config/pipeline_config.R`. Most scripts expect globals (for example `target_var`, `exclude_regions`, `model_list`, `n_folds`, `cv_type`) set by the driver. They read from `data/all_extracted_new.rds` and write under `output/`.
 
 ---
 
 ## build_all_extracted_new.R
 
-**Called when:** Step 0 (only if `data/all_extracted_new.rds` does not exist).
+**Called when:** Step 0 (only if `data/all_extracted_new.rds` is missing).
 
-Builds the main extracted dataset from your raw core-level data and rasters. Uses nearest-neighbour extraction, lowercases column names, clips remote-sensed covariates to zero, and attaches metadata. Skips if the file already exists unless you set `FORCE_REBUILD_ALLEXTRACTED <- TRUE`. Depends on **`extract_covariates_from_rasters.R`** for the raster config and extraction helpers.
+Builds the main extracted dataset from raw core-level data and rasters. Uses nearest-neighbour extraction, lowercases column names, clips remote-sensed covariates to zero, and attaches metadata. This script supports a `FORCE_REBUILD_ALLEXTRACTED` override for rebuild behavior; check the script defaults before relying on skip/rebuild semantics. Depends on `extract_covariates_from_rasters.R`.
 
 ---
 
@@ -30,25 +30,25 @@ Loads per-model predictor sets from the pruning CSVs (SHAP or permutation, depen
 
 ## hyperparameter_tuning_pipeline.R
 
-**Called when:** Step 3.
+**Called when:** Warm-start Step 2 (optional).
 
-Tunes GPR (kernel, nugget), XGBoost (nrounds, max_depth, learning_rate, subsample, colsample_bytree), and GAM (k_spatial) using the same folds and per-model predictor sets as the rest of the pipeline. Saves **`best_config_gpr.rds`**, **`best_config_gam.rds`**, **`best_config_xgb.rds`** in **`output/<cv_regime>/cv_pipeline/`**. These are read by **fit_final_models.R** and by the importance scripts (3b, 3c).
+Tunes GPR, XGBoost, and GAM using consistent folds and per-model predictor sets. Saves `best_config_gpr.rds`, `best_config_gam.rds`, `best_config_xgb.rds`, and `best_config_lr.rds` in `output/<cv_regime>/cv_pipeline/`. In robust workflows, multiseed tuning scripts under `modelling/multiseed/` are the primary path.
 
 ---
 
 ## permutation_importance_final.R
 
-**Called when:** Step 3b.
+**Status:** Deprecated stub.
 
-Computes permutation feature importance for each model **after** tuning: uses the best config and best covariate set per model, runs **`permutation_importance_cv`** with the same spatial/random folds, and saves **`importance_perm_<model>.csv`** and **`importance_perm_<model>.png`** in **`output/<cv_regime>/cv_pipeline/`**. Requires the tuning RDS files and the pruned variable CSVs from step 1.
+This file intentionally stops with a deprecation message. Robust importance/pruning is handled by `modelling/multiseed/robust_shap_covariate_pruning.R`.
 
 ---
 
 ## shap_importance_final.R
 
-**Called when:** Step 3c.
+**Status:** Deprecated stub.
 
-Computes SHAP (Shapley) feature importance for each model after tuning: fits each model with best config and best vars on the full data, then uses **`iml::Shapley`** to get mean |φ| per variable. Writes **`importance_shap_<model>.csv`** and **`importance_shap_<model>.png`** to **`output/<cv_regime>/cv_pipeline/`**. Uses the same best-config and pruned-variable inputs as the permutation script.
+This file intentionally stops with a deprecation message. Robust SHAP pruning is handled by `modelling/multiseed/robust_shap_covariate_pruning.R`.
 
 ---
 
