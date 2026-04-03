@@ -14,30 +14,36 @@ REGION_COLOURS <- c(
 
 
 SPECIES_COLOURS <- c(
-    "Cymodocea nodosa" = "#3366CC", # blue
-    "Halophila stipulacea" = "#FF9900", # orange
-    "Posidonia oceanica" = "#00CED1", # dark cyan
-    "Zostera marina" = "#32CD32", # lime green
-    "Zostera noltei" = "#CCCC00", # yellow-green
-    "Zostera marina and Zostera noltei" = "#006400", # dark green
-    "Zostera marina and Cymodocea nodosa" = "#8B0000", # dark red
-    "Unspecified" = "#808080" # gray
+    "Cymodocea nodosa" = "#1b9e77", # blue
+    "Halophila stipulacea" = "#d95f02", # orange
+    "Posidonia oceanica" = "#66a61e", # dark cyan
+    "Zostera marina" = "#a6761d", # lime green
+    "Zostera noltei" = "#e7298a", # yellow-green
+    "Zostera marina and Zostera noltei" = "#666666", # dark green
+    "Zostera marina and Cymodocea nodosa" = "#e6ab02", # dark red
+    "Unspecified" = "black" # gray
   )
 
 
 MODEL_COLOURS <- c(
-  "Ordinary Kriging" = "#08306b", # Dark blue
-  "Universal Kriging (env drift)" = "#3182bd", # Light blue
+  "LR" = "#3182bd", # Light blue
   "GAM" = "#99000d", # Dark red
-  "INLA" = "#cb181d", # Light red
-  "XGBoost" = "#006d2c", # Dark green
   "XGB" = "#006d2c", # Alias used by run_cv (same as XGBoost)
-  "Random Forest" = "#41ab5d", # Light green
-  "RF" = "#41ab5d", # Alias used by run_cv (same as Random Forest)
-  "Neural Network" = "#54278f", # Dark purple
-  "NN" = "#54278f", # Alias used by run_cv (same as Neural Network)
-  "SVM" = "#9e9ac8", # Light purple
+  "RF" = "#50f01b", # Alias used by run_cv (same as Random Forest)
   "GPR" = "#fd8d3c" # Orange
+)
+
+# Colours keyed by both short and long model labels (CV / sensitivity CSVs vary).
+model_colours <- c(
+  MODEL_COLOURS,
+  "XGBoost" = MODEL_COLOURS[["XGB"]],
+  "Random Forest" = MODEL_COLOURS[["RF"]],
+  "Neural Network" = "#54278f",
+  "NN" = "#54278f",
+  "SVM" = "#9e9ac8",
+  "Ordinary Kriging" = "#08306b",
+  "Universal Kriging (env drift)" = "#3182bd",
+  "INLA" = "#cb181d"
 )
 
 # Standard line styles for pooled vs mean-fold metrics across plots.
@@ -123,21 +129,6 @@ VAR_LABELS <- c(
   vo_p90_1.5m_m_s  = "Meridional current (90th percentile, m/s)"
 )
 
-# Model colours for CV and tuning plots (used by cv_pipeline_plots.R and cv_pipeline.R)
-model_colours <- c(
-  "Ordinary Kriging" = "#08306b",
-  "Universal Kriging (env drift)" = "#3182bd",
-  "GAM" = "#99000d",
-  "INLA" = "#cb181d",
-  "XGBoost" = "#006d2c",
-  "XGB" = "#006d2c",
-  "Random Forest" = "#41ab5d",
-  "RF" = "#41ab5d",
-  "Neural Network" = "#54278f",
-  "NN" = "#54278f",
-  "SVM" = "#9e9ac8",
-  "GPR" = "#fd8d3c"
-)
 
 # Helper to map variable names to labels, falling back to the original
 # name if no mapping exists.
@@ -146,3 +137,29 @@ label_vars <- function(x) {
   labs[is.na(labs)] <- x[is.na(labs)]
   labs
 }
+
+# -----------------------------------------------------------------------------
+# Default ggplot theme (manuscript / supplement figures)
+# -----------------------------------------------------------------------------
+
+#' Minimal theme with title emphasis, legend at bottom, no minor grid.
+#' @param base_size Base font size passed to [ggplot2::theme_minimal()].
+theme_paper <- function(base_size = 11) {
+  ggplot2::theme_minimal(base_size = base_size) +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(face = "bold", hjust = 0.5, size = base_size + 1),
+      axis.title = ggplot2::element_text(size = base_size),
+      legend.position = "bottom",
+      legend.key.width = grid::unit(2, "cm"),
+      panel.grid.minor = ggplot2::element_blank()
+    )
+}
+
+
+# Default for all ggplot2 figures after this file is sourced.
+if (requireNamespace("ggplot2", quietly = TRUE) && requireNamespace("grid", quietly = TRUE)) {
+  ggplot2::theme_set(theme_paper())
+}
+
+europe_lat_range <- c(34.65, 60.11)
+europe_lon_range <- c(-8.85, 33.30)

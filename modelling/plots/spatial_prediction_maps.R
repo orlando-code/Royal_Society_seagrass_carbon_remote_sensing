@@ -1,12 +1,12 @@
-# Spatial prediction maps for all final models (XGB, GAM, GPR)
+# Spatial prediction maps for all final models (XGB, GAM, GPR, LR)
 #
 # Loads final model RDS from output/<cv_regime>/final_models/, builds a
 # prediction grid from rasters (same approach as gpr_predictions.R), predicts
 # with each model, and saves prediction (and SE where available) maps to
 # output/<cv_regime>/predictions/.
 #
-# Requires: fit_final_models.R has been run (XGB_final.rds, GAM_final.rds, GPR_final.rds)
-# Outputs:  output/<cv_regime>/predictions/{xgb,gam,gpr}_prediction_map.png,
+# Requires: fit_final_models.R has been run (XGB_final.rds, GAM_final.rds, GPR_final.rds, LR_final.rds)
+# Outputs:  output/<cv_regime>/predictions/{xgb,gam,gpr,lm}_prediction_map.png,
 #            {gpr,gam}_se_map.png (SE maps are available for models that return SE)
 #
 # Usage: source from the modelling driver, or run standalone.
@@ -43,7 +43,7 @@ final_dir <- file.path(cv_out, "final_models")
 
 target_var <- "median_carbon_density_100cm"
 exclude_regions <- get0("exclude_regions", envir = .GlobalEnv, ifnotfound = character(0))
-model_list <- get0("model_list", envir = .GlobalEnv, ifnotfound = c("XGB", "GAM", "GPR"))
+model_list <- get0("model_list", envir = .GlobalEnv, ifnotfound = c("XGB", "GAM", "GPR", "LR"))
 n_lons <- as.integer(get0("n_lons", envir = .GlobalEnv, ifnotfound = 1000L))
 n_lats <- as.integer(get0("n_lats", envir = .GlobalEnv, ifnotfound = 1000L))
 dpi <- get0("dpi", envir = .GlobalEnv, ifnotfound = 150)
@@ -55,7 +55,7 @@ prediction_map_log_fill_epsilon <- as.numeric(get0("prediction_map_log_fill_epsi
 # Data and grid extent
 # -----------------------------------------------------------------------------
 cat("\n========================================\n")
-cat("SPATIAL PREDICTION MAPS (XGB, GAM, GPR)\n")
+cat("SPATIAL PREDICTION MAPS (XGB, GAM, GPR, LR)\n")
 cat("========================================\n\n")
 
 dat <- readr::read_rds("data/all_extracted_new.rds")
@@ -346,7 +346,7 @@ write_prediction_grid_netcdf <- function(grid_df, prediction_slices, out_path, m
   )
   var_pred <- ncdf4::ncvar_def(
     name = "prediction",
-    units = if (grepl("carbon", target_var, ignore.case = TRUE)) "mg C cm-3" else "",
+    units = if (grepl("carbon", target_var, ignore.case = TRUE)) "g C cm-3" else "",
     dim = list(lon_dim, lat_dim, sp_dim),
     missval = fill_value,
     longname = paste0(model_name, " predicted ", target_var),

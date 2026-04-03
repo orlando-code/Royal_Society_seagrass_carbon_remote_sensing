@@ -71,7 +71,7 @@ make_model_plot <- function(dfm, m) {
     ggplot2::geom_col(fill = m_col, alpha = 0.85) +
     ggplot2::geom_errorbar(ggplot2::aes(xmin = ymin, xmax = ymax), width = 0.2, colour = "black", linewidth = 0.35) +
     ggplot2::labs(
-      title = m,
+      title = if (show_titles) m else NULL,
       x = "Mean SHAP",
       y = NULL
     ) +
@@ -88,8 +88,8 @@ names(plots) <- models
 
 combined <- patchwork::wrap_plots(plots, ncol = length(plots)) +
   patchwork::plot_annotation(
-    title = "Robust multi-seed SHAP importance (mean +/- SD)",
-    subtitle = paste0("Top ", top_n, " variables per model; seeds=", seeds_str)
+    title = if (show_titles) "Robust multi-seed SHAP importance (mean ± SD)" else NULL,
+    subtitle = if (show_titles) paste0("Top ", top_n, " variables per model; seeds=", seeds_str) else NULL
   )
 
 out_combined <- file.path(robust_cov_dir, "shap_importance_robust_errorbars_combined.png")
