@@ -34,7 +34,7 @@ if (length(exclude_regions) > 0L) {
 target_var           <- get0("target_var",           envir = .GlobalEnv, ifnotfound = "median_carbon_density_100cm")
 log_transform_target <- get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE)
 log_transform_target <- if (length(log_transform_target) != 1) TRUE else isTRUE(log_transform_target)
-model_list           <- get0("model_list",           envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB"))
+model_list           <- get0("model_list",           envir = .GlobalEnv, ifnotfound = c("GPR", "GAM", "XGB", "LR"))
 # XXX faster debugging: reduce n_folds, n_permutations, permutation_max_vars
 n_folds              <- get0("n_folds",               envir = .GlobalEnv, ifnotfound = 5L)
 cv_type              <- get0("cv_type",               envir = .GlobalEnv, ifnotfound = "spatial")
@@ -82,7 +82,7 @@ imp_shap       <- NULL   # list: model -> data.frame(variable, shap_importance)
 perm_shared_vars <- importance_predictor_vars  # fallback to cor_predictor_vars if permutation step is skipped
 
 if (length(importance_predictor_vars) > permutation_max_vars) {
-  supported_models <- intersect(model_list, c("RF", "GAM", "XGB", "GPR"))
+  supported_models <- intersect(model_list, c("RF", "GAM", "XGB", "GPR", "LR"))
   if (length(supported_models) == 0L)
     stop("No supported models for importance ranking.")
 

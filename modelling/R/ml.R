@@ -1,5 +1,5 @@
 # =============================================================================
-# ML models and data preparation for GPR, RF, XGB, GAM.
+# ML models and data preparation for GPR, RF, XGB, GAM, LR.
 # Shared scaling/encoding; fit_*; predict_model (generic); fit_gpr (unified).
 # =============================================================================
 load_packages(c("GauPro", "xgboost", "mgcv", "randomForest"))
@@ -19,7 +19,7 @@ quote_formula_terms <- function(vars) {
 # ================================ SCALING & ENCODING ================================
 # XGB: categoricals -> integer codes, then z-score scale (prepare_predictors_train / prepare_predictors_new).
 # GPR: categoricals -> one-hot expansion, then z-score scale (prepare_predictors_train_onehot / prepare_predictors_new_onehot).
-# GAM/RF: scale numerics only, categoricals stay as factors (prepare_predictors_train_numeric_only).
+# GAM/RF/LR: scale numerics only, categoricals stay as factors (prepare_predictors_train_numeric_only).
 
 #' Compute z-score scaling parameters from training data (numeric columns only).
 #' @param data Training data frame.
@@ -190,7 +190,7 @@ prepare_predictors_train_numeric_only <- function(data, predictor_vars) {
 }
 
 #' Prepare train/test data for a given model.
-#' XGB: categoricals -> integer codes + scale. GAM/RF: scale numerics only, categoricals stay as factors.
+#' XGB: categoricals -> integer codes + scale. GAM/RF/LR: scale numerics only, categoricals stay as factors.
 #' GPR returns raw so \code{fit_gpr} can do prep internally (formula, prediction_grid, etc.).
 prepare_data_for_model <- function(model_name, train, test, predictor_vars) {
   if (model_name == "GPR")
@@ -198,7 +198,7 @@ prepare_data_for_model <- function(model_name, train, test, predictor_vars) {
 
   train <- as.data.frame(train)
   test  <- as.data.frame(test)
-  if (model_name == "GAM" || model_name == "RF") {
+  if (model_name == "GAM" || model_name == "RF" || model_name == "LR") {
     prep     <- prepare_predictors_train_numeric_only(train, predictor_vars)
     test_prep <- as.data.frame(apply_scaling(test[, predictor_vars, drop = FALSE], prep$scale_params, predictor_vars))
   } else {
@@ -218,7 +218,7 @@ prepare_data_for_model <- function(model_name, train, test, predictor_vars) {
     test_prep$latitude  <- test$latitude
   }
   # Align factor levels in test to train so predict() does not fail on new levels (e.g. spatial CV)
-  if (model_name == "GAM" || model_name == "RF") {
+  if (model_name == "GAM" || model_name == "RF" || model_name == "LR") {
     for (col in predictor_vars) {
       if (col %in% names(train_out) && is.factor(train_out[[col]])) {
         tr_levels <- levels(train_out[[col]])
@@ -254,11 +254,12 @@ infer_model_type <- function(obj) {
   if (inherits(m, "GauPro")) return("GPR")
   if (inherits(m, "xgb.Booster")) return("XGB")
   if (inherits(m, "gam")) return("GAM")
+  if (inherits(m, "lr")) return("LR")
   if (inherits(m, "randomForest")) return("RF")
   stop("Could not infer model type from object.")
 }
 
-#' Generic predictor for saved models (GPR, XGB, GAM, RF).
+#' Generic predictor for saved models (GPR, XGB, GAM, LR, RF).
 #' @param obj Saved model list (model, predictor_vars, scale_params, encoding, encoded_names, log_response, ...)
 #' @param newdata Data frame with predictor columns
 #' @param se If TRUE and model supports it (GPR), return standard errors
@@ -307,6 +308,8 @@ predict_model <- function(obj, newdata, se = TRUE) {
     } else {
       out <- list(mean = as.numeric(mgcv::predict.gam(obj$model, newdata = X, type = "response")), se = NULL)
     }
+  } else if (type == "LR") {
+    out <- list(mean = as.numeric(stats::predict(obj$model, newdata = X)), se = NULL)
   } else if (type == "RF") {
     out <- list(mean = as.numeric(predict(obj$model, newdata = X)), se = NULL)
   } else {
@@ -456,14 +459,14 @@ fit_gpr <- function(train_data,
 }
 
 
-# ================================ RF, XGB, GAM ================================
+# ================================ RF, XGB, GAM, LR ================================
 
 fit_rf <- function(train_data, test_data, predictor_vars, hyperparams = NULL) {
   formula_obj <- as.formula(paste("median_carbon_density ~", paste(predictor_vars, collapse = " + ")))
   ntree    <- hyperparams$ntree    %||% 500L
   mtry     <- hyperparams$mtry     %||% floor(sqrt(length(predictor_vars)))
   nodesize <- hyperparams$nodesize %||% NULL
-  model <- randomForest(formula_obj, data = train_data,
+  model <- randomForest::randomForest(formula_obj, data = train_data,
     ntree = ntree, mtry = mtry, nodesize = nodesize, importance = TRUE)
   list(model = model, predictions = as.numeric(predict(model, newdata = test_data)))
 }
@@ -546,5 +549,20 @@ fit_gam <- function(train_data, test_data, predictor_vars, k_spatial = 80,
   clamp_hi <- y_range[2] + 3 * diff(y_range)
   pred <- pmin(pmax(pred, clamp_lo), clamp_hi)
 
+  list(model = fit, predictions = pred)
+}
+
+fit_lm <- function(train_data, test_data, predictor_vars) {
+  form <- stats::as.formula(
+    paste0("median_carbon_density ~ ", paste(quote_formula_terms(predictor_vars), collapse = " + "))
+  )
+  fit <- try(stats::lm(form, data = train_data), silent = TRUE)
+  if (inherits(fit, "try-error")) {
+    return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
+  }
+  pred <- tryCatch(
+    as.numeric(stats::predict(fit, newdata = test_data)),
+    error = function(e) rep(mean(train_data$median_carbon_density, na.rm = TRUE), nrow(test_data))
+  )
   list(model = fit, predictions = pred)
 }

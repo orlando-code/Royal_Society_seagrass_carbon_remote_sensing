@@ -70,7 +70,7 @@ shap_selection_coverage_grid <- as.numeric(get("shap_selection_coverage_grid", e
 shap_selection_max_vars_grid <- as.integer(get("shap_selection_max_vars_grid", envir = .GlobalEnv))
 
 model_list <- get("model_list", envir = .GlobalEnv)
-model_list <- intersect(model_list, c("GPR", "GAM", "XGB"))
+model_list <- intersect(model_list, c("GPR", "GAM", "XGB", "LR"))
 if (length(model_list) == 0L) stop("No supported models for SHAP pruning.")
 
 cat("Robust SHAP covariate pruning\n")

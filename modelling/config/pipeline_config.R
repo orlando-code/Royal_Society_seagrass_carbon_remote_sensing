@@ -8,8 +8,8 @@
 get_pipeline_config <- function(overrides = list()) {
   cfg <- list(
     # Plotting / display
-    dpi = 150,
-    show_titles = TRUE,
+    dpi = 300,
+    show_titles = FALSE,
 
     # Response
     target_var = "median_carbon_density_100cm",
@@ -17,7 +17,7 @@ get_pipeline_config <- function(overrides = list()) {
     exclude_regions = c("Black Sea"),
 
     # Models / pruning defaults
-    model_list = c("GPR", "GAM", "XGB"),
+    model_list = c("GPR", "GAM", "XGB", "LR"),
     include_seagrass_species = TRUE,
     use_correlation_filter = TRUE,
     correlation_filter_threshold = 0.8,
@@ -36,15 +36,15 @@ get_pipeline_config <- function(overrides = list()) {
     cv_type_label = "pixel_grouped",
 
     # Robust seed policy (5 seeds promoted from tuning_seed_sweep using RMSE-robust
-    # score: mean_mean_rmse + robust_rmse_lambda * sd_mean_rmse across models).
-    robust_fold_seed_list = c(46L, 61L, 72L, 75L, 78L),
+    robust_fold_seed_list = c(48L, 52L, 53L, 70L, 73L),
+    # robust_fold_seed_list = c(45L, 59L, 63L, 69L, 77L),
     # Ten eval seeds, disjoint from tuning_seed_pool (42:81) and robust_fold_seed_list
     # (61 is in robust; former 52:61 overlapped).
     eval_fold_seed_list = 100L:121L,
     robust_pruned_importance_type = "shap",
     # Robust RMSE objective for hyperparameter and sweep-subset selection:
     # score = mean_rmse + robust_rmse_lambda * sd_rmse.
-    robust_rmse_lambda = 0.5,
+    robust_rmse_lambda = 0, # no correction fo sd of rmse
 
     # Robust SHAP controls
     shap_n_points = 100L,
@@ -69,12 +69,13 @@ get_pipeline_config <- function(overrides = list()) {
     tuning_seed_pool = 42L:81L,
     tuning_sweep_eval_seed_list = 100L:121L,
     tuning_seed_sampling = "random",
+    # Subset registry (see tuning_seed_sweep.R): lowering repeats reuses existing runs; raising only tops up.
     tuning_seed_sweep_repeats = 3L,
     tuning_seed_sweep_random_seed = 42L,
     tuning_seed_sweep_skip_existing = TRUE,
     # If TRUE, do not trust cached eval artifacts during sweep runs; recompute
     # at least evaluation to avoid stale/overwritten summary reuse.
-    tuning_seed_sweep_force_recompute = TRUE,
+    tuning_seed_sweep_force_recompute = FALSE,
     tuning_seed_sweep_unique_subsets = TRUE,
     tuning_seed_sweep_parallel_jobs = 12L,
 
@@ -90,12 +91,12 @@ get_pipeline_config <- function(overrides = list()) {
     seed_plateau_tolerance = 0.02,
     seed_plateau_min_n = 3L,
     seed_plateau_stable_steps = 2L,
-    r2_sensitivity_models = c("GPR", "GAM", "XGB"),
-    fold_sensitivity_models = c("GPR", "GAM", "XGB"),
+    r2_sensitivity_models = c("GPR", "GAM", "XGB", "LR"),
+    fold_sensitivity_models = c("GPR", "GAM", "XGB", "LR"),
 
     # Diagnostics / supplement map defaults
-    n_lons = 5000L,
-    n_lats = 5000L,
+    n_lons = 1000L,
+    n_lats = 1000L,
 
     # Optional overrides / flags used by downstream scripts
     robust_pruned_csv_override = NA_character_,

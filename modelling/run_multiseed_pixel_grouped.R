@@ -343,43 +343,48 @@ if (isTRUE(do_diagnostics)) {
 # -----------------------------------------------------------------------------
 # Step 9: Fit and save final models using robust tuning/covariates
 # -----------------------------------------------------------------------------
-if (isTRUE(do_fit_final_models)) {
-  cat("\t\tStep 9: Fit and save final models (robust configs/vars)\n")
-  seeds_sel_str <- paste(robust_fold_seed_list, collapse = "-")
-  assign("use_robust_final_configs", TRUE, envir = .GlobalEnv)
-  assign("robust_pruned_csv_override",
-         file.path(
-           "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped",
-           paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_sel_str, ".csv")
-         ),
-         envir = .GlobalEnv)
-  source("modelling/pipeline/fit_final_models.R")
-  cat("\n")
-} else {
-  cat("\t\tStep 9: Skipping final model fit/save (do_fit_final_models=FALSE)\n\n")
-}
+cat("\t\tStep 9: Fit and save final models (robust configs/vars)\n")
+seeds_sel_str <- paste(robust_fold_seed_list, collapse = "-")
+assign("use_robust_final_configs", TRUE, envir = .GlobalEnv)
+assign("robust_pruned_csv_override",
+        file.path(
+          "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped",
+          paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_sel_str, ".csv")
+        ),
+        envir = .GlobalEnv)
+source("modelling/pipeline/fit_final_models.R")
+cat("\n")
 
 # -----------------------------------------------------------------------------
-# Step 10: Partial dependence plots
+# Step 10: Directly compare model outputs with baselines
 # -----------------------------------------------------------------------------
-if (isTRUE(do_fit_final_models)) {
-  cat("\t\tStep 10: Partial dependence plots (from final models)\n")
-  source("deprecated/modelling/plots/partial_dependence_all_models.R")
-  cat("\n")
-} else {
-  cat("\t\tStep 10: Skipping PDPs (requires do_fit_final_models=TRUE)\n\n")
-}
+cat("\t\tStep 10: Model comparison\n")
+source("modelling/analysis/model_comparison.R")
+cat("\n")
+
 
 # -----------------------------------------------------------------------------
-# Step 11: Supplement figures
+# Step 11: Create model prediction maps
 # -----------------------------------------------------------------------------
-if (isTRUE(do_supplement)) {
-  cat("\t\tStep 11: Supplement figures\n")
-  source("modelling/plots/supplement.R")
-  cat("\n")
-} else {
-  cat("\t\tStep 11: Skipping supplement figures (do_supplement=FALSE)\n\n")
-}
+cat("\t\tStep 11: Create spatial prediction maps\n")
+source("modelling/plots/spatial_prediction_maps.R")
+cat("\n")
+
+# -----------------------------------------------------------------------------
+# Step 12: Partial dependence plots
+# -----------------------------------------------------------------------------
+cat("\t\tStep 12: Partial dependence plots (from final models)\n")
+source("modelling/plots/partial_dependence_all_models.R")
+cat("\n")
+
+
+# -----------------------------------------------------------------------------
+# Step 13: Supplement figures
+# -----------------------------------------------------------------------------
+cat("\t\tStep 13: Supplement figures\n")
+source("modelling/plots/supplement.R")
+cat("\n")
+
 
 # =============================================================================
 # Done

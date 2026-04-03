@@ -7,7 +7,7 @@
 #
 # Typical tmux usage:
 #   tmux new -s seed_sweep
-#   cd /Users/rt582/Desktop/seagrass_mapping
+#   cd <project_root>
 #   Rscript modelling/analysis/tuning_seed_sweep.R
 #
 # Optional overrides via .GlobalEnv before sourcing:
@@ -58,7 +58,7 @@ tuning_seed_sweep_unique_subsets <- isTRUE(get("tuning_seed_sweep_unique_subsets
 tuning_seed_sweep_parallel_jobs <- as.integer(get("tuning_seed_sweep_parallel_jobs", envir = .GlobalEnv))
 robust_rmse_lambda <- max(0, as.numeric(get("robust_rmse_lambda", envir = .GlobalEnv)))
 tuning_seed_sweep_force_recompute <- isTRUE(get("tuning_seed_sweep_force_recompute", envir = .GlobalEnv))
-model_list <- intersect(get("model_list", envir = .GlobalEnv), c("GPR", "GAM", "XGB"))
+model_list <- intersect(get("model_list", envir = .GlobalEnv), c("GPR", "GAM", "XGB", "LR"))
 
 out_dir <- file.path(project_root, "output", cv_regime_name, "cv_pipeline", "sensitivity_suite")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -84,8 +84,6 @@ tuning_seed_sweep_counts <- tuning_seed_sweep_counts[tuning_seed_sweep_counts <=
 if (length(tuning_seed_sweep_counts) == 0L) {
   stop("No valid tuning_seed_sweep_counts after filtering by tuning_seed_pool length.")
 }
-
-if (identical(tuning_seed_sampling, "random")) set.seed(tuning_seed_sweep_random_seed)
 
 # Save and restore globals modified by this sweep.
 had_robust <- exists("robust_fold_seed_list", envir = .GlobalEnv, inherits = FALSE)
@@ -138,14 +136,15 @@ on.exit({
   }
 }, add = TRUE)
 
-make_subset_plan <- function(n_sel, repeats, seed_pool, sampling, enforce_unique = TRUE) {
+make_subset_plan <- function(n_sel, repeats, seed_pool, sampling, enforce_unique = TRUE,
+                             exclude_keys = character(0)) {
   repeats <- as.integer(max(1L, repeats))
   if (identical(sampling, "prefix")) {
     return(list(seed_pool[seq_len(n_sel)]))
   }
 
   out <- list()
-  seen <- character(0)
+  seen <- unique(as.character(exclude_keys))
   max_attempts <- max(20L, repeats * 20L)
   attempts <- 0L
   while (length(out) < repeats && attempts < max_attempts) {
@@ -166,26 +165,177 @@ make_subset_plan <- function(n_sel, repeats, seed_pool, sampling, enforce_unique
   out
 }
 
+registry_csv <- file.path(out_dir, "sensitivity_tuning_seed_sweep_subset_registry.csv")
+
+load_subset_registry <- function() {
+  if (!file.exists(registry_csv)) {
+    return(NULL)
+  }
+  x <- readr::read_csv(registry_csv, show_col_types = FALSE)
+  req <- c("n_tuning_seeds", "sweep_repeat_id", "tuning_seed_list")
+  if (!all(req %in% names(x))) {
+    return(NULL)
+  }
+  x[, req, drop = FALSE]
+}
+
+#' One-time seed: copy canonical subsets from an old manifest_run.csv into the registry.
+registry_from_manifest_run <- function() {
+  mr <- file.path(out_dir, "sensitivity_tuning_seed_sweep_manifest_run.csv")
+  if (!file.exists(mr)) {
+    return(NULL)
+  }
+  x <- readr::read_csv(mr, show_col_types = FALSE)
+  req <- c("n_tuning_seeds", "sweep_repeat_id", "tuning_seed_list")
+  if (!all(req %in% names(x))) {
+    return(NULL)
+  }
+  x <- x[, req, drop = FALSE]
+  x <- dplyr::distinct(x, n_tuning_seeds, sweep_repeat_id, tuning_seed_list, .keep_all = TRUE)
+  x <- x[order(x$n_tuning_seeds, x$sweep_repeat_id), , drop = FALSE]
+  x
+}
+
+merge_registry <- function(old_reg, new_rows) {
+  if (is.null(new_rows) || nrow(new_rows) == 0L) {
+    return(old_reg)
+  }
+  if (is.null(old_reg) || nrow(old_reg) == 0L) {
+    return(new_rows)
+  }
+  dplyr::bind_rows(old_reg, new_rows) %>%
+    dplyr::distinct(n_tuning_seeds, sweep_repeat_id, .keep_all = TRUE) %>%
+    dplyr::arrange(n_tuning_seeds, sweep_repeat_id)
+}
+
+subset_registry <- load_subset_registry()
+if (is.null(subset_registry)) {
+  subset_registry <- registry_from_manifest_run()
+  if (!is.null(subset_registry)) {
+    readr::write_csv(subset_registry, registry_csv)
+    cat(
+      "Created sensitivity_tuning_seed_sweep_subset_registry.csv from existing manifest_run.\n",
+      "Future runs will reuse these subsets when tuning_seed_sweep_repeats is reduced.\n",
+      sep = ""
+    )
+  }
+}
+
 task_rows <- list()
+registry_new_rows <- list()
+
 for (n_sel in tuning_seed_sweep_counts) {
-  subsets_for_n <- make_subset_plan(
-    n_sel = n_sel,
-    repeats = tuning_seed_sweep_repeats,
-    seed_pool = tuning_seed_pool,
-    sampling = tuning_seed_sampling,
-    enforce_unique = tuning_seed_sweep_unique_subsets
-  )
-  for (rep_idx in seq_along(subsets_for_n)) {
-    s <- as.integer(subsets_for_n[[rep_idx]])
+  need <- as.integer(tuning_seed_sweep_repeats)
+  reg_n <- if (!is.null(subset_registry)) {
+    subset_registry[subset_registry$n_tuning_seeds == n_sel, , drop = FALSE]
+  } else {
+    data.frame()
+  }
+  if (nrow(reg_n) > 0L) {
+    reg_n <- reg_n[order(reg_n$sweep_repeat_id), , drop = FALSE]
+  }
+
+  if (nrow(reg_n) >= need) {
+    take <- reg_n[seq_len(need), , drop = FALSE]
+    for (i in seq_len(nrow(take))) {
+      task_rows[[length(task_rows) + 1L]] <- data.frame(
+        n_tuning_seeds = n_sel,
+        sweep_repeat_id = as.integer(take$sweep_repeat_id[i]),
+        tuning_seed_list = as.character(take$tuning_seed_list[i]),
+        stringsAsFactors = FALSE
+      )
+    }
+    next
+  }
+
+  if (nrow(reg_n) == 0L) {
+    if (identical(tuning_seed_sampling, "random")) {
+      set.seed(tuning_seed_sweep_random_seed + n_sel * 100000L)
+    }
+    subsets_for_n <- make_subset_plan(
+      n_sel = n_sel,
+      repeats = need,
+      seed_pool = tuning_seed_pool,
+      sampling = tuning_seed_sampling,
+      enforce_unique = tuning_seed_sweep_unique_subsets,
+      exclude_keys = character(0)
+    )
+    for (rep_idx in seq_along(subsets_for_n)) {
+      s <- as.integer(subsets_for_n[[rep_idx]])
+      tl <- paste(s, collapse = "-")
+      task_rows[[length(task_rows) + 1L]] <- data.frame(
+        n_tuning_seeds = n_sel,
+        sweep_repeat_id = rep_idx,
+        tuning_seed_list = tl,
+        stringsAsFactors = FALSE
+      )
+      registry_new_rows[[length(registry_new_rows) + 1L]] <- data.frame(
+        n_tuning_seeds = n_sel,
+        sweep_repeat_id = rep_idx,
+        tuning_seed_list = tl,
+        stringsAsFactors = FALSE
+      )
+    }
+    next
+  }
+
+  # Top up: keep existing registry rows, add new random subsets with higher sweep_repeat_id
+  max_id <- max(reg_n$sweep_repeat_id, na.rm = TRUE)
+  for (i in seq_len(nrow(reg_n))) {
     task_rows[[length(task_rows) + 1L]] <- data.frame(
       n_tuning_seeds = n_sel,
-      sweep_repeat_id = rep_idx,
-      tuning_seed_list = paste(s, collapse = "-"),
+      sweep_repeat_id = as.integer(reg_n$sweep_repeat_id[i]),
+      tuning_seed_list = as.character(reg_n$tuning_seed_list[i]),
+      stringsAsFactors = FALSE
+    )
+  }
+  n_more <- need - nrow(reg_n)
+  exclude_keys <- as.character(reg_n$tuning_seed_list)
+  if (identical(tuning_seed_sampling, "random")) {
+    set.seed(tuning_seed_sweep_random_seed + n_sel * 100000L + max_id)
+  }
+  extra <- make_subset_plan(
+    n_sel = n_sel,
+    repeats = n_more,
+    seed_pool = tuning_seed_pool,
+    sampling = tuning_seed_sampling,
+    enforce_unique = tuning_seed_sweep_unique_subsets,
+    exclude_keys = exclude_keys
+  )
+  for (j in seq_along(extra)) {
+    s <- as.integer(extra[[j]])
+    tl <- paste(s, collapse = "-")
+    rid <- max_id + j
+    task_rows[[length(task_rows) + 1L]] <- data.frame(
+      n_tuning_seeds = n_sel,
+      sweep_repeat_id = rid,
+      tuning_seed_list = tl,
+      stringsAsFactors = FALSE
+    )
+    registry_new_rows[[length(registry_new_rows) + 1L]] <- data.frame(
+      n_tuning_seeds = n_sel,
+      sweep_repeat_id = rid,
+      tuning_seed_list = tl,
       stringsAsFactors = FALSE
     )
   }
 }
+
 task_df <- dplyr::bind_rows(task_rows)
+
+# Persist registry: previous rows plus any newly generated subsets (top-up or fresh n).
+if (length(registry_new_rows) > 0L) {
+  subset_registry <- merge_registry(subset_registry, dplyr::bind_rows(registry_new_rows))
+}
+if (!is.null(subset_registry) && nrow(subset_registry) > 0L) {
+  readr::write_csv(subset_registry, registry_csv)
+  if (length(registry_new_rows) > 0L) {
+    cat(
+      "Wrote sensitivity_tuning_seed_sweep_subset_registry.csv (", nrow(subset_registry), " row(s)).\n",
+      sep = ""
+    )
+  }
+}
 if (nrow(task_df) == 0L) stop("No sweep tasks were generated.")
 task_df$sweep_subset_id <- paste0(
   "n", task_df$n_tuning_seeds,
@@ -258,9 +408,9 @@ run_one_subset <- function(task_row) {
   )
   tune_cfg_paths <- file.path(
     tuning_dir_subset,
-    paste0("best_config_", c("gpr", "gam", "xgb"), "_robust.rds")
+    paste0("best_config_", c("gpr", "gam", "xgb", "lr"), "_robust.rds")
   )
-  tune_ready <- all(file.exists(tune_cfg_paths[match(tolower(model_list), c("gpr", "gam", "xgb"))]))
+  tune_ready <- all(file.exists(tune_cfg_paths[match(tolower(model_list), c("gpr", "gam", "xgb", "lr"))]))
 
   shap_pruned_csv <- file.path(
     project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped",
@@ -275,6 +425,11 @@ run_one_subset <- function(task_row) {
 
   determine_stage_mode <- function(eval_ready, tune_ready, shap_ready) {
     if (!isTRUE(tuning_seed_sweep_skip_existing)) return("full")
+    # Prefer reusing existing evaluation CSVs when present. Only re-run evaluation
+    # when tuning_seed_sweep_force_recompute is TRUE (opt-in stale refresh).
+    if (isTRUE(eval_ready) && !isTRUE(tuning_seed_sweep_force_recompute)) {
+      return("reuse_eval")
+    }
     if (isTRUE(tuning_seed_sweep_force_recompute)) {
       if (tune_ready && shap_ready) return("eval_only")
       if (!tune_ready && shap_ready) return("tune_only")
@@ -395,7 +550,7 @@ if (nrow(sweep_df) > 0L) {
   sweep_csv <- file.path(out_dir, "sensitivity_tuning_seed_sweep_summary.csv")
   readr::write_csv(sweep_df, sweep_csv)
   cat("Wrote tuning seed sweep summary to:\n  ", sweep_csv, "\n", sep = "")
-  source(file.path(project_root, "modelling/R/plot_tuning_seed_sweep.R"))
+  source(file.path(project_root, "modelling/plots/plot_tuning_seed_sweep.R"))
   plot_tuning_seed_sweep_summary(sweep_df, out_dir)
   rep5 <- pick_representative_tuning_seed_subset(
     sweep_df,
@@ -421,10 +576,11 @@ if (nrow(sweep_df) > 0L) {
     rep_csv <- file.path(out_dir, "sensitivity_tuning_seed_sweep_representative_n5.csv")
     readr::write_csv(rep_row, rep_csv)
     cat(
-      "Representative 5-seed subset (min robust RMSE score across models):\n  ",
+      "Representative 5-seed subset (closest to median mean RMSE across subsets):\n  ",
       rep_row$robust_fold_seed_list[1], "\n",
       "Wrote:\n  ", rep_csv, "\n",
-      "score = mean_mean_rmse + ", rep_row$robust_rmse_lambda[1], " * mean_sd_rmse\n",
+      "selection_rule: ", rep_row$selection_rule[1], "\n",
+      "reported robust score = mean_mean_rmse + ", rep_row$robust_rmse_lambda[1], " * mean_sd_rmse\n",
       "Set pipeline_config robust_fold_seed_list to c(",
       paste0(rep5$robust_fold_seed_list, "L", collapse = ", "),
       ") if promoting this sweep.\n",

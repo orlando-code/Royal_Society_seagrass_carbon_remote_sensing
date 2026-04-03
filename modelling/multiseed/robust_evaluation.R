@@ -157,12 +157,12 @@ if (length(predictor_vars_by_model) == 0L) {
   if (isTRUE(include_seagrass_species) && "seagrass_species" %in% names(core_data)) {
     corr_vars <- unique(c(corr_vars, "seagrass_species"))
   }
-  for (m in c("GPR", "GAM", "XGB")) {
+  for (m in c("GPR", "GAM", "XGB", "LR")) {
     vars <- intersect(corr_vars, colnames(core_data))
     if (length(vars) >= 2L) predictor_vars_by_model[[m]] <- vars
   }
 }
-models <- intersect(names(predictor_vars_by_model), c("GPR", "GAM", "XGB"))
+models <- intersect(names(predictor_vars_by_model), c("GPR", "GAM", "XGB", "LR"))
 # eval_models <- get("eval_models", envir = .GlobalEnv)
 # eval_models <- intersect(eval_models, models)
 # if (length(eval_models) == 0L) stop("No usable robust pruned predictor sets found for requested eval_models.")

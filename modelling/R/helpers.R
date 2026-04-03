@@ -1,4 +1,8 @@
 # ================================ UTILITY FUNCTIONS ================================
+# Manuscript figure theme (ggplot2 default after sourcing)
+if (file.exists("modelling/R/plot_config.R")) {
+  source("modelling/R/plot_config.R", local = FALSE)
+}
 
 #' Install packages if not already installed
 #'
@@ -302,6 +306,7 @@ permutation_importance_cv <- function(core_data, target_var, predictor_vars, mod
       XGB = fit_xgboost(prep$train, prep$test, prep$predictor_vars, hyperparams = hp),
       GAM = fit_gam(prep$train, prep$test, prep$predictor_vars, include_spatial = FALSE,
                     k_covariate = if (is.list(hp) && !is.null(hp$k_covariate)) hp$k_covariate else 6L),
+      LR  = fit_lm(prep$train, prep$test, prep$predictor_vars),
       stop("Unsupported model: ", model_name)
     ), error = function(e) NULL)
     if (is.null(fit)) { baseline_rmses[k] <- NA_real_; next }
@@ -329,7 +334,6 @@ permutation_importance_cv <- function(core_data, target_var, predictor_vars, mod
         test_perm[[v]] <- sample(test_perm[[v]])
         test_perm$median_carbon_density <- test_perm[[target_var]]
         if (log_response) test_perm <- transform_response(test_perm, "median_carbon_density", log = TRUE)
-        prep_orig <- fold_models[[k]]$prep
         perm_prep <- prepare_data_for_model(model_name, fold_models[[k]]$train_raw, test_perm, predictor_vars)
         perm_fit <- tryCatch(switch(model_name,
           GPR = fit_gpr(perm_prep$train, perm_prep$predictor_vars, test_data = perm_prep$test, hyperparams = hp),
@@ -337,6 +341,7 @@ permutation_importance_cv <- function(core_data, target_var, predictor_vars, mod
           XGB = fit_xgboost(perm_prep$train, perm_prep$test, perm_prep$predictor_vars, hyperparams = hp),
           GAM = fit_gam(perm_prep$train, perm_prep$test, perm_prep$predictor_vars, include_spatial = FALSE,
                         k_covariate = if (is.list(hp) && !is.null(hp$k_covariate)) hp$k_covariate else 6L),
+          LR  = fit_lm(perm_prep$train, perm_prep$test, perm_prep$predictor_vars),
           stop("Unsupported model: ", model_name)
         ), error = function(e) NULL)
         if (is.null(perm_fit)) { fold_perm_rmses[k] <- NA_real_; next }
@@ -414,7 +419,7 @@ print_importance <- function(df, value_col, method_label, model_name,
 #' @param core_data  Data frame with target_var, predictor_vars (+ lon/lat for GPR).
 #' @param target_var Response variable name.
 #' @param predictor_vars Character vector of predictor names.
-#' @param model_name One of \code{"XGB"}, \code{"GAM"}, \code{"RF"}, \code{"GPR"}.
+#' @param model_name One of \code{"XGB"}, \code{"GAM"}, \code{"LR"}, \code{"RF"}, \code{"GPR"}.
 #' @param n_points   Observations to sample for SHAP (default 30; higher = slower).
 #' @param max_gpr_train Max rows used to fit GPR (subsampled; default 300).
 #' @param log_response If TRUE (default), fit and SHAP are on log(response); use same as rest of pipeline.
@@ -453,7 +458,7 @@ compute_shap_importance <- function(core_data, target_var, predictor_vars,
     mdl <- fit$model
     pred_fun <- function(m, newdata) as.numeric(predict(m, newdata = as.matrix(newdata)))
 
-  } else if (model_name == "GAM" || model_name == "RF") {
+  } else if (model_name == "GAM" || model_name == "LR" || model_name == "RF") {
     prep <- prepare_predictors_train_numeric_only(core, predictor_vars)
     core_sc <- prep$data
     core_sc$median_carbon_density <- y
@@ -465,6 +470,14 @@ compute_shap_importance <- function(core_data, target_var, predictor_vars,
       if (is.null(mdl)) { warning("GAM SHAP failed; returning NULL."); return(NULL) }
       pred_fun <- function(m, newdata) {
         as.numeric(mgcv::predict.gam(m, newdata = as.data.frame(newdata), type = "response"))
+      }
+      X <- core_sc[, pvars, drop = FALSE]
+    } else if (model_name == "LR") {
+      fit <- fit_lm(core_sc, core_sc, pvars)
+      mdl <- fit$model
+      if (is.null(mdl)) { warning("LR SHAP failed; returning NULL."); return(NULL) }
+      pred_fun <- function(m, newdata) {
+        as.numeric(stats::predict(m, newdata = as.data.frame(newdata)))
       }
       X <- core_sc[, pvars, drop = FALSE]
     } else {
@@ -876,7 +889,7 @@ load_best_model_config <- function(model_name,
 
 #' Build model hyperparameter list from config with defaults.
 #'
-#' @param model_name Model name: GPR/GAM/XGB.
+#' @param model_name Model name: GPR/GAM/XGB/LR.
 #' @param cfg Config list (or NULL).
 #' @param defaults_by_model Optional named list to override defaults.
 #' @return Hyperparameter list suitable for fit_* functions.
@@ -888,6 +901,7 @@ model_hyperparams_from_config <- function(model_name, cfg = NULL, defaults_by_mo
       min_split_loss = 0, reg_reg_lambda = 1
     ),
     GAM = list(k_covariate = 6L),
+    LR = list(),
     GPR = list(kernel = "matern52", nug.min = 1e-8, nug.max = 100, nug.est = TRUE)
   )
   if (is.list(defaults_by_model) && model_name %in% names(defaults_by_model)) {
@@ -910,6 +924,9 @@ model_hyperparams_from_config <- function(model_name, cfg = NULL, defaults_by_mo
   if (model_name == "GAM") {
     d <- defaults$GAM
     return(list(k_covariate = cfg$k_covariate %||% d$k_covariate))
+  }
+  if (model_name == "LR") {
+    return(list())
   }
   if (model_name == "GPR") {
     d <- defaults$GPR
@@ -1428,8 +1445,8 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
                    predictor_vars_by_model = NULL,
                    hyperparams_by_model = NULL,
                    log_response = get0("log_transform_target", envir = .GlobalEnv, ifnotfound = TRUE)) {
-  models <- intersect(models %||% c("GPR", "GAM", "XGB", "RF"),
-                      c("GPR", "GAM", "XGB", "RF"))
+  models <- intersect(models %||% c("GPR", "GAM", "XGB", "LR", "RF"),
+                      c("GPR", "GAM", "XGB", "LR", "RF"))
   if (length(models) == 0L) stop("run_cv: no valid models selected")
   if (!"median_carbon_density" %in% names(core_data))
     stop("run_cv: core_data must contain 'median_carbon_density' (or set it from target_var before calling)")
@@ -1493,6 +1510,9 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
             prep$train, prep$test, prep$predictor_vars,
             include_spatial = FALSE,
             k_covariate = if (is.list(hp) && !is.null(hp$k_covariate)) hp$k_covariate else 6L
+          ),
+          LR = fit_lm(
+            prep$train, prep$test, prep$predictor_vars
           ),
           stop("Unsupported model: ", m)
         )
@@ -1597,7 +1617,9 @@ run_cv <- function(cv_method_name, fold_indices, core_data, predictor_vars,
 #' @param predictor_vars Character vector of predictor variable names.
 #' @param method Similarity metric: "euclidean" (scaled), "mahalanobis", or "range_overlap".
 #' @param verbose If TRUE, print diagnostic information.
-#' @return List with similarity_scores, flag_outside_range, summary, method, and data_similarity_scores.
+#' @return List with similarity_scores, flag_outside_range, summary, method,
+#'   data_similarity_scores (self-anchor; high for training points), and
+#'   data_similarity_reference_scores (leave-one-out style training reference).
 compute_environmental_similarity <- function(training_data, prediction_data, predictor_vars,
                                             method = "euclidean", verbose = FALSE) {
   pv <- intersect(intersect(predictor_vars, names(training_data)), names(prediction_data))
@@ -1638,14 +1660,26 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
   n_train <- nrow(X_train_complete)
   n_pred <- nrow(X_pred)
 
-  # Helper: convert distance vector to similarity in [0,1]
-  dist_to_sim <- function(d) {
+  # Helper: convert distances to training-referenced similarity in (0,1].
+  # Calibrated so that the 95th percentile training distance maps to high
+  # similarity (default target 0.8), yielding high scores for training points
+  # while preserving dynamic range over prediction space.
+  dist_to_sim <- function(d, ref_dist) {
     finite <- is.finite(d)
     if (!any(finite)) return(list(scores = rep(NA_real_, length(d)), finite = finite))
-    max_d <- max(d[finite], na.rm = TRUE)
-    if (!is.finite(max_d) || max_d <= 0) return(list(scores = rep(NA_real_, length(d)), finite = finite))
+    ref_finite <- ref_dist[is.finite(ref_dist)]
+    tau <- stats::quantile(ref_finite, probs = 0.95, na.rm = TRUE, names = FALSE)
+    if (!is.finite(tau) || tau <= 0) {
+      tau <- stats::median(ref_finite, na.rm = TRUE)
+    }
+    if (!is.finite(tau) || tau <= 0) {
+      tau <- 1
+    }
+    target_at_tau <- 0.8
+    kappa <- -log(target_at_tau)
     s <- rep(NA_real_, length(d))
-    s[finite] <- pmax(0, pmin(1, 1 - (d[finite] / (max_d + 1e-10))))
+    s[finite] <- exp(-kappa * (d[finite] / tau)^2)
+    s[finite] <- pmax(0, pmin(1, s[finite]))
     list(scores = s, finite = finite)
   }
 
@@ -1654,6 +1688,7 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
 
   similarity_scores <- NULL
   data_similarity_scores <- NULL
+  data_similarity_reference_scores <- NULL
 
   if (method == "euclidean") {
     train_mean <- colMeans(X_train_complete, na.rm = TRUE)
@@ -1662,40 +1697,44 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
     train_mean[!is.finite(train_mean)] <- 0
     X_train_scaled <- scale(X_train_complete, center = train_mean, scale = train_sd)
     X_train_scaled[!is.finite(X_train_scaled)] <- 0
-    train_sq <- rowSums(X_train_scaled^2)
+    X_pred_scaled <- scale(X_pred, center = train_mean, scale = train_sd)
     pred_all_na <- rowSums(is.finite(X_pred)) == 0L
+    X_pred_scaled[!is.finite(X_pred_scaled)] <- 0
 
-    # For predictions
-    min_dists <- numeric(n_pred)
-    for (start in seq(1L, n_pred, by = chunk_size)) {
-      end <- min(start + chunk_size - 1L, n_pred)
-      P <- scale(X_pred[start:end, , drop = FALSE], center = train_mean, scale = train_sd)
-      P[!is.finite(P)] <- 0
-      D_sq <- rowSums(P^2) + matrix(train_sq, nrow(P), n_train, byrow = TRUE) - 2 * (P %*% t(X_train_scaled))
-      min_dists[start:end] <- sqrt(pmax(apply(D_sq, 1L, min, na.rm = TRUE), 0))
+    # Nearest-neighbour distances in standardized covariate space:
+    # - prediction -> nearest training point
+    # - training -> nearest other training point (k=2, skip self)
+    if (!requireNamespace("FNN", quietly = TRUE)) {
+      stop("compute_environmental_similarity(method='euclidean') requires package 'FNN'")
     }
-    min_dists[pred_all_na] <- NA_real_
-    out <- dist_to_sim(min_dists)
+
+    pred_nn <- FNN::get.knnx(
+      data = X_train_scaled,
+      query = X_pred_scaled,
+      k = 1
+    )
+    pred_min_dists <- as.numeric(pred_nn$nn.dist[, 1])
+    pred_min_dists[pred_all_na] <- NA_real_
+
+    if (n_train > 1L) {
+      train_nn <- FNN::get.knn(X_train_scaled, k = 2)
+      train_min_dists <- as.numeric(train_nn$nn.dist[, 2])
+    } else {
+      train_min_dists <- rep(NA_real_, n_train)
+    }
+
+    # Prediction suitability: distance to nearest training point, calibrated by
+    # training leave-one-out-like distances.
+    out <- dist_to_sim(pred_min_dists, ref_dist = train_min_dists)
     similarity_scores <- out$scores
 
-    # For training data points (self-similarity / environmental similarity to other data points)
-    # Compute for each train point the minimum distance to any other (leave-one-out)
-    train_min_dists <- numeric(n_train)
-    if (n_train > 1) {
-      # Precompute full distance matrix (can chunk if n_train too big)
-      Dtt_sq <- matrix(NA_real_, n_train, n_train)
-      for (i in seq(1L, n_train, by = chunk_size)) {
-        i_end <- min(i + chunk_size - 1L, n_train)
-        x1 <- X_train_scaled[i:i_end, , drop = FALSE]
-        D_chunk <- rowSums(x1^2) + matrix(train_sq, nrow(x1), n_train, byrow = TRUE) - 2 * (x1 %*% t(X_train_scaled))
-        diag(D_chunk) <- Inf # exclude self
-        train_min_dists[i:i_end] <- sqrt(pmax(apply(D_chunk, 1L, min, na.rm = TRUE), 0))
-      }
-    } else {
-      train_min_dists[] <- NA_real_
-    }
-    train_out <- dist_to_sim(train_min_dists)
-    data_similarity_scores <- train_out$scores
+    # Training "definition of suitable": self-anchored (distance = 0), so points
+    # in training data are shown as high similarity on the map overlay.
+    data_similarity_scores <- rep(1, n_train)
+
+    # Keep a training-reference score distribution for ESS thresholding.
+    train_out <- dist_to_sim(train_min_dists, ref_dist = train_min_dists)
+    data_similarity_reference_scores <- train_out$scores
   } else if (method == "mahalanobis") {
     train_mean <- colMeans(X_train_complete, na.rm = TRUE)
     train_cov <- cov(X_train_complete, use = "complete.obs")
@@ -1714,7 +1753,7 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
       X_cent[!is.finite(X_cent)] <- 0
       d_sq[start:end] <- rowSums((X_cent %*% Sigma_inv) * X_cent)
     }
-    similarity_scores <- dist_to_sim(sqrt(pmax(d_sq, 0)))$scores
+    similarity_scores <- dist_to_sim(sqrt(pmax(d_sq, 0)), ref_dist = sqrt(pmax(d_sq, 0)))$scores
 
     # training data similarity (leave-one-out Mahalanobis)
     train_d_sq <- numeric(n_train)
@@ -1736,7 +1775,8 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
     } else {
       train_d_sq[] <- NA_real_
     }
-    data_similarity_scores <- dist_to_sim(train_d_sq)$scores
+    data_similarity_scores <- dist_to_sim(train_d_sq, ref_dist = train_d_sq)$scores
+    data_similarity_reference_scores <- data_similarity_scores
   } else if (method == "range_overlap") {
     train_ranges <- apply(X_train_complete, 2L, range, na.rm = TRUE)
     train_ranges[!is.finite(train_ranges)] <- 0
@@ -1750,9 +1790,10 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
       vec[n_valid == 0L] <- NA_real_
       similarity_scores[start:end] <- vec
     }
-    # For training data, all should be in range, so set to 1 if finite
+    # For training data, all should be in range, so set to 1 if finite.
     data_similarity_scores <- rep(1, nrow(X_train_complete))
     data_similarity_scores[!is.finite(rowSums(X_train_complete))] <- NA_real_
+    data_similarity_reference_scores <- data_similarity_scores
   } else {
     stop("Unknown method: ", method)
   }
@@ -1779,7 +1820,8 @@ compute_environmental_similarity <- function(training_data, prediction_data, pre
     flag_outside_range = flag_outside_range,
     summary = summary_stats,
     method = method,
-    data_similarity_scores = data_similarity_scores
+    data_similarity_scores = data_similarity_scores,
+    data_similarity_reference_scores = data_similarity_reference_scores
   )
 }
 
@@ -1858,7 +1900,7 @@ plot_applicability_domain <- function(
 ) {
   stopifnot(requireNamespace("ggplot2", quietly = TRUE))
 
-  # Ensure world map is a plain data frame; if we can't coerce safely, drop it
+  # Ensure world map is a plain data frame; if we can't coerce safely, drop it.
   if (is.null(world) && requireNamespace("maps", quietly = TRUE)) {
     world <- ggplot2::map_data("world")
   }
@@ -1872,19 +1914,24 @@ plot_applicability_domain <- function(
     }
   }
 
+  x_lab <- "Longitude"
+  y_lab <- "Latitude"
   df <- data.frame(prediction_grid[, coords, drop = FALSE], stringsAsFactors = FALSE)
-
   if (!is.null(similarity_scores)) df$similarity <- similarity_scores
   if (!is.null(flag_outside)) df$outside_domain <- flag_outside
 
-  # Filter for finite/defined values
+  # Filter for finite/defined values.
   if (!is.null(similarity_scores)) df <- df[is.finite(df$similarity), , drop = FALSE]
   if (!is.null(flag_outside)) df <- df[!is.na(df$outside_domain), , drop = FALSE]
 
+  if (nrow(df) == 0 || (is.null(similarity_scores) && is.null(flag_outside))) {
+    stop("Provide either similarity_scores or flag_outside with valid values.")
+  }
+
   p <- ggplot2::ggplot()
 
-  # 1) Prediction-grid similarity or applicability domain
-  if (!is.null(similarity_scores) && nrow(df) > 0) {
+  # Base layer for prediction grid.
+  if (!is.null(similarity_scores)) {
     if (use_raster) {
       p <- p + ggplot2::geom_raster(
         data = df,
@@ -1903,13 +1950,12 @@ plot_applicability_domain <- function(
         na.rm = TRUE
       )
     }
-    # Single shared colour scale for similarity (raster + data points)
-    p <- p + ggplot2::scale_fill_viridis_c(option = "plasma", name = "Similarity", na.value = "transparent")
-    p <- p + ggplot2::labs(
-      x = coords[1], y = coords[2],
-      title = "Environmental similarity to training data"
+    p <- p + ggplot2::scale_fill_viridis_c(
+      option = "plasma",
+      name = "Similarity",
+      na.value = "transparent"
     )
-  } else if (!is.null(flag_outside) && nrow(df) > 0) {
+  } else {
     if (use_raster) {
       p <- p + ggplot2::geom_raster(
         data = df,
@@ -1918,28 +1964,26 @@ plot_applicability_domain <- function(
       ) +
         ggplot2::scale_fill_manual(
           values = c("FALSE" = "green", "TRUE" = "red"),
-          name = "Outside\nDomain", na.value = "transparent"
+          name = "Outside\nDomain",
+          na.value = "transparent"
         )
     } else {
       p <- p + ggplot2::geom_point(
         data = df,
         ggplot2::aes(x = .data[[coords[1]]], y = .data[[coords[2]]], color = outside_domain),
-        size = point_size, alpha = 0.7, na.rm = TRUE
+        size = point_size,
+        alpha = 0.7,
+        na.rm = TRUE
       ) +
         ggplot2::scale_color_manual(
           values = c("FALSE" = "green", "TRUE" = "red"),
-          name = "Outside\nDomain", na.value = "transparent"
+          name = "Outside\nDomain",
+          na.value = "transparent"
         )
     }
-    p <- p + ggplot2::labs(
-      x = coords[1], y = coords[2],
-      title = "Applicability domain (red = outside training range)"
-    )
-  } else {
-    stop("Provide either similarity_scores or flag_outside with valid values.")
   }
 
-  # plot worldmap
+  # World map backdrop.
   required_cols <- c("long", "lat", "group")
   if (!is.null(world) && all(required_cols %in% names(world))) {
     p <- p + ggplot2::geom_polygon(
@@ -1949,8 +1993,7 @@ plot_applicability_domain <- function(
     )
   }
 
-
-  # overlay original data points (training data), coloured by their similarity
+  # Overlay training points, optionally colored by similarity.
   if (plot_data_points && !is.null(dat)) {
     df_dat <- data.frame(dat[, coords, drop = FALSE], stringsAsFactors = FALSE)
     if (!is.null(data_similarity_scores)) {
@@ -1988,12 +2031,19 @@ plot_applicability_domain <- function(
     }
   }
 
-  # Axis limits
-  if (!is.null(xlim) || !is.null(ylim)) {
-    p <- p + ggplot2::coord_cartesian(xlim = xlim, ylim = ylim)
-  }
+  # Axis limits (always applied with expand=FALSE for consistent cropping).
+  p <- p + ggplot2::coord_cartesian(
+    xlim = if (!is.null(xlim)) xlim else NULL,
+    ylim = if (!is.null(ylim)) ylim else NULL,
+    expand = FALSE
+  ) +
+    ggplot2::labs(x = x_lab, y = y_lab)
 
-  p + ggplot2::theme_minimal()
+  if (exists("theme_paper", mode = "function")) {
+    p + theme_paper()
+  } else {
+    p + ggplot2::theme_minimal()
+  }
 }
 # Load ML helpers after all utility functions are defined (avoids circular source with ml.R)
 source("modelling/R/ml.R")
