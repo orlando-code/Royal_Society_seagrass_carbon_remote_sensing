@@ -122,6 +122,7 @@ seagrass_mapping/
 │   │   ├── final_models/      # XGB_final.rds, GAM_final.rds, GPR_final.rds
 │   │   ├── predictions/       # Prediction maps (+ SE where available)
 │   └── supplement/              # Shared supplement outputs
+├── report/                       # Figures for report and repository
 └── README.md
 ```
 
