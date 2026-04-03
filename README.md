@@ -77,7 +77,7 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 
 ## Pipeline order (`run_multiseed_pixel_grouped.R`)
 
-![Pipeline order](/Users/rt582/Desktop/seagrass_mapping/report/flowchart.png)
+![Pipeline order](report/flowchart.png)
 
 | Step | What it does | Outputs |
 | ---- | ------------ | ------- |
