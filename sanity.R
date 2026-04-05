@@ -11,7 +11,7 @@ library(ggplot2)
 library(maps)
 library(tidyverse)
 source("modelling/R/extract_covariates_from_rasters.R")
-source("modelling/config/pipeline_config.R")
+source("modelling/pipeline_config.R")
 
 dat <- readr::read_rds("data/all_extracted_new.rds")
 source("sanity_helpers.R")
@@ -63,7 +63,7 @@ seagrass_eov_poly_2025 <- read.csv(fp)
 
 model_list <- c("GPR", "GAM", "XGB", "LR")
 if (!exists("robust_fold_seed_list", inherits = TRUE)) {
-  source("modelling/config/pipeline_config.R")
+  source("modelling/pipeline_config.R")
   robust_fold_seed_list <- get_pipeline_config()$robust_fold_seed_list
 }
 model_covariates <- read.csv(sprintf("output/pixel_grouped/covariate_selection/robust_pixel_grouped/pruned_model_variables_shap_robust_pixel_grouped_seeds_%s.csv", paste(robust_fold_seed_list, collapse = "-")))
