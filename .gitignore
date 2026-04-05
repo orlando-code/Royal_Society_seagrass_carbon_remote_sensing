@@ -42,3 +42,6 @@ hotosm_fra_waterways_lines_geojson/
 seagrass_eov/
 eov_cache/
 testing.ipynb
+
+sanity.R
+sanity_helpers.R
