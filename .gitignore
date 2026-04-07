@@ -50,3 +50,6 @@ sanity_helpers.R
 .r-local/
 .renv/
 renv/library/
+
+# temp files
+*.nfs*
