@@ -9,7 +9,7 @@ This repository predicts carbon density of sediment cores on seagrass beds from 
 From the project root:
 
 ```r
-# 0) Reproducible environment (required)
+# 0) Instantiate environment (required)
 renv::restore(prompt = FALSE)
 
 # 1) Optional (expensive): robust tuning seed sweep
@@ -82,7 +82,8 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 
 ## Pipeline order (`run_multiseed_pixel_grouped.R`)
 
-Pipeline order
+
+![Flowchart](report/flowchart.png)
 
 
 | Step    | What it does                                                   | Outputs                                                                           |
@@ -199,10 +200,7 @@ Seed policy is documented in `modelling/SEED_REGISTRY.md`.
 
 ## Environmental data
 
-First, ensure that a `data` directory exists in the main repository (see [Directory structure](#directory-structure)).
-
 The NetCDF raster files containing environmental covariates (from remote sensing and re-analysis products) are not stored in this repository. Download them from the data archive associated with the paper (e.g. the Zenodo record referenced in the manuscript) and place all `.nc` files under `data/env_rasters/`. The pipeline will auto-discover these covariates at runtime using `raster_covariates` from `modelling/R/extract_covariates_from_rasters.R`.
-
 
 ## Regions data
 
@@ -226,3 +224,4 @@ Persistent identifier: [https://data-gis.unep-wcmc.org/server/rest/services/Host
 
 - This workflow is designed for gap-filling near sampled conditions; extrapolation to novel environments may degrade (as shown when datasets `cv_type = "spatial`).
 - Reported performance depends on fold construction and seed policy; robust multiseed evaluation is used to reduce split-variance artifacts.
+
