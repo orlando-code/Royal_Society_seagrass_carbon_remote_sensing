@@ -489,9 +489,9 @@ verify_extraction <- function(existing_data,
 }
 
 
-# # Auto-build config from all rasters in env_rasters (one entry per .nc file)
+# Auto-build config from all rasters in covariate_rasters (one entry per .nc file)
 # Base path for final rasters (used by default)
-RASTER_DIR <- "data/env_rasters"
+RASTER_DIR <- "data/covariate_rasters"
 if (!exists("RASTER_CONFIG")) {
   RASTER_CONFIG <- build_covariate_config_from_dir(RASTER_DIR)
   assign("RASTER_CONFIG", RASTER_CONFIG, envir = .GlobalEnv)

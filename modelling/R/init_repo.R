@@ -113,7 +113,7 @@ seagrass_check_renv <- function(project_root, strict = identical(
 
 seagrass_require_core_inputs <- function(project_root) {
   core_data_path <- file.path(project_root, "data", "all_extracted_new.rds")
-  raster_dir <- file.path(project_root, "data", "env_rasters")
+  raster_dir <- file.path(project_root, "data", "covariate_rasters")
   missing <- character()
   if (!file.exists(core_data_path)) missing <- c(missing, core_data_path)
   if (!dir.exists(raster_dir)) missing <- c(missing, raster_dir)
