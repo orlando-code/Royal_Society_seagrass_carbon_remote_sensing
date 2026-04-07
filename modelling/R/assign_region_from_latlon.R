@@ -15,10 +15,18 @@ meow_region_shapes <- local({
     if (!file.exists(shp_path) && requireNamespace("here", quietly = TRUE)) {
       shp_path <- here::here("data/MEOW/meow_ecos.shp")
     }
-    if (!file.exists(shp_path)) stop("MEOW shapefile not found at: ", shp_path)
+    if (!file.exists(shp_path)) {
+      warning("MEOW shapefile not found at: ", shp_path, ". Region assignment skipped.")
+      cache <<- sf::st_sf(region = character(0), geometry = sf::st_sfc(crs = 4326))
+      return(cache)
+    }
 
     ecos <- sf::st_read(shp_path, quiet = TRUE)
-    if (!"ECOREGION" %in% names(ecos)) stop("MEOW shapefile missing ECOREGION column: ", shp_path)
+    if (!"ECOREGION" %in% names(ecos)) {
+      warning("MEOW shapefile missing ECOREGION column: ", shp_path, ". Region assignment skipped.")
+      cache <<- sf::st_sf(region = character(0), geometry = sf::st_sfc(crs = 4326))
+      return(cache)
+    }
 
     groups <- list(
       "Mediterranean Sea" = c("Western Mediterranean", "Alboran Sea", "Levantine Sea", "Ionian Sea", "Aegean Sea"),
@@ -62,6 +70,7 @@ assign_region_from_latlon <- function(dat) {
   pts <- sf::st_as_sf(dat[need, , drop = FALSE], coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
   shapes <- meow_region_shapes()
 
+  if (nrow(shapes) == 0L) return(dat)
   hits <- sf::st_intersects(pts, shapes)
   assigned <- vapply(hits, function(ix) if (length(ix) > 0) shapes$region[ix[1]] else NA_character_, character(1))
   dat$region[need] <- assigned

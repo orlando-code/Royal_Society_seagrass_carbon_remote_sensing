@@ -488,7 +488,7 @@ fit_xgboost <- function(train_data, test_data, predictor_vars, hyperparams = NUL
   min_split_loss            <- hyperparams$min_split_loss            %||% 0
   reg_reg_lambda       <- hyperparams$reg_reg_lambda       %||% 1
 
-  model <- xgboost(x = X_train, y = y_train, nrounds = nrounds,
+  model <- xgboost::xgboost(x = X_train, y = y_train, nrounds = nrounds,
     max_depth = max_depth, learning_rate = learning_rate,
     subsample = subsample, colsample_bytree = colsample_bytree,
     min_child_weight = min_child_weight,

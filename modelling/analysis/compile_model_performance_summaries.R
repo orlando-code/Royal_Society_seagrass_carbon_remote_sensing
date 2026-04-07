@@ -4,8 +4,23 @@
 ##   output/<cv_regime>/cv_pipeline/model_performance_across_methods_summary.csv
 ##   output/<cv_regime>/cv_pipeline/deployment_robustness_pixel_grouped.csv
 
-project_root <- here::here()
-setwd(project_root)
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
+  init_path <- file.path("modelling", "R", "init_repo.R")
+  if (!file.exists(init_path)) {
+    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
+    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
+    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
+  }
+  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
+  sys.source(init_path, envir = .GlobalEnv)
+}
+project_root <- seagrass_init_repo(
+  include_helpers = FALSE,
+  require_core_inputs = FALSE,
+  check_renv = FALSE
+)
+project_root <- getwd()
 
 source(file.path(project_root, "modelling/R/helpers.R"))
 load_packages(c("here", "dplyr", "readr"))
@@ -45,6 +60,7 @@ write.csv(
 # Deployment robustness check (multi-seed robust evaluation outputs)
 # ---------------------------------------------------------------------------
 robust_eval_candidates <- c(
+  Sys.glob(file.path(base_dir, "multiseed_runs", "pixel_grouped_evaluation_*")),
   Sys.glob(file.path(base_dir, "pixel_grouped_evaluation_*x_*_seeds*")),
   Sys.glob(file.path(base_dir, "robust_pixel_grouped_evaluation_robustSeeds_*"))
 )

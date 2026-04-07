@@ -19,14 +19,19 @@
 # Usage: sourced from run_paper.R (step 5), or run standalone.
 
 # rm(list = ls())
-setwd(here::here())
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) source("modelling/R/init_repo.R")
+project_root <- seagrass_init_repo(
+  packages = c("here", "mgcv", "tidyverse", "randomForest", "GauPro", "xgboost", "sf"),
+  source_files = c(
+    "modelling/R/extract_covariates_from_rasters.R",
+    "modelling/R/assign_region_from_latlon.R",
+    "modelling/pipeline_config.R"
+  ),
+  include_helpers = TRUE,
+  require_core_inputs = TRUE,
+  check_renv = TRUE
+)
 set.seed(42)
-
-source("modelling/R/helpers.R")
-source("modelling/R/extract_covariates_from_rasters.R")
-source("modelling/R/assign_region_from_latlon.R")
-source("modelling/config/pipeline_config.R")
-load_packages(c("here", "mgcv", "tidyverse", "randomForest", "GauPro", "xgboost", "sf"))
 
 cfg <- get_pipeline_config()
 apply_pipeline_defaults(

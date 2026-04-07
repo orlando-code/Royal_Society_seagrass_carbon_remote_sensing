@@ -3,7 +3,10 @@
 # If a variable is not in VAR_LABELS, label_vars() simply returns the
 # original name, so it is safe to use everywhere.
 
+EUROPE_LAT_RANGE <- c(34.65, 60.11)
+EUROPE_LON_RANGE <- c(-8.85, 33.30)
 
+# Colours for region shapes in maps.
 REGION_COLOURS <- c(
   "Mediterranean Sea" = "#9EF8EE",
   "North European Atlantic" = "#F24405",
@@ -12,7 +15,7 @@ REGION_COLOURS <- c(
   "Black Sea" = "#348888"
 )
 
-
+# Colours for seagrass species in maps.
 SPECIES_COLOURS <- c(
     "Cymodocea nodosa" = "#1b9e77", # blue
     "Halophila stipulacea" = "#d95f02", # orange
@@ -24,26 +27,13 @@ SPECIES_COLOURS <- c(
     "Unspecified" = "black" # gray
   )
 
-
+# Colours for machine learning models in plots.
 MODEL_COLOURS <- c(
   "LR" = "#3182bd", # Light blue
   "GAM" = "#99000d", # Dark red
   "XGB" = "#006d2c", # Alias used by run_cv (same as XGBoost)
   "RF" = "#50f01b", # Alias used by run_cv (same as Random Forest)
   "GPR" = "#fd8d3c" # Orange
-)
-
-# Colours keyed by both short and long model labels (CV / sensitivity CSVs vary).
-model_colours <- c(
-  MODEL_COLOURS,
-  "XGBoost" = MODEL_COLOURS[["XGB"]],
-  "Random Forest" = MODEL_COLOURS[["RF"]],
-  "Neural Network" = "#54278f",
-  "NN" = "#54278f",
-  "SVM" = "#9e9ac8",
-  "Ordinary Kriging" = "#08306b",
-  "Universal Kriging (env drift)" = "#3182bd",
-  "INLA" = "#cb181d"
 )
 
 # Standard line styles for pooled vs mean-fold metrics across plots.
@@ -54,7 +44,7 @@ METRIC_LINESTYLES <- c(
   "Mean-fold RMSE" = "22"
 )
 
-
+# Human-friendly labels for covariates.
 VAR_LABELS <- c(
   # Response variable
   median_carbon_density_100cm = "Median Carbon Density (g C/cm³)",
@@ -161,5 +151,3 @@ if (requireNamespace("ggplot2", quietly = TRUE) && requireNamespace("grid", quie
   ggplot2::theme_set(theme_paper())
 }
 
-europe_lat_range <- c(34.65, 60.11)
-europe_lon_range <- c(-8.85, 33.30)

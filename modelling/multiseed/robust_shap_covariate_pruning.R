@@ -8,15 +8,31 @@
 ## Output:
 ##   output/<cv_regime_name>/covariate_selection/robust_pixel_grouped/
 ##     pruned_model_variables_shap_robust_pixel_grouped_seeds_<...>.csv
+##   Or, if .GlobalEnv$robust_cov_dir_override is set (e.g. tuning seed sweep), that directory.
 ##     shap_importance_by_seed_fold_robust_pixel_grouped_seeds_<...>.csv
 ##     shap_importance_by_seed_robust_pixel_grouped_seeds_<...>.csv
 ##
-project_root <- here::here()
-setwd(project_root)
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
+  init_path <- file.path("modelling", "R", "init_repo.R")
+  if (!file.exists(init_path)) {
+    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
+    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
+    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
+  }
+  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
+  sys.source(init_path, envir = .GlobalEnv)
+}
+project_root <- seagrass_init_repo(
+  include_helpers = FALSE,
+  require_core_inputs = FALSE,
+  check_renv = FALSE
+)
+project_root <- getwd()
 
 source(file.path(project_root, "modelling/R/helpers.R"))
 source(file.path(project_root, "modelling/R/assign_region_from_latlon.R"))
-source(file.path(project_root, "modelling/config/pipeline_config.R"))
+source(file.path(project_root, "modelling/pipeline_config.R"))
 load_packages(c("dplyr", "readr", "ggplot2", "iml", "sf", "here"))
 
 cfg <- get_pipeline_config()
@@ -180,7 +196,12 @@ hyperparams_by_model <- hp_bundle$hyperparams_by_model
 # ---------------------------------------------------------------------------
 # Compute SHAP importance on fold-specific training sets (robust across seeds)
 # ---------------------------------------------------------------------------
-robust_cov_dir <- file.path(project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped")
+robust_cov_dir_override <- get0("robust_cov_dir_override", envir = .GlobalEnv, ifnotfound = NA_character_)
+robust_cov_dir <- if (!is.na(robust_cov_dir_override) && nzchar(as.character(robust_cov_dir_override))) {
+  as.character(robust_cov_dir_override)
+} else {
+  file.path(project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped")
+}
 dir.create(robust_cov_dir, recursive = TRUE, showWarnings = FALSE)
 
 seeds_str <- paste(robust_fold_seed_list, collapse = "-")

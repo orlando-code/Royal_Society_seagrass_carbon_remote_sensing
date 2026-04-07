@@ -9,16 +9,39 @@
 ##     shap_importance_robust_errorbars_by_model.png
 ##     shap_importance_robust_errorbars_combined.png
 
-project_root <- here::here()
-setwd(project_root)
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
+  init_path <- file.path("modelling", "R", "init_repo.R")
+  if (!file.exists(init_path)) {
+    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
+    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
+    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
+  }
+  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
+  sys.source(init_path, envir = .GlobalEnv)
+}
+project_root <- seagrass_init_repo(
+  include_helpers = FALSE,
+  require_core_inputs = FALSE,
+  check_renv = FALSE
+)
+project_root <- getwd()
 
 source(file.path(project_root, "modelling/R/helpers.R"))
 source(file.path(project_root, "modelling/R/plot_config.R"))
-load_packages(c("dplyr", "ggplot2", "patchwork", "readr", "here", "ggtext"))
-model_colours <- get0("model_colours", ifnotfound = c())
+source(file.path(project_root, "modelling/pipeline_config.R"))
 
+cfg <- get_pipeline_config()
+apply_pipeline_defaults(
+  cfg,
+  c(
+    "dpi", "show_titles", "robust_fold_seed_list", "cv_regime_name", "robust_shap_plot_top_n",
+  ), envir = .GlobalEnv)
+
+
+load_packages(c("dplyr", "ggplot2", "patchwork", "readr", "here", "ggtext"))
+show_titles <- get0("show_titles", envir = .GlobalEnv, ifnotfound = FALSE)
 cv_regime_name <- get0("cv_regime_name", envir = .GlobalEnv, ifnotfound = "pixel_grouped")
-dpi_val <- as.integer(get0("dpi", envir = .GlobalEnv, ifnotfound = 150L))
 robust_fold_seed_list <- as.integer(get0("robust_fold_seed_list", envir = .GlobalEnv, ifnotfound = integer()))
 if (length(robust_fold_seed_list) == 0L) {
   stop("robust_fold_seed_list is missing in .GlobalEnv; run from robust pipeline driver.")
@@ -65,7 +88,7 @@ imp_top <- imp_top %>%
   )
 
 make_model_plot <- function(dfm, m) {
-  m_col <- model_colours[[m]] %||% "#444444"
+  m_col <- MODEL_COLOURS[[m]] %||% "#444444"
   dfm <- dplyr::arrange(dfm, shap_importance_mean)
   ggplot2::ggplot(dfm, ggplot2::aes(x = shap_importance_mean, y = reorder(variable_styled, shap_importance_mean))) +
     ggplot2::geom_col(fill = m_col, alpha = 0.85) +
@@ -93,7 +116,7 @@ combined <- patchwork::wrap_plots(plots, ncol = length(plots)) +
   )
 
 out_combined <- file.path(robust_cov_dir, "shap_importance_robust_errorbars_combined.png")
-ggsave(out_combined, combined, width = max(10, 4 * length(plots)), height = 7, dpi = dpi_val)
+ggsave(out_combined, combined, width = max(10, 4 * length(plots)), height = 7, dpi = dpi)
 
 cat("Saved robust SHAP error-bar plots:\n")
 cat("  ", out_combined, "\n", sep = "")
