@@ -22,7 +22,7 @@ deprecated/
 # report/
 *.pptx
 *.numbers
-env_rasters/
+covariate_rasters/
 Updated_df/
 output/
 MEOW/

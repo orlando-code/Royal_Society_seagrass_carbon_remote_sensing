@@ -269,8 +269,8 @@ cat("\n")
 # Step 0: Data (build if missing)
 # =============================================================================
 cat("\t\tStep 0: Data (build if missing)\n")
-if (!dir.exists("data/env_rasters")) {
-  stop("Required input directory missing: data/env_rasters")
+if (!dir.exists("data/covariate_rasters")) {
+  stop("Required input directory missing: data/covariate_rasters")
 }
 if (!file.exists("data/all_extracted_new.rds")) {
   source("modelling/pipeline/build_all_extracted_new.R")
