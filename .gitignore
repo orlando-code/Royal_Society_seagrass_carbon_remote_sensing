@@ -45,3 +45,8 @@ testing.ipynb
 
 sanity.R
 sanity_helpers.R
+
+# renv local caches / temporary local libs
+.r-local/
+.renv/
+renv/library/
