@@ -195,7 +195,7 @@ All fold types are cached/reused via `output/cache/` to speed up re-runs.
 3. Record and archive:
   - `output/<cv_regime>/run_metadata/pipeline_config_effective.rds`
   - the timestamped folder under `output/<cv_regime>/cv_pipeline/multiseed_runs/` for that run (evaluation CSVs, `sensitivity_suite/` if run).
-
+4. Once models have been saved and predictions generated, the `prediction_maps.ipynb` Jupyter notebook can be used to generate the predictive maps of carbon stocks. This requires downloading extra datasets (see below).
 Seed policy is documented in `modelling/SEED_REGISTRY.md`.
 
 ## Environmental data
@@ -217,6 +217,16 @@ Persistent identifier: [https://gis.ices.dk/geonetwork/srv/metadata/4745e824-a61
 The Marine Ecoregions of the World (MEOW) document global ecoregions. These are available via UNEP via [this link](https://data-gis.unep-wcmc.org/portal/home/item.html?id=80567b4443f4457b822f645a2f0d70cf#:~:text=Description-,Download%20Dataset,-This%20dataset%20combines).
 
 Persistent identifier: [https://data-gis.unep-wcmc.org/server/rest/services/Hosted/WCMC036_MEOW_PPOW_2007_2012/FeatureServer](https://data-gis.unep-wcmc.org/server/rest/services/Hosted/WCMC036_MEOW_PPOW_2007_2012/FeatureServer)
+
+## Prediction Map datasets
+
+### Seagrass Essential Ocean Variable (EOV)
+
+The seagrass cover Essential Ocean Variable (EOV) was obtained from the EMODnet product catalogue from the EMODnet Seabed Habitats project via [this link](https://doi.org/10.34892/x6r3-d211). This allowed the calculation of national carbon stocks in seagrass beds from model-predicted carbon density. The species '`eunis_id`' codes were used to map the reported species to the classes in the core data dataset (see Supplementary Seagrass Essential Ocean Variable (EOV)).
+
+### Exclusive Economic Zones (EEZs)
+
+Exclusive Economic Zones (EEZs) were obtained from the Marine Regions website via [this link](https://www.marineregions.org/downloads.php). We used the `World EEZ v12 (2023-10-25, 122MB)` file in GeoPackage format. EEZs were used to attribute seagrass bed carbon to national territories.
 
 ---
 
