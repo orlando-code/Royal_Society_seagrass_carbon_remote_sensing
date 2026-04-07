@@ -1,6 +1,7 @@
 # R helpers and core logic
 
-Shared R code used by the pipeline and plot scripts. **helpers.R** sources **ml.R**; most scripts source **helpers.R** and then one or more of the others below.
+Shared R code used by the pipeline and plot scripts. Startup is centralized via
+`init_repo.R`; `helpers.R` sources `ml.R`.
 
 ---
 
@@ -16,7 +17,7 @@ Central utility and modelling-help library. It:
 - **CV and tuning helpers**: **permutation_importance_cv()**, **compute_shap_importance()**, **run_cv()**, **prepare_data_for_model()**, **calculate_metrics()**, and model-specific tune helpers (**tune_gpr_cv**, **tune_xgboost**, etc.) used by **hyperparameter_tuning_pipeline.R** and **fit_final_models.R**.
 - **Process RS covariates**: **process_rs_covariates()** – clips selected remote-sensing columns to ≥ 0.
 
-Many pipeline scripts depend on **get_cached_spatial_folds**, **load_model_vars**, **permutation_importance_cv**, **compute_shap_importance**, and **prepare_data_for_model** / **calculate_metrics**.
+Many pipeline scripts depend on **get_cached_spatial_folds**, **load_model_vars**, **permutation_importance_cv**, **compute_shap_importance**, and **ml::prepare_data_for_model** / **calculate_metrics**.
 
 ---
 
@@ -24,8 +25,8 @@ Many pipeline scripts depend on **get_cached_spatial_folds**, **load_model_vars*
 
 Machine learning and prediction layer:
 
-- **Scaling and encoding**: **compute_scale_params()**, **apply_scaling()**, **prepare_predictors_train()**, **prepare_predictors_train_numeric_only()**, **prepare_predictors_new()**, **apply_categorical_encoding()** – used for XGB, GAM, GPR (and RF where used).
-- **Response transform**: **transform_response()**, **inverse_response_transform()** (re-exported / used in concert with helpers).
+- **Scaling and encoding**: **compute_scale_params()**, **apply_scaling()**, **ml::prepare_predictors_train()**, **prepare_predictors_train_numeric_only()**, **prepare_predictors_new()**, **apply_categorical_encoding()** – used for XGB, GAM, GPR (and RF where used).
+- **Response transform**: **transform_response()**, **inverse_response_transform()** (used in concert with helpers).
 - **Model fitting**: **fit_xgboost()**, **fit_gam()**, **fit_gpr()**, **fit_rf()** – take train (and optionally test) data and predictor names; **fit_gpr** supports **prediction_grid** and returns predictions + SE.
 - **Unified prediction**: **predict_model()** – takes a saved model list (as from **output/<cv_regime>/final_models/*_final.rds**), new data, and optional **se = TRUE**; dispatches by model type (GPR returns SE when requested, others return **se = NULL**). **infer_model_type()** identifies GPR/XGB/GAM/RF from the object.
 - **Data prep for CV**: **prepare_data_for_model()** – returns train/test (and predictor_vars) in the form expected by **fit_***.

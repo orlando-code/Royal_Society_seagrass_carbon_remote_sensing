@@ -3,7 +3,11 @@
 This directory contains the seeded `pixel_grouped` multi-seed workflow used by
 the robust pipeline driver script.
 
-Entry point: `modelling/run_multiseed_pixel_grouped.R` (see also `modelling/config/pipeline_config.R` for seed lists and toggles).
+Entry point: `modelling/run_multiseed_pixel_grouped.R` (see also `modelling/pipeline_config.R` for seed lists and toggles).
+
+Evaluation and per-run artifacts (including `sensitivity_suite/` when enabled) are written under  
+`output/<cv_regime>/cv_pipeline/multiseed_runs/<pixel_grouped_evaluation_…>_<run_id>/`  
+with a default timestamp `run_id` so successive driver runs do not overwrite each other.
 
 - `robust_shap_covariate_pruning.R`: robust SHAP-based variable selection across multiple fold seeds.
 - `robust_hyperparameter_tuning.R`: robust hyperparameter selection across multiple fold seeds.

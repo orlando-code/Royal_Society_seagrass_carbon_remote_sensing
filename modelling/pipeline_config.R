@@ -35,9 +35,19 @@ get_pipeline_config <- function(overrides = list()) {
     cv_output_dir = file.path("output", "pixel_grouped"),
     cv_type_label = "pixel_grouped",
 
-    # Robust seed policy (5 seeds promoted from tuning_seed_sweep using RMSE-robust
+    # Seed registry (single source of truth for recommended seed sets).
+    # - default_robust_fold_seed_list: current active default for robust selection/tuning
+    # - paper_robust_fold_seed_list: frozen paper/report seeds (opt-in via use_paper_seed_registry)
+    # - eval_fold_seed_list: held-out evaluation seeds (kept disjoint from tuning seed pool)
+    seed_registry = list(
+      default_robust_fold_seed_list = c(48L, 52L, 53L, 70L, 73L),
+      paper_robust_fold_seed_list   = c(48L, 52L, 53L, 70L, 73L),
+      eval_fold_seed_list           = 100L:121L
+    ),
+    # Legacy field retained for backward compatibility with scripts that read it directly.
     robust_fold_seed_list = c(48L, 52L, 53L, 70L, 73L),
-    # robust_fold_seed_list = c(45L, 59L, 63L, 69L, 77L),
+    # If TRUE, use seed_registry$paper_robust_fold_seed_list instead of default robust seeds.
+    use_paper_seed_registry = FALSE,
     # Ten eval seeds, disjoint from tuning_seed_pool (42:81) and robust_fold_seed_list
     # (61 is in robust; former 52:61 overlapped).
     eval_fold_seed_list = 100L:121L,
@@ -115,6 +125,27 @@ get_pipeline_config <- function(overrides = list()) {
 
   if (length(overrides) > 0L) {
     for (nm in names(overrides)) cfg[[nm]] <- overrides[[nm]]
+  }
+
+  if (is.list(cfg$seed_registry) && length(cfg$seed_registry) > 0L) {
+    sr <- cfg$seed_registry
+    robust_default <- if (!is.null(sr$default_robust_fold_seed_list)) {
+      as.integer(sr$default_robust_fold_seed_list)
+    } else {
+      as.integer(cfg$robust_fold_seed_list)
+    }
+    robust_paper <- if (!is.null(sr$paper_robust_fold_seed_list)) {
+      as.integer(sr$paper_robust_fold_seed_list)
+    } else {
+      robust_default
+    }
+    eval_default <- if (!is.null(sr$eval_fold_seed_list)) {
+      as.integer(sr$eval_fold_seed_list)
+    } else {
+      as.integer(cfg$eval_fold_seed_list)
+    }
+    cfg$robust_fold_seed_list <- if (isTRUE(cfg$use_paper_seed_registry)) robust_paper else robust_default
+    cfg$eval_fold_seed_list <- eval_default
   }
 
   # Keep derived defaults consistent.

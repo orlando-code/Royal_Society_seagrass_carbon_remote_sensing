@@ -11,7 +11,13 @@ Predict seagrass carbon density from remote sensing and environmental data (gap-
 From the project root:
 
 ```r
-# Robust multiseed pipeline (recommended publication workflow)
+# 0) Reproducible environment (required)
+renv::restore(prompt = FALSE)
+
+# 1) Optional (expensive): robust tuning seed sweep
+source("modelling/analysis/tuning_seed_sweep.R")
+
+# 2) Main robust multiseed pipeline (recommended publication workflow)
 source("modelling/run_multiseed_pixel_grouped.R")
 ```
 
@@ -21,7 +27,7 @@ Everything goes under `output/`: cache, covariate selection, robust tuning/evalu
 
 ## Config (`pipeline_config.R`)
 
-Pipeline settings are centralized in `modelling/config/pipeline_config.R` (`get_pipeline_config()`), then consumed by `modelling/run_multiseed_pixel_grouped.R`.
+Pipeline settings are centralized in `modelling/pipeline_config.R` (`get_pipeline_config()`), then consumed by `modelling/run_multiseed_pixel_grouped.R`.
 
 ### Plotting / reporting
 
@@ -30,11 +36,12 @@ Pipeline settings are centralized in `modelling/config/pipeline_config.R` (`get_
 
 ### Pipeline toggles
 
-- `do_warm_start`: optional baseline pruning+tuning initialization.
 - `do_shap_refined_tuning`: re-tune after robust SHAP pruning.
 - `do_sensitivity`: run sensitivity suite and associated plots.
 - `do_diagnostics`: run train/test fraction and variance diagnostics.
 - `do_fit_final_models`, `do_supplement`: final model fitting and supplement outputs.
+- `multiseed_run_output_id`: suffix for this driver run’s evaluation folder under `cv_pipeline/multiseed_runs/`; default `NULL` uses a timestamp so repeated runs do not overwrite each other.
+- `use_robust_seeds_from_tuning_sweep`: if `TRUE`, load `robust_fold_seed_list` (and `eval_fold_seed_list` if stored) from `output/<cv_regime>/cv_pipeline/tuning_seed_sweep_runs/chosen_seeds_latest.rds` after running `modelling/analysis/tuning_seed_sweep.R`.
 
 ### Target and transforms
 
@@ -83,12 +90,11 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 | ---- | ------------ | ------- |
 | `-1` | Load config and create directories | `output/<cv_regime>/`, `output/cache/`, run metadata |
 | `0` | Build `data/all_extracted_new.rds` if missing | `data/all_extracted_new.rds` |
-| `1-2` | Optional warm-start baseline pruning+tuning | baseline pruned vars and `best_config_*.rds` |
-| `3` | Robust multiseed hyperparameter tuning | robust tuning dirs under `output/<cv_regime>/cv_pipeline/` |
+| `3` | Robust multiseed hyperparameter tuning | `cv_pipeline/robust_pixel_grouped_tuning_robustSeeds_*` |
 | `4` | Robust SHAP covariate pruning + SHAP plots | `output/<cv_regime>/covariate_selection/robust_pixel_grouped/` |
 | `5` | Optional robust re-tuning with SHAP-selected covariates | updated robust configs |
-| `6` | Robust held-out evaluation on disjoint eval seeds | run-specific evaluation folder in `cv_pipeline/` |
-| `7` | Sensitivity analyses and plots (optional) | `.../sensitivity_suite/` |
+| `6` | Robust held-out evaluation on disjoint eval seeds | `cv_pipeline/multiseed_runs/<evaluation_stem>_<run_id>/` (timestamped by default) |
+| `7` | Sensitivity analyses and plots (optional) | `.../multiseed_runs/.../sensitivity_suite/` (same run folder) |
 | `8` | Train/test fraction and target-variance diagnostics (optional) | diagnostics CSV/plots |
 | `9` | Fit final models from robust configs and robust covariates | `output/<cv_regime>/final_models/` |
 | `10` | Benchmark testing against species-mean baseline | `output/<cv_regime>/analysis/` |
@@ -108,25 +114,25 @@ seagrass_mapping/
 │   └── MEOW/                     # MEOW shapefile for region assignment (download online: see below)
 ├── modelling/
 │   ├── run_multiseed_pixel_grouped.R  # Main driver for publication workflow
-│   ├── config/                     # Central pipeline config
-│   ├── multiseed/                  # Robust multiseed tuning/pruning/eval
-│   ├── analysis/                   # Model comparison, sensitivity, diagnostics
+│   ├── config/                   # Central pipeline config
+│   ├── multiseed/                # Robust multiseed tuning/pruning/eval
+│   ├── analysis/                 # Model comparison, sensitivity, diagnostics
 │   ├── pipeline/                 # Data build, pruning, CV, tuning, importance, final fits
 │   ├── plots/                    # Figures: PDPs, prediction maps, supplement
 │   ├── R/                        # Shared R helpers, ML, raster extraction, plot config
 ├── output/                       # All pipeline outputs (replaces old figures/)
 │   ├── cache/                    # Shared cached spatial folds and prediction grids
-│   ├── <cv_regime>/             # Regime-specific outputs (based on `cv_type`)
-│   │   ├── covariate_selection/ # Pruning results, importance, PDPs
-│   │   ├── cv_pipeline/        # CV results, tuning configs, importance plots
-│   │   ├── final_models/      # XGB_final.rds, GAM_final.rds, GPR_final.rds
-│   │   ├── predictions/       # Prediction maps (+ SE where available)
-│   └── supplement/              # Shared supplement outputs
+│   ├── <cv_regime>/              # Regime-specific outputs (based on `cv_type`)
+│   │   ├── covariate_selection/  # Pruning results, importance, PDPs
+│   │   ├── cv_pipeline/          # Tuning configs, multiseed_runs/, tuning_seed_sweep_runs/
+│   │   ├── final_models/         # XGB_final.rds, GAM_final.rds, GPR_final.rds
+│   │   ├── predictions/          # Prediction maps (+ SE where available)
+│   └── supplement/               # Shared supplement outputs
 ├── report/                       # Figures for report and repository
 └── README.md
 ```
 
-`<cv_regime>` is controlled by `cv_regime_name` in `modelling/config/pipeline_config.R`:
+`<cv_regime>` is controlled by `cv_regime_name` in `modelling/pipeline_config.R`:
 - `"random"` -> `output/random`
 - `"location_grouped"` -> `output/location_grouped`
 - `"pixel_grouped"` -> `output/pixel_grouped`
@@ -188,10 +194,14 @@ The NetCDF raster files containing environmental covariates (from remote sensing
 
 1. Place required inputs under `data/` (`all_extracted_new.rds` can be built by step 0, rasters and region shapefiles must be downloaded as described below).
 2. Run from the repository root:
+   - `Rscript -e "renv::restore(prompt = FALSE)"`
+   - optional: `Rscript modelling/analysis/tuning_seed_sweep.R`
    - `Rscript modelling/run_multiseed_pixel_grouped.R`
 3. Record and archive:
    - `output/<cv_regime>/run_metadata/pipeline_config_effective.rds`
-   - run-specific robust evaluation folder under `output/<cv_regime>/cv_pipeline/`.
+   - the timestamped folder under `output/<cv_regime>/cv_pipeline/multiseed_runs/` for that run (evaluation CSVs, `sensitivity_suite/` if run).
+
+Seed policy is documented in `modelling/SEED_REGISTRY.md`.
 
 ---
 
