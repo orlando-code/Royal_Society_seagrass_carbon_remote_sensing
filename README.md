@@ -200,8 +200,6 @@ Seed policy is documented in `modelling/SEED_REGISTRY.md`.
 
 ## Environmental data
 
-First, ensure that a `data` directory exists in the main repository (see [Directory structure](#directory-structure)).
-
 The NetCDF raster files containing environmental covariates (from remote sensing and re-analysis products) are not stored in this repository. Download them from the data archive associated with the paper (e.g. the Zenodo record referenced in the manuscript) and place all `.nc` files under `data/covariate_rasters/`. The pipeline will auto-discover these covariates at runtime using `raster_covariates` from `modelling/R/extract_covariates_from_rasters.R`.
 
 ## Regions data
