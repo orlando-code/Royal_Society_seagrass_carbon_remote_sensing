@@ -1,51 +1,16 @@
 # ================================ UTILITY FUNCTIONS ================================
 # Manuscript figure theme (ggplot2 default after sourcing)
-if (file.exists("modelling/R/plot_config.R")) {
-  source("modelling/R/plot_config.R", local = FALSE)
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
+  source("modelling/R/init_repo.R")
 }
-
-#' Install packages if not already installed
-#'
-#' @param packages character vector of package names to install
-#' @return NULL but prints message to console when packages are installed
-install_packages <- function(packages) {
-  # if string, convert to list
-  if (is.character(packages)) {
-    packages <- list(packages)
-  }
-  for (package in packages) {
-    if (!requireNamespace(package, quietly = TRUE)) {
-      install.packages(package)
-    }
-  }
-  print(paste("Installed packages:", paste(packages, collapse = ", ")))
-}
-
-#' Load packages, installing missing ones; skips already-loaded packages.
-#' @param packages character vector of required package names
-#' @param optional character vector of package names to warn (not stop) if unavailable
-load_packages <- function(packages, optional = NULL) {
-  loaded <- character()
-  for (pkg in packages) {
-    if (isNamespaceLoaded(pkg)) next
-    is_opt <- pkg %in% optional
-    if (!requireNamespace(pkg, quietly = TRUE)) {
-      tryCatch(
-        install.packages(pkg, quiet = TRUE),
-        error = function(e) if (!is_opt) stop("Failed to install '", pkg, "': ", conditionMessage(e))
-      )
-    }
-    if (suppressWarnings(require(pkg, character.only = TRUE, quietly = TRUE))) {
-      loaded <- c(loaded, pkg)
-    } else if (is_opt) {
-      warning("Optional package '", pkg, "' could not be loaded.")
-    } else {
-      stop("Required package '", pkg, "' could not be loaded.")
-    }
-  }
-  if (length(loaded) > 0) cat("Loaded package(s):", paste(loaded, collapse = ", "), "\n")
-}
-
+project_root <- seagrass_init_repo(
+  packages = c("dplyr", "here", "digest"),
+  source_files = c("modelling/R/plot_config.R"),
+  include_helpers = FALSE,
+  require_core_inputs = FALSE,
+  check_renv = TRUE
+)
+source(file.path(project_root, "modelling", "R", "ml.R"))
 
 safe_write_csv <- function(x, path) {
   tryCatch(
@@ -652,7 +617,6 @@ compare_covariates_between_models <- function(model_variables_df) {
 }
 
 
-
 # ================================ INITIALISATION ================================
 
 #' Index of test rows whose factor predictor levels were present in training
@@ -674,15 +638,6 @@ test_rows_with_factors_in_train <- function(train, test, factor_vars = c("seagra
   }
   keep
 }
-
-# Original R² metric (squared correlation; kept for reference)
-# calculate_metrics <- function(observed, predicted) {
-#   r2 <- cor(observed, predicted, use = "complete.obs")^2
-#   rmse <- sqrt(mean((observed - predicted)^2, na.rm = TRUE))
-#   mae <- mean(abs(observed - predicted), na.rm = TRUE)
-#   bias <- mean(predicted - observed, na.rm = TRUE)
-#   data.frame(r2 = r2, rmse = rmse, mae = mae, bias = bias)
-# }
 
 #' Calculate performance metrics for model predictions
 #'
@@ -2045,5 +2000,3 @@ plot_applicability_domain <- function(
     p + ggplot2::theme_minimal()
   }
 }
-# Load ML helpers after all utility functions are defined (avoids circular source with ml.R)
-source("modelling/R/ml.R")

@@ -8,11 +8,26 @@
 #        Or run after run_paper.R (globals set).
 # =============================================================================
 
-setwd(here::here())
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
+  init_path <- file.path("modelling", "R", "init_repo.R")
+  if (!file.exists(init_path)) {
+    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
+    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
+    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
+  }
+  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
+  sys.source(init_path, envir = .GlobalEnv)
+}
+project_root <- seagrass_init_repo(
+  include_helpers = FALSE,
+  require_core_inputs = FALSE,
+  check_renv = FALSE
+)
 source("modelling/R/helpers.R")
 source("modelling/R/plot_config.R")
 source("modelling/R/assign_region_from_latlon.R")
-source("modelling/config/pipeline_config.R")
+source("modelling/pipeline_config.R")
 source("modelling/R/extract_covariates_from_rasters.R")
 source("modelling/R/covariate_na_map.R")
 load_packages(c("here", "ggplot2", "dplyr", "tidyr", "maps", "sf", "patchwork", "FNN"))
@@ -114,43 +129,48 @@ world <- map_data("world")
 # -----------------------------------------------------------------------------
 # Figure 1: Region outlines (MEOW-based)
 # -----------------------------------------------------------------------------
-ecos <- sf::st_read("data/MEOW/meow_ecos.shp", quiet = TRUE)
-ecoregion_groups <- tibble::tribble(
-  ~region,                     ~ecoregion_list,
-  "Mediterranean Sea",         c("Western Mediterranean", "Alboran Sea", "Levantine Sea", "Ionian Sea", "Aegean Sea"),
-  "North European Atlantic",  c("Celtic Seas", "North Sea"),
-  "South European Atlantic",  c("South European Atlantic Shelf"),
-  "Baltic Sea",                "Baltic Sea",
-  "Black Sea",                 "Black Sea"
-)
-region_shapes <- ecoregion_groups %>%
-  dplyr::rowwise() %>%
-  dplyr::mutate(
-    geometry = sf::st_union(
-      sf::st_geometry(ecos[ecos$ECOREGION %in% ecoregion_list, ])
-    )
-  ) %>%
-  dplyr::ungroup() %>%
-  dplyr::select(region, geometry) %>%
-  sf::st_as_sf()
-bbox <- sf::st_bbox(region_shapes)
-region_labels <- region_shapes %>%
-  dplyr::mutate(
-    label_point = suppressWarnings(sf::st_point_on_surface(geometry)),
-    region = ifelse(region == "North European Atlantic", "North European\nAtlantic", region),
-    region = ifelse(region == "South European Atlantic", "South European\nAtlantic", region)
+meow_shp <- "data/MEOW/meow_ecos.shp"
+if (file.exists(meow_shp)) {
+  ecos <- sf::st_read(meow_shp, quiet = TRUE)
+  ecoregion_groups <- tibble::tribble(
+    ~region,                     ~ecoregion_list,
+    "Mediterranean Sea",         c("Western Mediterranean", "Alboran Sea", "Levantine Sea", "Ionian Sea", "Aegean Sea"),
+    "North European Atlantic",  c("Celtic Seas", "North Sea"),
+    "South European Atlantic",  c("South European Atlantic Shelf"),
+    "Baltic Sea",                "Baltic Sea",
+    "Black Sea",                 "Black Sea"
   )
+  region_shapes <- ecoregion_groups %>%
+    dplyr::rowwise() %>%
+    dplyr::mutate(
+      geometry = sf::st_union(
+        sf::st_geometry(ecos[ecos$ECOREGION %in% ecoregion_list, ])
+      )
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(region, geometry) %>%
+    sf::st_as_sf()
+  bbox <- sf::st_bbox(region_shapes)
+  region_labels <- region_shapes %>%
+    dplyr::mutate(
+      label_point = suppressWarnings(sf::st_point_on_surface(geometry)),
+      region = ifelse(region == "North European Atlantic", "North European\nAtlantic", region),
+      region = ifelse(region == "South European Atlantic", "South European\nAtlantic", region)
+    )
 
-p_region <- ggplot() +
-  geom_polygon(data = world, aes(x = long, y = lat, group = group), fill = "#eeeeee", colour = "#a5a5a5") +
-  geom_sf(data = region_shapes, fill = REGION_COLOURS[region_shapes$region], colour = "black", alpha = 0.5, linewidth = 0.2) +
-  geom_sf_text(data = region_labels, aes(label = region, geometry = label_point), size = 4, fontface = "bold", colour = "black") +
-  coord_sf(xlim = c(bbox["xmin"], bbox["xmax"]), ylim = c(bbox["ymin"], bbox["ymax"]), expand = FALSE) +
-  theme_paper() +
-  theme(legend.position = "none") +
-  labs(x = "Longitude", y = "Latitude")
-ggsave(file.path(OUT_DIR, "region_shapes.png"), p_region, width = 10, height = 10, dpi = dpi)
-cat("Saved", file.path(OUT_DIR, "region_shapes.png"), "\n")
+  p_region <- ggplot() +
+    geom_polygon(data = world, aes(x = long, y = lat, group = group), fill = "#eeeeee", colour = "#a5a5a5") +
+    geom_sf(data = region_shapes, fill = REGION_COLOURS[region_shapes$region], colour = "black", alpha = 0.5, linewidth = 0.2) +
+    geom_sf_text(data = region_labels, aes(label = region, geometry = label_point), size = 4, fontface = "bold", colour = "black") +
+    coord_sf(xlim = c(bbox["xmin"], bbox["xmax"]), ylim = c(bbox["ymin"], bbox["ymax"]), expand = FALSE) +
+    theme_paper() +
+    theme(legend.position = "none") +
+    labs(x = "Longitude", y = "Latitude")
+  ggsave(file.path(OUT_DIR, "region_shapes.png"), p_region, width = 10, height = 10, dpi = dpi)
+  cat("Saved", file.path(OUT_DIR, "region_shapes.png"), "\n")
+} else {
+  warning("Skipping region_shapes figure; missing optional file: ", meow_shp)
+}
 
 # -----------------------------------------------------------------------------
 # Figure 2: Target vs log-transformed target (two histograms side by side)
@@ -336,8 +356,8 @@ for (model in model_list) {
     dat = dat,
     data_similarity_scores = similarity$data_similarity_scores,
     world = world,
-    xlim = europe_lon_range,
-    ylim = europe_lat_range,
+    xlim = EUROPE_LON_RANGE,
+    ylim = EUROPE_LAT_RANGE,
     use_raster = TRUE
   )
   ggsave(file.path(OUT_DIR, paste0("applicability_domain_", model, ".png")), p, width = 8, height = 6)
@@ -505,8 +525,8 @@ cat("Saved", file.path(OUT_DIR, "histogram_carbon_density_by_region.png"), "\n")
 # Figure 10: Map of how many base raster covariates are NA per cell (Europe)
 # Raw extraction (no nearest-neighbour fill); see build_covariate_na_count_grid().
 # -----------------------------------------------------------------------------
-na_map_lon_range <- europe_lon_range
-na_map_lat_range <- europe_lat_range
+na_map_lon_range <- EUROPE_LON_RANGE
+na_map_lat_range <- EUROPE_LAT_RANGE
 na_map_n_lon <- as.integer(Sys.getenv("NA_MAP_N_LON", unset = "240"))
 na_map_n_lat <- as.integer(Sys.getenv("NA_MAP_N_LAT", unset = "200"))
 na_map_cache_rds <- "output/cache/covariate_na_count_grid_europe.rds"

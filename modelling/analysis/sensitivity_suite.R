@@ -9,7 +9,8 @@
 ##   - Reuses tuned covariate sets and tuned hyperparameters.
 ##   - No re-tuning, no re-selection.
 ##
-## Outputs (under <run_output_dir>/sensitivity_suite/ when available):
+## Outputs (under <run_output_dir>/sensitivity_suite/ — use a unique run_output_dir, e.g.
+##   cv_pipeline/multiseed_runs/<evaluation_stem>_<run_id>/ from run_multiseed_pixel_grouped.R):
 ##   - sensitivity_by_fold.csv
 ##   - sensitivity_pooled_by_seed.csv
 ##   - sensitivity_summary.csv
@@ -19,12 +20,24 @@
 ##   - sensitivity_seed_count_convergence.csv
 ##   - sensitivity_seed_count_plateau.csv
 
-project_root <- here::here()
-setwd(project_root)
-
-source(file.path(project_root, "modelling/R/helpers.R"))
-source(file.path(project_root, "modelling/config/pipeline_config.R"))
-load_packages(c("here", "dplyr", "readr", "tibble"))
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
+  init_path <- file.path("modelling", "R", "init_repo.R")
+  if (!file.exists(init_path)) {
+    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/sensitivity_suite.R", call. = FALSE)
+    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
+    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
+  }
+  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
+  sys.source(init_path, envir = .GlobalEnv)
+}
+project_root <- seagrass_init_repo(
+  packages = c("here", "dplyr", "readr", "tibble"),
+  source_files = c("modelling/pipeline_config.R"),
+  include_helpers = TRUE,
+  require_core_inputs = TRUE,
+  check_renv = TRUE
+)
 
 cfg <- get_pipeline_config()
 apply_pipeline_defaults(

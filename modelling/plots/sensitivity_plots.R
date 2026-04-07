@@ -1,12 +1,27 @@
 rm(list = ls())
-project_root <- here::here()
-setwd(project_root)
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
+  init_path <- file.path("modelling", "R", "init_repo.R")
+  if (!file.exists(init_path)) {
+    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
+    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
+    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
+  }
+  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
+  sys.source(init_path, envir = .GlobalEnv)
+}
+project_root <- seagrass_init_repo(
+  include_helpers = FALSE,
+  require_core_inputs = FALSE,
+  check_renv = FALSE
+)
+project_root <- getwd()
 
 library(dplyr)
 library(ggplot2)
 library(readr)
 library(tidyr)
-source(file.path(project_root, "modelling/config/pipeline_config.R"))
+source(file.path(project_root, "modelling/pipeline_config.R"))
 source(file.path(project_root, "modelling/R/plot_config.R"))
 cfg <- get_pipeline_config()
 apply_pipeline_defaults(
@@ -54,16 +69,19 @@ resolve_robust_eval_dir <- function() {
   eval_seeds <- get0("eval_fold_seed_list", envir = .GlobalEnv, ifnotfound = NULL)
   cv_type_label <- get0("cv_type_label", envir = .GlobalEnv, ifnotfound = "pixel_grouped")
   if (!is.null(env_seeds) && length(env_seeds) > 0L && !is.null(eval_seeds) && length(eval_seeds) > 0L) {
-    target <- file.path(
-      cv_pipeline_dir,
-      build_seeded_run_folder_name(
-        cv_type_label = cv_type_label,
-        folder_type = "evaluation",
-        repeat_seed_list = eval_seeds,
-        robust_seed_list = env_seeds,
-        include_seed_values = TRUE
-      )
+    stem <- build_seeded_run_folder_name(
+      cv_type_label = cv_type_label,
+      folder_type = "evaluation",
+      repeat_seed_list = eval_seeds,
+      robust_seed_list = env_seeds,
+      include_seed_values = TRUE
     )
+    mult_glob <- Sys.glob(file.path(cv_pipeline_dir, "multiseed_runs", paste0(stem, "_*")))
+    mult_glob <- mult_glob[dir.exists(mult_glob)]
+    if (length(mult_glob) > 0L) {
+      return(mult_glob[which.max(file.info(mult_glob)$mtime)])
+    }
+    target <- file.path(cv_pipeline_dir, stem)
     if (dir.exists(target)) return(target)
   }
 
@@ -76,6 +94,7 @@ resolve_robust_eval_dir <- function() {
     if (dir.exists(target)) return(target)
   }
   candidates <- c(
+    Sys.glob(file.path(cv_pipeline_dir, "multiseed_runs", "pixel_grouped_evaluation_*")),
     Sys.glob(file.path(cv_pipeline_dir, "pixel_grouped_evaluation_*x*_seeds*")),
     Sys.glob(file.path(cv_pipeline_dir, "robust_pixel_grouped_evaluation_robustSeeds_*"))
   )
@@ -119,10 +138,23 @@ missing_inputs <- names(input_paths)[!path_present]
 has_full_sensitivity_inputs <- all(path_present)
 
 tuning_seed_sweep_path <- {
-  cands <- c(file.path(sens_dir, "sensitivity_tuning_seed_sweep_summary.csv"),
-             file.path(legacy_sens_dir, "sensitivity_tuning_seed_sweep_summary.csv"))
+  sweep_run_csvs <- Sys.glob(
+    file.path(cv_pipeline_dir, "tuning_seed_sweep_runs", "sweep_*", "sensitivity_tuning_seed_sweep_summary.csv")
+  )
+  sweep_run_csvs <- sweep_run_csvs[file.exists(sweep_run_csvs)]
+  cands <- c(
+    file.path(sens_dir, "sensitivity_tuning_seed_sweep_summary.csv"),
+    file.path(legacy_sens_dir, "sensitivity_tuning_seed_sweep_summary.csv"),
+    sweep_run_csvs
+  )
   hit <- cands[file.exists(cands)]
-  if (length(hit) > 0L) hit[[1]] else NA_character_
+  if (length(hit) == 0L) {
+    NA_character_
+  } else if (length(hit) == 1L) {
+    hit[[1L]]
+  } else {
+    hit[which.max(file.info(hit)$mtime)]
+  }
 }
 
 if (!has_full_sensitivity_inputs && (is.na(tuning_seed_sweep_path) || !file.exists(tuning_seed_sweep_path))) {

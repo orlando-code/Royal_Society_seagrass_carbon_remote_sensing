@@ -7,13 +7,29 @@
 # Outputs:  output/<cv_regime>/covariate_selection/pdp_<model>.png
 #
 # Usage: sourced from run_paper.R (step 5b), or run standalone.
-
-setwd(here::here())
-source("modelling/R/helpers.R")
-source("modelling/R/plot_config.R")
-source("modelling/R/extract_covariates_from_rasters.R")
-source("modelling/R/assign_region_from_latlon.R")
-source("modelling/config/pipeline_config.R")
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
+  init_path <- file.path("modelling", "R", "init_repo.R")
+  if (!file.exists(init_path)) {
+    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/partial_dependence_all_models.R", call. = FALSE)
+    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
+    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
+  }
+  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
+  sys.source(init_path, envir = .GlobalEnv)
+}
+project_root <- seagrass_init_repo(
+  packages = c("here", "dplyr", "ggplot2", "patchwork", "iml"),
+  source_files = c(
+    "modelling/pipeline_config.R",
+    "modelling/R/plot_config.R",
+    "modelling/R/extract_covariates_from_rasters.R",
+    "modelling/R/assign_region_from_latlon.R"
+  ),
+  include_helpers = TRUE,
+  require_core_inputs = TRUE,
+  check_renv = TRUE
+)
 cfg <- get_pipeline_config()
 apply_pipeline_defaults(
   cfg,
@@ -22,8 +38,9 @@ apply_pipeline_defaults(
   ),
   envir = .GlobalEnv
 )
+show_titles <- isTRUE(get0("show_titles", envir = .GlobalEnv, ifnotfound = TRUE))
+dpi <- get0("dpi", envir = .GlobalEnv, ifnotfound = 300)
 
-load_packages(c("here", "dplyr", "ggplot2", "patchwork"))
 if (!requireNamespace("iml", quietly = TRUE))
   stop("Package 'iml' is required; install with install.packages('iml').")
 
@@ -192,9 +209,9 @@ plot_pdp_for_model <- function(model_name, max_vars = 6L) {
   plots <- plots[!vapply(plots, is.null, logical(1))]
   if (length(plots) == 0) return(invisible(NULL))
 
-  combined <- patchwork::wrap_plots(plots, ncol = 2) +
-  if (show_titles) {
-    patchwork::plot_annotation(
+  combined <- patchwork::wrap_plots(plots, ncol = 2)
+  if (isTRUE(show_titles)) {
+    combined <- combined + patchwork::plot_annotation(
       title    = paste("Partial Dependence Plots –", model_name),
       subtitle = paste(length(pvars), "top predictors"),
       theme    = ggplot2::theme(
@@ -309,7 +326,6 @@ if (length(shared_vars) > 0L) {
           )
         )
     }
-    dpi <- get0("dpi", envir = .GlobalEnv, ifnotfound = 150)
     out_shared <- file.path(out_dir, "pdp_shared_top_vars.png")
     ggplot2::ggsave(
       out_shared, combined_shared,

@@ -15,13 +15,21 @@
 ##     - model_comparison_paired_pooled_deltas.csv
 # remove all variables
 rm(list = ls())
-project_root <- here::here()
-setwd(project_root)
-
-source(file.path(project_root, "modelling/R/helpers.R"))
-source(file.path(project_root, "modelling/config/pipeline_config.R"))
-source(file.path(project_root, "modelling/R/plot_config.R"))
-load_packages(c("here", "dplyr", "readr", "tidyr", "ggplot2", "patchwork"))
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
+  init_path <- file.path("modelling", "R", "init_repo.R")
+  if (!file.exists(init_path)) {
+    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/model_comparison.R", call. = FALSE)
+    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
+    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
+  }
+  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
+  sys.source(init_path, envir = .GlobalEnv)
+}
+project_root <- seagrass_init_repo(
+  packages = c("here", "dplyr", "readr", "tidyr", "ggplot2", "patchwork"),
+  source_files = c("modelling/pipeline_config.R", "modelling/R/plot_config.R")
+)
 
 if (getRversion() >= "2.15.1") {
   utils::globalVariables(c("fit_gpr", "fit_rf", "fit_xgboost", "fit_gam"))
@@ -52,6 +60,8 @@ if (length(model_comparison_eval_run_dir) != 1L || !nzchar(model_comparison_eval
 
 parse_seed_list_from_run_dir <- function(run_dir) {
   b <- basename(normalizePath(run_dir, winslash = "/", mustWork = FALSE))
+  # Strip multiseed timestamp suffix: ..._seeds_48-52-53_20260402_120000
+  b <- sub("_\\d{8}_\\d{6}$", "", b)
   m <- regexec("seeds_([0-9]+(?:-[0-9]+)*)$", b)
   hit <- regmatches(b, m)[[1]]
   if (length(hit) < 2L) return(integer(0))
