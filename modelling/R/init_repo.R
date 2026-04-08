@@ -111,9 +111,40 @@ seagrass_check_renv <- function(project_root, strict = identical(
   invisible(FALSE)
 }
 
+build_core_data <- function(project_root) {
+  all_extracted_path <- file.path(project_root, "data", "all_extracted_new.rds")
+  if (file.exists(all_extracted_path)) return(invisible(TRUE))
+
+  build_script <- file.path(project_root, "modelling", "pipeline", "build_all_extracted_new.R")
+  if (!file.exists(build_script)) return(invisible(FALSE))
+
+  message(
+    "Core input missing: ", all_extracted_path, "\n",
+    "Attempting to build it now via modelling/pipeline/build_all_extracted_new.R ..."
+  )
+  build_ok <- tryCatch(
+    {
+      # The build script sources extract_covariates_from_rasters.R and writes all_extracted_new.rds.
+      sys.source(build_script, envir = .GlobalEnv)
+      TRUE
+    },
+    error = function(e) {
+      warning(
+        "Automatic build attempt for data/all_extracted_new.rds failed: ",
+        conditionMessage(e)
+      )
+      FALSE
+    }
+  )
+  isTRUE(build_ok) && file.exists(all_extracted_path)
+}
+
 seagrass_require_core_inputs <- function(project_root) {
   core_data_path <- file.path(project_root, "data", "all_extracted_new.rds")
   raster_dir <- file.path(project_root, "data", "covariate_rasters")
+  if (!file.exists(core_data_path)) {
+    build_core_data(project_root)
+  }
   missing <- character()
   if (!file.exists(core_data_path)) missing <- c(missing, core_data_path)
   if (!dir.exists(raster_dir)) missing <- c(missing, raster_dir)
