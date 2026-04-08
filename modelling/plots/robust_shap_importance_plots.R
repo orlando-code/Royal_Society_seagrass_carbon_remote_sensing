@@ -35,8 +35,10 @@ cfg <- get_pipeline_config()
 apply_pipeline_defaults(
   cfg,
   c(
-    "dpi", "show_titles", "robust_fold_seed_list", "cv_regime_name", "robust_shap_plot_top_n",
-  ), envir = .GlobalEnv)
+    "dpi", "show_titles", "robust_fold_seed_list", "cv_regime_name", "robust_shap_plot_top_n"
+  ),
+  envir = .GlobalEnv
+)
 
 
 load_packages(c("dplyr", "ggplot2", "patchwork", "readr", "here", "ggtext"))
