@@ -25,7 +25,7 @@ project_root <- seagrass_init_repo(
   check_renv = FALSE
 )
 source("modelling/R/helpers.R")
-source("modelling/R/plot_config.R")
+source("modelling/plots/plot_config.R")
 source("modelling/R/assign_region_from_latlon.R")
 source("modelling/pipeline_config.R")
 source("modelling/R/extract_covariates_from_rasters.R")
@@ -45,7 +45,7 @@ apply_pipeline_defaults(
 if (!"dplyr" %in% loadedNamespaces()) suppressPackageStartupMessages(library(dplyr))
 if (exists("dpi", envir = .GlobalEnv)) dpi <- get("dpi", envir = .GlobalEnv) else dpi <- 150
 
-# Output directory (theme: theme_paper() from modelling/R/plot_config.R, sourced above)
+# Output directory (theme: theme_paper() from modelling/plots/plot_config.R, sourced above)
 OUT_DIR <- "output/supplement"
 dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
 
