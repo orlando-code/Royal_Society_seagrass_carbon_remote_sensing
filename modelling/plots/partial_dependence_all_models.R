@@ -265,12 +265,8 @@ if (length(shared_vars) > 0L) {
         } else {
           label_vars(v)
         }
-        panel_title <- if (j == 1L) {
-          if (i == 1L) m else vlab_display
-        } else {
-          NULL
-        }
-        panel_subtitle <- if (j == 1L && i == 1L) vlab_display else NULL
+        panel_title <- if (i == 1L || i == 8L) m else NULL
+        panel_subtitle <- if (j==1L) vlab_display else NULL
         # Bottom row: x-axis title = predictor; no x title for seagrass_species (discrete axis).
         panel_x <- if (i == n_shared && !identical(v, "seagrass_species")) vlab_display else NULL
         y_axis_theme <- if (j == 1L) {
@@ -330,7 +326,7 @@ if (length(shared_vars) > 0L) {
     ggplot2::ggsave(
       out_shared, combined_shared,
       width = 12, height = max(4, length(shared_vars) * 2.5),
-      dpi = dpi, limitsize = FALSE
+      dpi = 600, limitsize = FALSE
     )
     cat("  Saved shared-variable PDPs ->", out_shared, "\n")
   }
