@@ -4,7 +4,7 @@ This project keeps seed policy centralized in `modelling/pipeline_config.R` unde
 
 ## Canonical fields
 
-- `seed_registry$default_robust_fold_seed_list`
+- `seed_registry$active_robust_fold_seed_list`
   - active robust selection/tuning seeds used by default.
 - `seed_registry$paper_robust_fold_seed_list`
   - frozen paper/report seeds; opt-in with `use_paper_seed_registry = TRUE`.
@@ -27,11 +27,13 @@ Optional sweep -> robust run flow:
 
 The sweep writes:
 
-- `output/<cv_regime>/cv_pipeline/tuning_seed_sweep_runs/chosen_seeds_for_pipeline.rds`
-- `output/<cv_regime>/cv_pipeline/tuning_seed_sweep_runs/chosen_seeds_latest.rds`
+- `output/tuning_seed_sweep_runs/sweep_<run_id>/chosen_seeds_for_pipeline.rds`
+- `output/tuning_seed_sweep_runs/chosen_seeds_latest.rds` (copy for the main driver)
 
 If `use_robust_seeds_from_tuning_sweep = TRUE`, the robust pipeline reads
-`chosen_seeds_latest.rds` and temporarily overrides robust/eval seeds for that run.
+`output/tuning_seed_sweep_runs/chosen_seeds_latest.rds` and temporarily overrides robust/eval seeds for that run.
+
+Sweep outputs (subset work, summaries, `_run_metadata/pipeline_config_effective.rds`) live under **`output/tuning_seed_sweep_runs/sweep_<run_id>/`**. Reusing an existing `sweep_<id>` folder requires both the same planned subset manifest and the same effective sweep configuration on disk; otherwise the script allocates the next free sweep id.
 
 ## Recommendations
 
