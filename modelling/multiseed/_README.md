@@ -5,9 +5,7 @@ the robust pipeline driver script.
 
 Entry point: `modelling/run_multiseed_pixel_grouped.R` (see also `modelling/pipeline_config.R` for seed lists and toggles).
 
-Evaluation and per-run artifacts (including `sensitivity_suite/` when enabled) are written under  
-`output/<cv_regime>/cv_pipeline/multiseed_runs/<pixel_grouped_evaluation_…>_<run_id>/`  
-with a default timestamp `run_id` so successive driver runs do not overwrite each other.
+For **`modelling/run_multiseed_pixel_grouped.R`**, `run_output_dir` is **`output/pixel_grouped_<robust_fold_seeds>/`** (seeds joined with `-`, from `robust_fold_seed_list` / registry). Robust tuning, SHAP pruning outputs, evaluation summaries, and (when enabled) **`sensitivity_suite/`** and diagnostics live under that folder (e.g. `covariate_selection/robust_pixel_grouped/`, `cv_pipeline/robust_pixel_grouped_tuning/`). Legacy or other drivers may still use paths under **`output/<cv_regime>/cv_pipeline/`**; see the driver you run for the exact layout.
 
 - `robust_shap_covariate_pruning.R`: robust SHAP-based variable selection across multiple fold seeds.
 - `robust_hyperparameter_tuning.R`: robust hyperparameter selection across multiple fold seeds.
