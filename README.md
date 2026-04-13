@@ -211,7 +211,7 @@ Seed policy is documented in `modelling/_SEED_REGISTRY.md`.
 
 ## Environmental data
 
-The NetCDF raster files containing environmental covariates (from remote sensing and re-analysis products) are stored via Zenodo (persistent identifier: [https://doi.org/10.5281/zenodo.19329403](https://doi.org/10.5281/zenodo.19329403). Download and place all `.nc` files under `data/covariate_rasters/`. The pipeline will auto-discover these covariates at runtime via the `build_covariate_config_from_dir` function in `modelling/R/extract_covariates_from_rasters.R`.
+The NetCDF raster files containing environmental covariates (from remote sensing and re-analysis products) are stored via Zenodo (persistent identifier: [https://doi.org/10.5281/zenodo.19329403](https://doi.org/10.5281/zenodo.19329403)). Download and place all `.nc` files under `data/covariate_rasters/`. The pipeline will auto-discover these covariates at runtime via the `build_covariate_config_from_dir` function in `modelling/R/extract_covariates_from_rasters.R`.
 
 ## Regions data
 
