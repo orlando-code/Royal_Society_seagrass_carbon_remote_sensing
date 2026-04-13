@@ -39,8 +39,8 @@ apply_pipeline_defaults(
   c(
     "cv_output_dir", "target_var", "use_shap_per_model", "log_transform_target",
     "n_folds", "cv_type", "cv_blocksize", "exclude_regions",
-    "robust_pruned_csv_override", "use_robust_final_configs",
-    "include_seagrass_species"
+    "use_robust_final_configs", "include_seagrass_species",
+    "robust_fold_seed_list", "robust_pruned_importance_type"
   ),
   envir = .GlobalEnv
 )
@@ -49,7 +49,15 @@ cv_out  <- get("cv_output_dir", envir = .GlobalEnv)
 out_dir <- file.path(cv_out, "final_models")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 use_robust_final_configs <- isTRUE(get("use_robust_final_configs", envir = .GlobalEnv))
-robust_tune_dir <- file.path(cv_out, "cv_pipeline", "robust_pixel_grouped_tuning")
+run_output_dir <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
+if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir))) {
+  stop("run_output_dir must be set in .GlobalEnv for fit_final_models.R")
+}
+run_output_dir <- as.character(run_output_dir)
+robust_tune_dir <- file.path(run_output_dir, "cv_pipeline", "robust_pixel_grouped_tuning")
+if (!dir.exists(robust_tune_dir)) {
+  stop("Required robust tuning directory not found: ", robust_tune_dir)
+}
 
 # ---------------------------------------------------------------------------
 # Data (same pipeline as cv_pipeline / covariate_pruning_pipeline)
@@ -96,14 +104,25 @@ shared_vars <- if (file.exists(shared_file)) {
 } else predictor_vars
 
 per_model_vars <- get_per_model_vars(cov_dir, colnames(core_data), use_shap_first = use_shap_per_model)
-robust_pruned_csv_override <- get("robust_pruned_csv_override", envir = .GlobalEnv)
 robust_vars_by_model <- NULL
-if (!is.na(robust_pruned_csv_override) && nzchar(robust_pruned_csv_override) && file.exists(robust_pruned_csv_override)) {
-  robust_df <- read.csv(robust_pruned_csv_override, stringsAsFactors = FALSE)
-  if (all(c("model", "variable") %in% names(robust_df))) {
-    robust_vars_by_model <- lapply(split(robust_df$variable, robust_df$model), function(v) intersect(v, colnames(core_data)))
-    cat("Loaded robust pruned covariates from:", robust_pruned_csv_override, "\n")
+seeds_str <- paste(as.integer(get("robust_fold_seed_list", envir = .GlobalEnv)), collapse = "-")
+importance_type <- match.arg(get("robust_pruned_importance_type", envir = .GlobalEnv), choices = c("perm", "shap"))
+robust_cov_dir <- file.path(run_output_dir, "covariate_selection", "robust_pixel_grouped")
+robust_pruned_csv <- file.path(
+  robust_cov_dir,
+  if (identical(importance_type, "shap")) {
+    paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_str, ".csv")
+  } else {
+    paste0("pruned_model_variables_perm_robust_pixel_grouped_seeds_", seeds_str, ".csv")
   }
+)
+if (!file.exists(robust_pruned_csv)) {
+  stop("Required robust pruned covariate file not found: ", robust_pruned_csv)
+}
+robust_df <- read.csv(robust_pruned_csv, stringsAsFactors = FALSE)
+if (all(c("model", "variable") %in% names(robust_df))) {
+  robust_vars_by_model <- lapply(split(robust_df$variable, robust_df$model), function(v) intersect(v, colnames(core_data)))
+  cat("Loaded robust pruned covariates from:", robust_pruned_csv, "\n")
 }
 
 load_model_vars_final <- function(model_name) {
@@ -117,7 +136,23 @@ load_model_vars_final <- function(model_name) {
 # Model/general settings
 log_response   <- isTRUE(get("log_transform_target", envir = .GlobalEnv))
 n_tune_folds   <- as.integer(get("n_folds", envir = .GlobalEnv))
-cv_type        <- get("cv_type", envir = .GlobalEnv)
+cv_type_allowed <- c("random", "location_grouped", "pixel_grouped", "spatial")
+cv_type_raw <- get("cv_type", envir = .GlobalEnv)
+cv_type <- as.character(cv_type_raw)[1]
+if (length(cv_type) != 1L || !cv_type %in% cv_type_allowed) {
+  if (isTRUE(use_robust_final_configs)) {
+    message("Ignoring invalid global cv_type (", encodeString(as.character(cv_type_raw)[1], quote = "\""),
+            "); using \"pixel_grouped\" for fallback CV in robust final-model fitting.")
+    cv_type <- "pixel_grouped"
+    assign("cv_type", cv_type, envir = .GlobalEnv)
+  } else {
+    stop(
+      "Invalid cv_type in .GlobalEnv: ", paste(cv_type_raw, collapse = ", "),
+      ". Expected one of: ", paste(cv_type_allowed, collapse = ", "), ".",
+      call. = FALSE
+    )
+  }
+}
 cv_blocksize  <- get("cv_blocksize", envir = .GlobalEnv)
 exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
 

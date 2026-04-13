@@ -42,7 +42,7 @@ apply_pipeline_defaults(
     "exclude_regions", "n_folds", "cv_blocksize",
     "robust_fold_seed_list", "eval_fold_seed_list",
     "robust_pruned_importance_type", "correlation_filter_threshold",
-    "robust_pruned_csv_override", "include_seagrass_species"
+    "include_seagrass_species"
   ),
   envir = .GlobalEnv
 )
@@ -108,13 +108,18 @@ core_data <- as.data.frame(complete_dat)
 cat("  Complete-case rows:", nrow(core_data), "\n")
 
 # Load robust pruned variables
-robust_cov_dir_override <- get0("robust_cov_dir_override", envir = .GlobalEnv, ifnotfound = NA_character_)
-robust_cov_dir <- if (!is.na(robust_cov_dir_override) && nzchar(as.character(robust_cov_dir_override))) {
-  as.character(robust_cov_dir_override)
-} else {
-  file.path(project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped")
+run_output_dir <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
+if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir))) {
+  stop("run_output_dir must be set in .GlobalEnv for robust evaluation.")
 }
-robust_pruned_csv_override <- get("robust_pruned_csv_override", envir = .GlobalEnv)
+run_output_dir <- as.character(run_output_dir)
+subset_work_root <- if (basename(run_output_dir) == "evaluation") dirname(run_output_dir) else run_output_dir
+
+robust_cov_dir <- if (basename(run_output_dir) == "evaluation") {
+  file.path(subset_work_root, "covariates")
+} else {
+  file.path(run_output_dir, "covariate_selection", "robust_pixel_grouped")
+}
 robust_pruned_importance_type <- get("robust_pruned_importance_type", envir = .GlobalEnv)
 robust_pruned_importance_type <- match.arg(robust_pruned_importance_type, choices = c("perm", "shap"))
 
@@ -137,50 +142,17 @@ default_robust_pruned_csv <- if (identical(robust_pruned_importance_type, "shap"
     )
   )
 }
-robust_pruned_csv <- if (!is.na(robust_pruned_csv_override) && nzchar(robust_pruned_csv_override)) {
-  robust_pruned_csv_override
-} else {
-  default_robust_pruned_csv
-}
+robust_pruned_csv <- default_robust_pruned_csv
 if (!file.exists(robust_pruned_csv)) {
-  fallback_csv <- file.path(
-    project_root, "output", cv_regime_name, "covariate_selection",
-    if (identical(robust_pruned_importance_type, "shap")) "pruned_model_variables_shap.csv" else "pruned_model_variables_perm.csv"
-  )
-  if (file.exists(fallback_csv)) {
-    cat("\nWARNING: robust pruned vars not found:\n  ", robust_pruned_csv,
-        "\nFalling back to:\n  ", fallback_csv, "\n")
-    robust_pruned_csv <- fallback_csv
-  } else {
-    cat("\nWARNING: no pruned-vars CSV found; falling back to correlation-only covariates.\n")
-    robust_pruned_csv <- NA_character_
-  }
+  stop("Required robust pruned covariate file not found: ", robust_pruned_csv)
 }
 
 predictor_vars_by_model <- list()
-if (!is.na(robust_pruned_csv) && file.exists(robust_pruned_csv)) {
-  pruned_df <- read.csv(robust_pruned_csv, stringsAsFactors = FALSE)
-  stopifnot(all(c("model", "variable") %in% names(pruned_df)))
-  for (m in unique(pruned_df$model)) {
-    vars <- intersect(pruned_df$variable[pruned_df$model == m], colnames(core_data))
-    if (length(vars) >= 2L) predictor_vars_by_model[[m]] <- vars
-  }
-}
-# Final fallback to correlation-only covariates if pruned sets are unavailable.
-if (length(predictor_vars_by_model) == 0L) {
-  corr_vars <- prune_by_correlation(
-    data = core_data,
-    predictor_vars = predictor_vars_full,
-    target_var = "median_carbon_density",
-    cor_threshold = as.numeric(get("correlation_filter_threshold", envir = .GlobalEnv))
-  )
-  if (isTRUE(include_seagrass_species) && "seagrass_species" %in% names(core_data)) {
-    corr_vars <- unique(c(corr_vars, "seagrass_species"))
-  }
-  for (m in c("GPR", "GAM", "XGB", "LR")) {
-    vars <- intersect(corr_vars, colnames(core_data))
-    if (length(vars) >= 2L) predictor_vars_by_model[[m]] <- vars
-  }
+pruned_df <- read.csv(robust_pruned_csv, stringsAsFactors = FALSE)
+stopifnot(all(c("model", "variable") %in% names(pruned_df)))
+for (m in unique(pruned_df$model)) {
+  vars <- intersect(pruned_df$variable[pruned_df$model == m], colnames(core_data))
+  if (length(vars) >= 2L) predictor_vars_by_model[[m]] <- vars
 }
 models <- intersect(names(predictor_vars_by_model), c("GPR", "GAM", "XGB", "LR"))
 # eval_models <- get("eval_models", envir = .GlobalEnv)
@@ -191,16 +163,13 @@ models <- intersect(names(predictor_vars_by_model), c("GPR", "GAM", "XGB", "LR")
 cat("  Models to evaluate:", paste(models, collapse = ", "), "\n")
 
 # Load robust hyperparameter configs
-robust_tuning_dir_default <- file.path(project_root, "output", cv_regime_name, "cv_pipeline", "robust_pixel_grouped_tuning")
-robust_tuning_dir_override <- if (exists("robust_tuning_dir_override", envir = .GlobalEnv, inherits = FALSE)) {
-  get("robust_tuning_dir_override", envir = .GlobalEnv)
+robust_tuning_dir <- if (basename(run_output_dir) == "evaluation") {
+  file.path(subset_work_root, "tuning")
 } else {
-  NA_character_
+  file.path(run_output_dir, "cv_pipeline", "robust_pixel_grouped_tuning")
 }
-robust_tuning_dir <- if (!is.na(robust_tuning_dir_override) && nzchar(robust_tuning_dir_override)) {
-  robust_tuning_dir_override
-} else {
-  robust_tuning_dir_default
+if (!dir.exists(robust_tuning_dir)) {
+  stop("Required robust tuning directory not found: ", robust_tuning_dir)
 }
 hp_bundle <- build_hyperparams_by_model(
   models = models,
@@ -214,25 +183,7 @@ hp_bundle <- build_hyperparams_by_model(
 )
 hyperparams_by_model <- hp_bundle$hyperparams_by_model
 
-out_dir <- file.path(
-  if (!is.null(get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NULL))) {
-    get("run_output_dir", envir = .GlobalEnv)
-  } else {
-    file.path(
-      project_root,
-      "output",
-      cv_regime_name,
-      "cv_pipeline",
-      build_seeded_run_folder_name(
-        cv_type_label = cv_type_label,
-        folder_type = "evaluation",
-        repeat_seed_list = eval_fold_seed_list,
-        robust_seed_list = robust_fold_seed_list,
-        include_seed_values = TRUE
-      )
-    )
-  }
-)
+out_dir <- run_output_dir
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 assign("run_output_dir", out_dir, envir = .GlobalEnv)
 
