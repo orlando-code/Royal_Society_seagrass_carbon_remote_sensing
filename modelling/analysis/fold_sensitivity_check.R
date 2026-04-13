@@ -47,7 +47,7 @@ apply_pipeline_defaults(
   c(
     "cv_regime_name", "target_var", "log_transform_target", "exclude_regions",
     "fold_seed_list", "n_folds_list", "cv_types_to_check",
-    "use_shap_per_model", "cv_blocksize", "fold_sensitivity_models",
+    "use_shap_per_model", "cv_blocksize", "model_list", "robust_fold_seed_list", "robust_pruned_importance_type",
     "include_seagrass_species"
   ),
   envir = .GlobalEnv
@@ -83,12 +83,18 @@ seed_list <- get("fold_seed_list", envir = .GlobalEnv)
 n_folds_list <- get("n_folds_list", envir = .GlobalEnv)
 
 cv_types_to_check <- get("cv_types_to_check", envir = .GlobalEnv)
+allowed_cv_types <- c("random", "location_grouped", "pixel_grouped", "spatial")
+cv_types_to_check <- intersect(as.character(cv_types_to_check), allowed_cv_types)
+if (length(cv_types_to_check) == 0L) {
+  cv_types_to_check <- "pixel_grouped"
+  warning("cv_types_to_check had no recognised entries; using 'pixel_grouped'.", call. = FALSE)
+}
 
 # Only use models with tuned configs available.
 use_shap_per_model <- isTRUE(get("use_shap_per_model", envir = .GlobalEnv))
 include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
 
-models_default <- get("fold_sensitivity_models", envir = .GlobalEnv)
+models_default <- get("model_list", envir = .GlobalEnv)
 
 # CV parameter blocks
 n_folds_block_for_spatial <- NA_integer_
@@ -155,23 +161,36 @@ core_data <- as.data.frame(complete_dat)
 # ---------------------------------------------------------------------------
 # Load tuned covariate sets and hyperparameters (held fixed during sensitivity check)
 # ---------------------------------------------------------------------------
-cov_dir <- file.path(project_root, "output", cv_regime_name, "covariate_selection")
-config_dir <- file.path(project_root, "output", cv_regime_name, "cv_pipeline")
-
-per_model_vars <- get_per_model_vars(cov_dir, colnames(core_data), use_shap_first = use_shap_per_model)
-
-predictor_vars_by_model <- list()
-for (m in models_default) {
-  pvars <- load_model_vars(m, per_model_vars, use_shap_first = use_shap_per_model)
-  if (!is.null(pvars) && length(pvars) >= 2L) predictor_vars_by_model[[m]] <- pvars
+run_output_dir <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
+if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir))) {
+  stop("run_output_dir must be set in .GlobalEnv for fold_sensitivity_check.R")
 }
+run_output_dir <- as.character(run_output_dir)
+robust_config_dir <- file.path(run_output_dir, "cv_pipeline", "robust_pixel_grouped_tuning")
+if (!dir.exists(robust_config_dir)) {
+  stop("Required robust tuning directory not found under run_output_dir: ", robust_config_dir)
+}
+config_dir <- file.path(project_root, "output", cv_regime_name, "cv_pipeline")
+robust_fold_seed_list <- as.integer(get("robust_fold_seed_list", envir = .GlobalEnv))
+robust_pruned_importance_type <- match.arg(
+  get("robust_pruned_importance_type", envir = .GlobalEnv),
+  choices = c("perm", "shap")
+)
+robust_vars <- load_run_scoped_robust_predictor_vars(
+  run_output_dir = run_output_dir,
+  robust_fold_seed_list = robust_fold_seed_list,
+  robust_pruned_importance_type = robust_pruned_importance_type,
+  valid_cols = colnames(core_data),
+  model_list = models_default
+)
+predictor_vars_by_model <- robust_vars$predictor_vars_by_model
 models <- intersect(names(predictor_vars_by_model), models_default)
 
 hp_bundle <- build_hyperparams_by_model(
   models = models,
   config_dir = config_dir,
-  robust_config_dir = NULL,
-  prefer_robust = FALSE,
+  robust_config_dir = robust_config_dir,
+  prefer_robust = TRUE,
   include_baseline = TRUE,
   include_legacy = TRUE,
   include_only_with_config = TRUE
@@ -207,18 +226,20 @@ compute_fold_y_stats <- function(fold_indices, y) {
 # ---------------------------------------------------------------------------
 by_fold_rows <- list()
 
-for (n_folds in n_folds_list) {
-  for (seed in seed_list) {
-    for (cv_type in cv_types_to_check) {
+# Loop indices must not reuse names `cv_type` / `n_folds` / `seed`: this file is
+# typically source()d into .GlobalEnv, and `for (x in y)` assigns globals.
+for (n_folds_k in n_folds_list) {
+  for (seed_k in seed_list) {
+    for (cv_type_loop in cv_types_to_check) {
       cv_fold_info <- make_cv_folds(
         dat = core_data,
         covariate_cols = predictor_vars_full,
-        n_folds = n_folds,
-        cv_type = cv_type,
+        n_folds = n_folds_k,
+        cv_type = cv_type_loop,
         cv_blocksize = if (!is.na(n_folds_block_for_spatial)) n_folds_block_for_spatial else cv_blocksize,
-        cache_tag = paste0("fold_sens_", cv_type, "_n", n_folds, "_seed", seed),
+        cache_tag = paste0("fold_sens_", cv_type_loop, "_n", n_folds_k, "_seed", seed_k),
         exclude_regions = exclude_regions,
-        seed = seed
+        seed = seed_k
       )
 
       fold_indices <- cv_fold_info$fold_indices
@@ -227,7 +248,7 @@ for (n_folds in n_folds_list) {
       fold_y_stats <- compute_fold_y_stats(fold_indices, core_data$median_carbon_density)
 
       res <- run_cv(
-        cv_method_name = paste0(method_name, "_n", n_folds, "_seed", seed),
+        cv_method_name = paste0(method_name, "_n", n_folds_k, "_seed", seed_k),
         fold_indices = fold_indices,
         core_data = core_data,
         predictor_vars = predictor_vars_full,
@@ -244,9 +265,9 @@ for (n_folds in n_folds_list) {
       if (is.null(res) || nrow(res) == 0L) next
       res$fold_y_sd <- fold_y_stats$y_sd[match(res$fold, fold_y_stats$fold)]
       res$fold_y_mean <- fold_y_stats$y_mean[match(res$fold, fold_y_stats$fold)]
-      res$n_folds <- n_folds
-      res$fold_seed <- seed
-      res$cv_type <- cv_type
+      res$n_folds <- n_folds_k
+      res$fold_seed <- seed_k
+      res$cv_type <- cv_type_loop
       res$method_name <- method_name
 
       by_fold_rows[[length(by_fold_rows) + 1L]] <- res

@@ -9,8 +9,8 @@
 ##   - Reuses tuned covariate sets and tuned hyperparameters.
 ##   - No re-tuning, no re-selection.
 ##
-## Outputs (under <run_output_dir>/sensitivity_suite/ — use a unique run_output_dir, e.g.
-##   cv_pipeline/multiseed_runs/<evaluation_stem>_<run_id>/ from run_multiseed_pixel_grouped.R):
+## Outputs (under <run_output_dir>/sensitivity_suite/, where <run_output_dir> is
+##   output/pixel_grouped_<robust_seed_subset>/ from run_multiseed_pixel_grouped.R):
 ##   - sensitivity_by_fold.csv
 ##   - sensitivity_pooled_by_seed.csv
 ##   - sensitivity_summary.csv
@@ -19,7 +19,6 @@
 ##   - sensitivity_ss_total_r2_effect.csv
 ##   - sensitivity_seed_count_convergence.csv
 ##   - sensitivity_seed_count_plateau.csv
-
 if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
   init_path <- file.path("modelling", "R", "init_repo.R")
   if (!file.exists(init_path)) {
@@ -44,12 +43,13 @@ apply_pipeline_defaults(
   cfg,
   c(
     "cv_regime_name", "target_var", "log_transform_target", "exclude_regions",
-    "cv_type_label", "robust_fold_seed_list", "eval_fold_seed_list",
+    "cv_type_label", "robust_fold_seed_list",
     "cv_types_to_check", "n_folds_list", "fold_seed_list", "include_loo", "max_loo_groups",
     "seed_plateau_tolerance", "seed_plateau_min_n", "seed_plateau_stable_steps",
-    "use_shap_per_model", "r2_sensitivity_models", "include_seagrass_species",
+    "use_shap_per_model", "model_list", "include_seagrass_species",
     "do_tuning_seed_sweep", "tuning_seed_sweep_counts", "tuning_seed_pool",
-    "tuning_sweep_eval_seed_list", "tuning_seed_sampling", "do_tuning_seed_sweep_refined_tuning"
+    "eval_fold_seed_list", "tuning_seed_sampling", "do_tuning_seed_sweep_refined_tuning",
+    "robust_pruned_importance_type"
   ),
   envir = .GlobalEnv
 )
@@ -80,6 +80,12 @@ log_response <- isTRUE(get("log_transform_target", envir = .GlobalEnv))
 exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
 
 cv_types_to_check <- get("cv_types_to_check", envir = .GlobalEnv)
+allowed_cv_types <- c("random", "location_grouped", "pixel_grouped", "spatial")
+cv_types_to_check <- intersect(as.character(cv_types_to_check), allowed_cv_types)
+if (length(cv_types_to_check) == 0L) {
+  cv_types_to_check <- "pixel_grouped"
+  warning("cv_types_to_check had no recognised entries; using 'pixel_grouped'.", call. = FALSE)
+}
 n_folds_list <- as.integer(get("n_folds_list", envir = .GlobalEnv))
 fold_seed_list <- as.integer(get("fold_seed_list", envir = .GlobalEnv))
 include_loo <- isTRUE(get("include_loo", envir = .GlobalEnv))
@@ -89,7 +95,7 @@ seed_plateau_min_n <- as.integer(get("seed_plateau_min_n", envir = .GlobalEnv))
 seed_plateau_stable_steps <- as.integer(get("seed_plateau_stable_steps", envir = .GlobalEnv))
 
 use_shap_per_model <- isTRUE(get("use_shap_per_model", envir = .GlobalEnv))
-models_default <- get("r2_sensitivity_models", envir = .GlobalEnv)
+models_default <- get("model_list", envir = .GlobalEnv)
 include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
 
 # Optional expensive block:
@@ -97,35 +103,26 @@ include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .Glob
 do_tuning_seed_sweep <- isTRUE(get("do_tuning_seed_sweep", envir = .GlobalEnv))
 tuning_seed_sweep_counts <- as.integer(get("tuning_seed_sweep_counts", envir = .GlobalEnv))
 tuning_seed_pool <- as.integer(get("tuning_seed_pool", envir = .GlobalEnv))
-tuning_sweep_eval_seed_list <- as.integer(get("tuning_sweep_eval_seed_list", envir = .GlobalEnv))
+eval_fold_seed_list <- as.integer(get("eval_fold_seed_list", envir = .GlobalEnv))
 tuning_seed_sampling <- match.arg(
   get("tuning_seed_sampling", envir = .GlobalEnv),
   choices = c("prefix", "random")
 )
 do_tuning_seed_sweep_refined_tuning <- isTRUE(get("do_tuning_seed_sweep_refined_tuning", envir = .GlobalEnv))
+robust_pruned_importance_type <- match.arg(
+  get("robust_pruned_importance_type", envir = .GlobalEnv),
+  choices = c("perm", "shap")
+)
 
 cv_type_label <- get("cv_type_label", envir = .GlobalEnv)
 robust_fold_seed_list <- as.integer(get("robust_fold_seed_list", envir = .GlobalEnv))
-eval_fold_seed_list <- as.integer(get("eval_fold_seed_list", envir = .GlobalEnv))
 
 resolve_run_output_dir <- function() {
-  if (exists("run_output_dir", envir = .GlobalEnv, inherits = FALSE)) {
-    d <- get("run_output_dir", envir = .GlobalEnv)
-    if (!is.null(d) && nzchar(d)) return(d)
+  d <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
+  if (is.na(d) || !nzchar(as.character(d))) {
+    stop("run_output_dir must be set in .GlobalEnv for sensitivity_suite.R")
   }
-  file.path(
-    project_root,
-    "output",
-    cv_regime_name,
-    "cv_pipeline",
-    build_seeded_run_folder_name(
-      cv_type_label = cv_type_label,
-      folder_type = "evaluation",
-      repeat_seed_list = eval_fold_seed_list,
-      robust_seed_list = robust_fold_seed_list,
-      include_seed_values = TRUE
-    )
-  )
+  as.character(d)
 }
 
 run_output_dir <- resolve_run_output_dir()
@@ -143,14 +140,6 @@ cat("  fold_seed_list:", paste(fold_seed_list, collapse = ", "), "\n")
 cat("  run_output_dir:", run_output_dir, "\n")
 cat("  sensitivity output dir:", out_dir, "\n")
 cat("  seed plateau tolerance:", seed_plateau_tolerance, "\n")
-cat("  do_tuning_seed_sweep:", do_tuning_seed_sweep, "\n")
-if (do_tuning_seed_sweep) {
-  cat("  tuning_seed_sweep_counts:", paste(tuning_seed_sweep_counts, collapse = ", "), "\n")
-  cat("  tuning_seed_pool size:", length(tuning_seed_pool), "\n")
-  cat("  tuning_sweep_eval_seed_list:", paste(tuning_sweep_eval_seed_list, collapse = ", "), "\n")
-  cat("  tuning_seed_sampling:", tuning_seed_sampling, "\n")
-  cat("  do_tuning_seed_sweep_refined_tuning:", do_tuning_seed_sweep_refined_tuning, "\n")
-}
 
 prepare_core_data <- function(dat, target_var, exclude_regions, include_seagrass_species = TRUE) {
   if (length(exclude_regions) > 0L) {
@@ -183,56 +172,34 @@ prepare_core_data <- function(dat, target_var, exclude_regions, include_seagrass
   list(core_data = core_data, predictor_vars_full = predictor_vars_full)
 }
 
-load_fixed_model_setup <- function(project_root, cv_regime_name, core_cols, models_default,
-                                   use_shap_per_model, robust_fold_seed_list) {
-  cov_dir <- file.path(project_root, "output", cv_regime_name, "covariate_selection")
-  cfg_dir <- file.path(project_root, "output", cv_regime_name, "cv_pipeline")
-  robust_seed_str <- paste(as.integer(robust_fold_seed_list), collapse = "-")
-
-  predictor_vars_by_model <- list()
-  for (m in models_default) {
-    pvars <- tryCatch(
-      load_model_vars_with_fallback(
-        model_name = m,
-        cov_dir = cov_dir,
-        valid_cols = core_cols,
-        use_shap_first = use_shap_per_model,
-        robust_fold_seed_list = robust_fold_seed_list
-      ),
-      error = function(e) NULL
-    )
-    if (!is.null(pvars) && length(pvars) >= 2L) predictor_vars_by_model[[m]] <- pvars
+load_fixed_model_setup <- function(project_root, run_output_dir, cv_regime_name, core_cols, models_default,
+                                   use_shap_per_model, robust_fold_seed_list,
+                                   robust_pruned_importance_type) {
+  cfg_dir <- file.path(run_output_dir, "cv_pipeline")
+  robust_tuning_dir <- file.path(cfg_dir, "robust_pixel_grouped_tuning")
+  if (!dir.exists(robust_tuning_dir)) {
+    stop("Required robust tuning directory not found under run_output_dir: ", robust_tuning_dir)
   }
+  robust_vars <- load_run_scoped_robust_predictor_vars(
+    run_output_dir = run_output_dir,
+    robust_fold_seed_list = robust_fold_seed_list,
+    robust_pruned_importance_type = robust_pruned_importance_type,
+    valid_cols = core_cols,
+    model_list = models_default
+  )
+  predictor_vars_by_model <- robust_vars$predictor_vars_by_model
   models <- intersect(models_default, names(predictor_vars_by_model))
   if (length(models) == 0L) {
     stop(
       "No models with valid pruned covariates found. ",
-      "Expected baseline files in ", cov_dir,
-      " or robust files in ", file.path(cov_dir, "robust_pixel_grouped"), "."
+      "Expected run-scoped robust covariate file: ", robust_vars$robust_pruned_csv
     )
   }
-
-  # Resolve robust tuning configs from configured robust seeds first.
-  robust_dir_by_seed <- file.path(cfg_dir, paste0("robust_pixel_grouped_tuning_robustSeeds_", robust_seed_str))
-  robust_dir_default <- file.path(cfg_dir, "robust_pixel_grouped_tuning")
-  robust_dir <- if (dir.exists(robust_dir_by_seed)) robust_dir_by_seed else robust_dir_default
-  if (!dir.exists(robust_dir)) {
-    robust_dir_candidates <- Sys.glob(file.path(cfg_dir, "robust_pixel_grouped_tuning_robustSeeds_*"))
-    robust_dir_candidates <- robust_dir_candidates[dir.exists(robust_dir_candidates)]
-    if (length(robust_dir_candidates) > 0L) {
-      warning(
-        "Expected robust tuning dir not found for configured seeds ",
-        robust_seed_str, "; falling back to first available robust tuning dir:\n  ",
-        robust_dir_candidates[[1]]
-      )
-      robust_dir <- robust_dir_candidates[[1]]
-    }
-  }
-  cat("  Using robust tuning config directory:\n    ", robust_dir, "\n", sep = "")
+  cat("  Using robust tuning config directory:\n    ", robust_tuning_dir, "\n", sep = "")
   hp_bundle <- build_hyperparams_by_model(
     models = models,
-    config_dir = cfg_dir,
-    robust_config_dir = robust_dir,
+    config_dir = file.path(project_root, "output", cv_regime_name, "cv_pipeline"),
+    robust_config_dir = robust_tuning_dir,
     prefer_robust = TRUE,
     include_baseline = TRUE,
     include_legacy = TRUE,
@@ -463,11 +430,13 @@ cat("  complete-case rows:", nrow(core_data), "\n")
 
 setup <- load_fixed_model_setup(
   project_root = project_root,
+  run_output_dir = run_output_dir,
   cv_regime_name = cv_regime_name,
   core_cols = colnames(core_data),
   models_default = models_default,
   use_shap_per_model = use_shap_per_model,
-  robust_fold_seed_list = robust_fold_seed_list
+  robust_fold_seed_list = robust_fold_seed_list,
+  robust_pruned_importance_type = robust_pruned_importance_type
 )
 models <- setup$models
 predictor_vars_by_model <- setup$predictor_vars_by_model
@@ -496,35 +465,37 @@ pooled_rows <- list()
 comp_rows <- list()
 env_rows <- list()
 
-for (cv_type in cv_types_to_check) {
-  for (n_folds in n_folds_list) {
-    for (seed in fold_seed_list) {
+# Loop indices must not reuse names `cv_type` / `n_folds` / `seed`: this file is
+# typically source()d into .GlobalEnv, and `for (x in y)` assigns globals.
+for (cv_type_loop in cv_types_to_check) {
+  for (n_folds_k in n_folds_list) {
+    for (seed_k in fold_seed_list) {
       cv_fold_info <- make_cv_folds(
         dat = core_data,
         covariate_cols = predictor_vars_full,
-        n_folds = n_folds,
-        cv_type = cv_type,
-        cache_tag = paste0("r2_sens_", cv_type, "_k", n_folds, "_seed", seed),
+        n_folds = n_folds_k,
+        cv_type = cv_type_loop,
+        cache_tag = paste0("r2_sens_", cv_type_loop, "_k", n_folds_k, "_seed", seed_k),
         exclude_regions = exclude_regions,
-        seed = seed
+        seed = seed_k
       )
       fold_indices <- cv_fold_info$fold_indices
       method_name <- cv_fold_info$method_name
 
       comp <- fold_composition_stats(fold_indices, core_data$median_carbon_density)
-      comp$cv_type <- cv_type
+      comp$cv_type <- cv_type_loop
       comp$method_name <- method_name
-      comp$n_folds <- n_folds
-      comp$fold_seed <- seed
+      comp$n_folds <- n_folds_k
+      comp$fold_seed <- seed_k
       comp_rows[[length(comp_rows) + 1L]] <- comp
       env_stats <- compute_fold_environment_stats(core_data, fold_indices, predictor_vars_full)
-      env_stats$cv_type <- cv_type
+      env_stats$cv_type <- cv_type_loop
       env_stats$method_name <- method_name
-      env_stats$n_folds <- n_folds
-      env_stats$fold_seed <- seed
+      env_stats$n_folds <- n_folds_k
+      env_stats$fold_seed <- seed_k
       env_rows[[length(env_rows) + 1L]] <- env_stats
 
-      cv_name <- paste0(method_name, "_k", n_folds, "_seed", seed)
+      cv_name <- paste0(method_name, "_k", n_folds_k, "_seed", seed_k)
       cat("  running:", cv_name, "\n")
       res <- run_cv(
         cv_method_name = cv_name,
@@ -542,18 +513,18 @@ for (cv_type in cv_types_to_check) {
       )
       if (is.null(res) || nrow(res) == 0L) next
 
-      res$cv_type <- cv_type
+      res$cv_type <- cv_type_loop
       res$method_name <- method_name
-      res$n_folds <- n_folds
-      res$fold_seed <- seed
+      res$n_folds <- n_folds_k
+      res$fold_seed <- seed_k
       fold_rows[[length(fold_rows) + 1L]] <- res
 
       pooled <- attr(res, "pooled_r2")
       if (!is.null(pooled) && nrow(pooled) > 0L) {
-        pooled$cv_type <- cv_type
+        pooled$cv_type <- cv_type_loop
         pooled$method_name <- method_name
-        pooled$n_folds <- n_folds
-        pooled$fold_seed <- seed
+        pooled$n_folds <- n_folds_k
+        pooled$fold_seed <- seed_k
         pooled_rows[[length(pooled_rows) + 1L]] <- pooled
       }
     }

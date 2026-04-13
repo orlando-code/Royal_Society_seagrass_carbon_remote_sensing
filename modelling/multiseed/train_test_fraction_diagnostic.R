@@ -49,11 +49,18 @@ log_transform_target <- isTRUE(get("log_transform_target", envir = .GlobalEnv))
 
 exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
 n_folds <- as.integer(get("n_folds", envir = .GlobalEnv))
-cv_type <- get("cv_type", envir = .GlobalEnv)
-cv_type_hash <- if (cv_type %in% c("pixel_grouped")) "pixel_grouped" else cv_type
-if (!identical(cv_type_hash, "pixel_grouped")) {
-  stop("This diagnostic currently supports only pixel-grouped hashing; got cv_type=", cv_type)
+# This diagnostic is pixel_grouped-only. Do not trust a stale global `cv_type`
+# (e.g. numeric pollution from `for (cv_type in ...)` in scripts source()d into .GlobalEnv).
+cv_type_glob <- get("cv_type", envir = .GlobalEnv)
+if (!identical(as.character(cv_type_glob)[1], "pixel_grouped")) {
+  message(
+    "train_test_fraction_diagnostic: resetting global cv_type to \"pixel_grouped\" (was: ",
+    paste(cv_type_glob, collapse = ", "), ")."
+  )
 }
+cv_type <- "pixel_grouped"
+assign("cv_type", cv_type, envir = .GlobalEnv)
+cv_type_hash <- "pixel_grouped"
 
 fold_seed_list <- get("fold_seed_list", envir = .GlobalEnv)
 fold_seed_list <- as.integer(fold_seed_list)
@@ -62,20 +69,11 @@ include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .Glob
 cv_type_label <- get0("cv_type_label", envir = .GlobalEnv, ifnotfound = cv_type_hash)
 eval_seed_list <- if (length(fold_seed_list) > 0L) fold_seed_list else robust_fold_seed_list
 
-run_output_dir <- if (exists("run_output_dir", envir = .GlobalEnv, inherits = FALSE)) {
-  get("run_output_dir", envir = .GlobalEnv)
-} else {
-  file.path(
-    project_root, "output", cv_regime_name, "cv_pipeline",
-    build_seeded_run_folder_name(
-      cv_type_label = cv_type_label,
-      folder_type = "evaluation",
-      repeat_seed_list = eval_seed_list,
-      robust_seed_list = robust_fold_seed_list,
-      include_seed_values = TRUE
-    )
-  )
+run_output_dir <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
+if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir))) {
+  stop("run_output_dir must be set in .GlobalEnv for train_test_fraction_diagnostic.R")
 }
+run_output_dir <- as.character(run_output_dir)
 
 cat("Train-test fraction diagnostic: pixel_grouped\n")
 cat("  n_folds:", n_folds, "\n")
@@ -161,22 +159,7 @@ write.csv(fold_stats, file.path(out_dir, "fold_stats_by_seed_by_fold.csv"), row.
 # Join to repeated CV per-fold performance (deployment check)
 perf_csv_override <- get("perf_detailed_csv_override", envir = .GlobalEnv)
 robust_eval_default <- file.path(run_output_dir, "by_seed_detailed.csv")
-legacy_eval_default <- if (length(robust_fold_seed_list) > 0L) {
-  file.path(
-    project_root, "output", cv_regime_name, "cv_pipeline",
-    paste0("robust_pixel_grouped_evaluation_robustSeeds_", paste(robust_fold_seed_list, collapse = "-")),
-    "by_seed_detailed.csv"
-  )
-} else ""
-legacy_default <- file.path(project_root, "output", cv_regime_name, "cv_pipeline", "repeated_pixel_grouped_seed_check", "by_seed_detailed.csv")
-perf_csv_default <- if (nzchar(robust_eval_default) && file.exists(robust_eval_default)) {
-  robust_eval_default
-} else if (nzchar(legacy_eval_default) && file.exists(legacy_eval_default)) {
-  legacy_eval_default
-} else {
-  legacy_default
-}
-perf_csv <- if (!is.na(perf_csv_override) && nzchar(perf_csv_override)) perf_csv_override else perf_csv_default
+perf_csv <- if (!is.na(perf_csv_override) && nzchar(perf_csv_override)) perf_csv_override else robust_eval_default
 if (file.exists(perf_csv)) {
   perf <- readr::read_csv(perf_csv, show_col_types = FALSE)
   perf$fold_seed <- as.integer(perf$fold_seed)
