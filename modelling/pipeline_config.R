@@ -35,26 +35,22 @@ get_pipeline_config <- function(overrides = list()) {
     cv_output_dir = file.path("output", "pixel_grouped"),
     cv_type_label = "pixel_grouped",
 
-    # Seed registry (single source of truth for recommended seed sets).
-    # - default_robust_fold_seed_list: current active default for robust selection/tuning
-    # - paper_robust_fold_seed_list: frozen paper/report seeds (opt-in via use_paper_seed_registry)
-    # - eval_fold_seed_list: held-out evaluation seeds (kept disjoint from tuning seed pool)
+    # Seed registry (single source of truth for all seed vectors).
+    # - active_robust_fold_seed_list: active default for robust selection/tuning
+    # - paper_robust_fold_seed_list: frozen paper/report robust seeds (opt-in)
+    # - eval_fold_seed_list: held-out evaluation seeds for final model evaluation
+    # - tuning_seed_pool: candidate seed pool for tuning-seed subset sweep
+    # - fold_seed_list: fold seeds for sensitivity checks
     seed_registry = list(
-      default_robust_fold_seed_list = c(48L, 52L, 53L, 70L, 73L),
+      active_robust_fold_seed_list = c(48L, 52L, 53L, 70L, 73L),
       paper_robust_fold_seed_list   = c(48L, 52L, 53L, 70L, 73L),
-      eval_fold_seed_list           = 100L:121L
+      eval_fold_seed_list           = 100L:121L,
+      tuning_seed_pool              = 42L:81L,
+      fold_seed_list                = 42L:62L
     ),
-    # Legacy field retained for backward compatibility with scripts that read it directly.
-    robust_fold_seed_list = c(48L, 52L, 53L, 70L, 73L),
     # If TRUE, use seed_registry$paper_robust_fold_seed_list instead of default robust seeds.
     use_paper_seed_registry = FALSE,
-    # Ten eval seeds, disjoint from tuning_seed_pool (42:81) and robust_fold_seed_list
-    # (61 is in robust; former 52:61 overlapped).
-    eval_fold_seed_list = 100L:121L,
     robust_pruned_importance_type = "shap",
-    # Robust RMSE objective for hyperparameter and sweep-subset selection:
-    # score = mean_rmse + robust_rmse_lambda * sd_rmse.
-    robust_rmse_lambda = 0, # no correction fo sd of rmse
 
     # Robust SHAP controls
     shap_n_points = 100L,
@@ -67,24 +63,22 @@ get_pipeline_config <- function(overrides = list()) {
     do_shap_refined_tuning = TRUE,
     do_sensitivity = TRUE,
     do_tuning_seed_sweep = FALSE,
-    do_tuning_seed_sweep_refined_tuning = FALSE,  # done tuning
+    do_tuning_seed_sweep_refined_tuning = TRUE,  # done tuning
     do_diagnostics = TRUE,
     do_fit_final_models = TRUE,
     do_supplement = TRUE,
 
-    # Each full multiseed driver run writes under cv_pipeline/multiseed_runs/<evaluation_stem>_<id>/
-    # NULL -> auto id from timestamp (avoids overwriting prior runs).
+    # Full multiseed runs write to output/pixel_grouped_<robust_seed_subset>/.
+    # This value is retained for backward compatibility but is not used for path construction.
     multiseed_run_output_id = NULL,
     # If TRUE, robust_fold_seed_list (and eval_fold_seed_list if present) are read from
-    # output/<cv_regime>/cv_pipeline/tuning_seed_sweep_runs/chosen_seeds_latest.rds
+    # output/tuning_seed_sweep_runs/chosen_seeds_latest.rds
     # after a tuning seed sweep (see tuning_seed_sweep.R).
     use_robust_seeds_from_tuning_sweep = FALSE,
 
     # Tuning sweep controls
     # tuning_seed_sweep_counts = c(2L, 5L, 10L, 15L, 20L),
     tuning_seed_sweep_counts = c(1L, 3L, 5L, 10L, 15L),
-    tuning_seed_pool = 42L:81L,
-    tuning_sweep_eval_seed_list = 100L:121L,
     tuning_seed_sampling = "random",
     # Subset registry (see tuning_seed_sweep.R): lowering repeats reuses existing runs; raising only tops up.
     tuning_seed_sweep_repeats = 3L,
@@ -104,21 +98,17 @@ get_pipeline_config <- function(overrides = list()) {
     # Sensitivity-suite defaults
     cv_types_to_check = c("pixel_grouped"),
     n_folds_list = c(1L, 3L, 5L, 10L),
-    fold_seed_list = 42L:62L,
     include_loo = FALSE,
     max_loo_groups = 250L,
     seed_plateau_tolerance = 0.02,
     seed_plateau_min_n = 3L,
     seed_plateau_stable_steps = 2L,
-    r2_sensitivity_models = c("GPR", "GAM", "XGB", "LR"),
-    fold_sensitivity_models = c("GPR", "GAM", "XGB", "LR"),
 
     # Diagnostics / supplement map defaults
     n_lons = 1000L,
     n_lats = 1000L,
 
     # Optional overrides / flags used by downstream scripts
-    robust_pruned_csv_override = NA_character_,
     perf_detailed_csv_override = NA_character_,
     use_robust_final_configs = FALSE
   )
@@ -129,10 +119,17 @@ get_pipeline_config <- function(overrides = list()) {
 
   if (is.list(cfg$seed_registry) && length(cfg$seed_registry) > 0L) {
     sr <- cfg$seed_registry
-    robust_default <- if (!is.null(sr$default_robust_fold_seed_list)) {
-      as.integer(sr$default_robust_fold_seed_list)
+    # Backward compatibility: allow top-level seed overrides in `overrides`,
+    # but normalize them into `seed_registry` so there is one canonical source.
+    if (!is.null(cfg$robust_fold_seed_list)) sr$active_robust_fold_seed_list <- as.integer(cfg$robust_fold_seed_list)
+    if (!is.null(cfg$tuning_seed_pool)) sr$tuning_seed_pool <- as.integer(cfg$tuning_seed_pool)
+    if (!is.null(cfg$eval_fold_seed_list)) sr$eval_fold_seed_list <- as.integer(cfg$eval_fold_seed_list)
+    if (!is.null(cfg$fold_seed_list)) sr$fold_seed_list <- as.integer(cfg$fold_seed_list)
+
+    robust_default <- if (!is.null(sr$active_robust_fold_seed_list)) {
+      as.integer(sr$active_robust_fold_seed_list)
     } else {
-      as.integer(cfg$robust_fold_seed_list)
+      integer()
     }
     robust_paper <- if (!is.null(sr$paper_robust_fold_seed_list)) {
       as.integer(sr$paper_robust_fold_seed_list)
@@ -142,10 +139,13 @@ get_pipeline_config <- function(overrides = list()) {
     eval_default <- if (!is.null(sr$eval_fold_seed_list)) {
       as.integer(sr$eval_fold_seed_list)
     } else {
-      as.integer(cfg$eval_fold_seed_list)
+      integer()
     }
     cfg$robust_fold_seed_list <- if (isTRUE(cfg$use_paper_seed_registry)) robust_paper else robust_default
     cfg$eval_fold_seed_list <- eval_default
+    cfg$tuning_seed_pool <- if (!is.null(sr$tuning_seed_pool)) as.integer(sr$tuning_seed_pool) else integer()
+    cfg$fold_seed_list <- if (!is.null(sr$fold_seed_list)) as.integer(sr$fold_seed_list) else integer()
+    cfg$seed_registry <- sr
   }
 
   # Keep derived defaults consistent.
@@ -163,6 +163,89 @@ apply_pipeline_defaults <- function(cfg, keys = names(cfg), envir = .GlobalEnv) 
     }
   }
   invisible(NULL)
+}
+
+seagrass_strip_config_keys <- function(x, exclude_keys = character()) {
+  if (!is.list(x) || length(exclude_keys) == 0L) return(x)
+  out <- x
+  drop_here <- intersect(names(out), exclude_keys)
+  if (length(drop_here) > 0L) {
+    out[drop_here] <- NULL
+  }
+  for (nm in names(out)) {
+    if (is.list(out[[nm]])) {
+      out[[nm]] <- seagrass_strip_config_keys(out[[nm]], exclude_keys = exclude_keys)
+    }
+  }
+  out
+}
+
+seagrass_find_matching_configs <- function(current_cfg,
+                                           search_root = "output",
+                                           exclude_keys = character(),
+                                           path_regex = NULL) {
+  if (!dir.exists(search_root)) return(character())
+  cfg_files <- list.files(
+    path = search_root,
+    pattern = "pipeline_config_effective\\.rds$",
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  cfg_files <- cfg_files[grepl("/_run_metadata/pipeline_config_effective\\.rds$", cfg_files)]
+  if (length(cfg_files) == 0L) return(character())
+  if (!is.null(path_regex) && nzchar(as.character(path_regex))) {
+    cfg_files <- cfg_files[grepl(path_regex, cfg_files, perl = TRUE)]
+  }
+  if (length(cfg_files) == 0L) return(character())
+
+  normalized_current <- seagrass_strip_config_keys(current_cfg, exclude_keys = exclude_keys)
+  matches <- character()
+  for (fp in cfg_files) {
+    old_cfg <- tryCatch(readRDS(fp), error = function(e) NULL)
+    if (is.null(old_cfg) || !is.list(old_cfg)) next
+    normalized_old <- seagrass_strip_config_keys(old_cfg, exclude_keys = exclude_keys)
+    if (isTRUE(all.equal(normalized_old, normalized_current, check.attributes = FALSE))) {
+      matches <- c(matches, fp)
+    }
+  }
+  unique(matches)
+}
+
+seagrass_confirm_same_config <- function(current_cfg,
+                                         search_root = "output",
+                                         exclude_keys = character(),
+                                         prompt_prefix = "run",
+                                         path_regex = NULL) {
+  matches <- seagrass_find_matching_configs(
+    current_cfg = current_cfg,
+    search_root = search_root,
+    exclude_keys = exclude_keys,
+    path_regex = path_regex
+  )
+  if (length(matches) == 0L) return(invisible(TRUE))
+
+  if (!interactive()) {
+    stop(
+      "The current configuration is the same as ",
+      paste(matches, collapse = ", "),
+      ": it looks like the same code would run again. Re-run interactively to confirm yes/no.",
+      call. = FALSE
+    )
+  }
+
+  msg <- paste0(
+    "The current configuration is the same as ",
+    paste(matches, collapse = ", "),
+    ": it looks like the same code would run again. Do you want to proceed? [yes/no]: "
+  )
+  repeat {
+    ans <- tolower(trimws(readline(msg)))
+    if (ans %in% c("y", "yes")) return(invisible(TRUE))
+    if (ans %in% c("n", "no")) {
+      stop("Stopped by user: duplicate ", prompt_prefix, " configuration.", call. = FALSE)
+    }
+    message("Please answer 'yes' or 'no'.")
+  }
 }
 
 # Build a run-folder name that encodes split regime + seed-budget geometry.
