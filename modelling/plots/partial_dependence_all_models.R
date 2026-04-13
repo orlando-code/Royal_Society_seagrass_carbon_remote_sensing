@@ -22,7 +22,7 @@ project_root <- seagrass_init_repo(
   packages = c("here", "dplyr", "ggplot2", "patchwork", "iml"),
   source_files = c(
     "modelling/pipeline_config.R",
-    "modelling/R/plot_config.R",
+    "modelling/plots/plot_config.R",
     "modelling/R/extract_covariates_from_rasters.R",
     "modelling/R/assign_region_from_latlon.R"
   ),

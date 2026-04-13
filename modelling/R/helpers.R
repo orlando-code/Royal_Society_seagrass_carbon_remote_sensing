@@ -5,7 +5,7 @@ if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
 }
 project_root <- seagrass_init_repo(
   packages = c("dplyr", "here", "digest"),
-  source_files = c("modelling/R/plot_config.R"),
+  source_files = c("modelling/plots/plot_config.R"),
   include_helpers = FALSE,
   require_core_inputs = FALSE,
   check_renv = TRUE
@@ -802,6 +802,50 @@ load_model_vars_with_fallback <- function(model_name, cov_dir, valid_cols = NULL
     )
   }
   pvars
+}
+
+#' Load run-scoped robust pruned predictor vars by model.
+#'
+#' @param run_output_dir Run-scoped output directory (e.g. output/pixel_grouped_<seeds>).
+#' @param robust_fold_seed_list Integer seed list used in robust pruning filenames.
+#' @param robust_pruned_importance_type "shap" or "perm".
+#' @param valid_cols Optional character vector of allowed columns.
+#' @param model_list Optional model filter/order.
+#' @return List with `predictor_vars_by_model` and `robust_pruned_csv`.
+load_run_scoped_robust_predictor_vars <- function(run_output_dir,
+                                                  robust_fold_seed_list,
+                                                  robust_pruned_importance_type = c("shap", "perm"),
+                                                  valid_cols = NULL,
+                                                  model_list = NULL) {
+  robust_pruned_importance_type <- match.arg(robust_pruned_importance_type)
+  robust_seed_str <- paste(as.integer(robust_fold_seed_list), collapse = "-")
+  robust_cov_dir <- file.path(run_output_dir, "covariate_selection", "robust_pixel_grouped")
+  robust_pruned_csv <- if (identical(robust_pruned_importance_type, "shap")) {
+    file.path(robust_cov_dir, paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", robust_seed_str, ".csv"))
+  } else {
+    file.path(robust_cov_dir, paste0("pruned_model_variables_perm_robust_pixel_grouped_seeds_", robust_seed_str, ".csv"))
+  }
+  if (!file.exists(robust_pruned_csv)) {
+    stop("Required run-scoped robust pruned covariate file not found: ", robust_pruned_csv)
+  }
+  pruned_df <- read.csv(robust_pruned_csv, stringsAsFactors = FALSE)
+  if (!all(c("model", "variable") %in% names(pruned_df))) {
+    stop("Robust pruned covariate file missing required columns model/variable: ", robust_pruned_csv)
+  }
+  predictor_vars_by_model <- lapply(split(pruned_df$variable, pruned_df$model), function(v) {
+    vals <- unique(v)
+    if (!is.null(valid_cols)) vals <- intersect(vals, valid_cols)
+    vals
+  })
+  predictor_vars_by_model <- predictor_vars_by_model[vapply(predictor_vars_by_model, length, integer(1)) >= 2L]
+  if (!is.null(model_list)) {
+    keep <- intersect(model_list, names(predictor_vars_by_model))
+    predictor_vars_by_model <- predictor_vars_by_model[keep]
+  }
+  list(
+    predictor_vars_by_model = predictor_vars_by_model,
+    robust_pruned_csv = robust_pruned_csv
+  )
 }
 
 #' Load best config object for one model from robust/baseline/legacy paths.

@@ -13,11 +13,12 @@ plot_tuning_seed_sweep_summary <- function(sweep_df, out_dir,
   }
   pc_env <- new.env(parent = baseenv())
   sys.source(
-    file.path(project_root, "modelling/R/plot_config.R"),
+    file.path(project_root, "modelling/plots/plot_config.R"),
     envir = pc_env
   )
   METRIC_LINESTYLES <- pc_env$METRIC_LINESTYLES
-  model_colours <- pc_env$model_colours
+  MODEL_COLOURS <- pc_env$MODEL_COLOURS
+
   ggplot2::theme_set(pc_env$theme_paper())
 
   sweep_long <- sweep_df |>
@@ -85,7 +86,7 @@ plot_tuning_seed_sweep_summary <- function(sweep_df, out_dir,
       na.rm = TRUE,
       show.legend = FALSE
     ) +
-    ggplot2::scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
+    ggplot2::scale_color_manual(values = MODEL_COLOURS, name = "Model", drop = FALSE) +
     scale_pooling_linetype() +
     ggplot2::labs(
       # title = expression("Performance vs number of tuning seeds (R"^2*" values)"),
@@ -116,7 +117,7 @@ plot_tuning_seed_sweep_summary <- function(sweep_df, out_dir,
       na.rm = TRUE,
       show.legend = FALSE
     ) +
-    ggplot2::scale_color_manual(values = model_colours, name = "Model", drop = FALSE) +
+    ggplot2::scale_color_manual(values = MODEL_COLOURS, name = "Model", drop = FALSE) +
     scale_pooling_linetype() +
     ggplot2::labs(
       # title = "Performance vs number of tuning seeds (RMSE)",
@@ -179,8 +180,7 @@ plot_tuning_seed_sweep_summary <- function(sweep_df, out_dir,
 pick_representative_tuning_seed_subset <- function(sweep_df,
                                                   n_tuning_seeds = 5L,
                                                   metric_col = "mean_mean_rmse",
-                                                  metric_sd_col = "sd_mean_rmse",
-                                                  rmse_lambda = 0.5) {
+                                                  metric_sd_col = "sd_mean_rmse") {
   n_seeds_target <- as.integer(n_tuning_seeds)[1L]
   if (!metric_col %in% names(sweep_df)) {
     stop("pick_representative_tuning_seed_subset: missing column ", metric_col)
@@ -188,7 +188,6 @@ pick_representative_tuning_seed_subset <- function(sweep_df,
   if (!metric_sd_col %in% names(sweep_df)) {
     stop("pick_representative_tuning_seed_subset: missing column ", metric_sd_col)
   }
-  rmse_lambda <- max(0, as.numeric(rmse_lambda))
   sub <- sweep_df |> dplyr::filter(.data$n_tuning_seeds == .env$n_seeds_target)
   if (nrow(sub) == 0L) {
     return(NULL)
@@ -198,7 +197,6 @@ pick_representative_tuning_seed_subset <- function(sweep_df,
     dplyr::summarise(
       mean_metric_across_models = mean(.data[[metric_col]], na.rm = TRUE),
       mean_sd_metric_across_models = mean(.data[[metric_sd_col]], na.rm = TRUE),
-      robust_rmse_score_across_models = mean(.data[[metric_col]] + .env$rmse_lambda * .data[[metric_sd_col]], na.rm = TRUE),
       .groups = "drop"
     )
   median_metric <- stats::median(by_list$mean_metric_across_models, na.rm = TRUE)
@@ -215,8 +213,6 @@ pick_representative_tuning_seed_subset <- function(sweep_df,
     n_tuning_seeds = n_seeds_target,
     mean_metric_across_models = as.numeric(chosen$mean_metric_across_models),
     mean_sd_metric_across_models = as.numeric(chosen$mean_sd_metric_across_models),
-    robust_rmse_score_across_models = as.numeric(chosen$robust_rmse_score_across_models),
-    robust_rmse_lambda = rmse_lambda,
     selection_rule = "min abs(mean_mean_rmse_across_models - median(mean_mean_rmse_across_models)) across subsets at fixed n_tuning_seeds (tie-break: lower mean_sd_rmse, then seed string)"
   )
 }
