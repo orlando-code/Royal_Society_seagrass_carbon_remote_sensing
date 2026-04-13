@@ -209,6 +209,17 @@ All fold types are cached/reused via `output/cache/` to speed up re-runs.
 4. Once models have been saved and predictions generated, the `prediction_maps.ipynb` Jupyter notebook can be used to generate the predictive maps of carbon stocks. This requires downloading extra datasets (see below).
 Seed policy is documented in `modelling/_SEED_REGISTRY.md`.
 
+### Python environment for `prediction_maps.ipynb`
+
+Use a clean virtual environment and install the notebook dependencies from `requirements.txt` via a `bash` terminal:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
 ## Environmental data
 
 The NetCDF raster files containing environmental covariates (from remote sensing and re-analysis products) are stored via Zenodo (persistent identifier: [https://doi.org/10.5281/zenodo.19329403](https://doi.org/10.5281/zenodo.19329403)). Download and place all `.nc` files under `data/covariate_rasters/`. The pipeline will auto-discover these covariates at runtime via the `build_covariate_config_from_dir` function in `modelling/R/extract_covariates_from_rasters.R`.

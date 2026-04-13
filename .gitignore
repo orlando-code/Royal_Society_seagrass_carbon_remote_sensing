@@ -53,3 +53,6 @@ renv/library/
 
 # temp files
 *.nfs*
+
+# python cache files
+__pycache__/
