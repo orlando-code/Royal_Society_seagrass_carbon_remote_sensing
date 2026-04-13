@@ -24,7 +24,7 @@ Runs variable selection for the paper: optional correlation filter, then per-mod
 
 **Called when:** Standalone CV scans / legacy workflows.
 
-Loads per-model predictor sets from the pruning CSVs (SHAP or permutation, depending on `use_shap_per_model`), builds spatial (or random) CV folds (using **`get_cached_spatial_folds`**; cache goes to **`output/cache/`**), and runs GPR, GAM, and XGB for each block size in `cv_blocksize_scan` (or a single `cv_blocksize`). Writes CV results, predictions, and comparison plots to **`output/<cv_regime>/cv_pipeline/`**. Does not run hyperparameter tuning (that’s step 3).
+Loads per-model predictor sets from the pruning CSVs (SHAP or permutation, depending on `use_shap_per_model`), builds spatial (or random) CV folds (using **`get_cached_spatial_folds`**; cache goes to **`output/cache/`**), and runs GPR, GAM, and XGB for each block size in `cv_blocksize_scan` (or a single `cv_blocksize`). Writes CV results, predictions, and comparison plots to **`output/<cv_regime>/cv_pipeline/`**. Does not run robust multiseed tuning (the publication driver uses **`modelling/multiseed/robust_hyperparameter_tuning.R`** at Steps 1 and 3 instead).
 
 ---
 
@@ -54,6 +54,6 @@ This file intentionally stops with a deprecation message. Robust SHAP pruning is
 
 ## fit_final_models.R
 
-**Called when:** Step 5.
+**Called when:** Step 7 from `modelling/run_multiseed_pixel_grouped.R`.
 
 Loads the best config per model from **`output/<cv_regime>/cv_pipeline/best_config_*.rds`** and the per-model predictor sets from **`output/<cv_regime>/covariate_selection/`** (SHAP or permutation). Fits XGB, GAM, and GPR on **all** training data with those settings and saves **`XGB_final.rds`**, **`GAM_final.rds`**, **`GPR_final.rds`** to **`output/<cv_regime>/final_models/`**. Each RDS contains the fitted model, `predictor_vars`, `scale_params`, `encoding`, `hyperparams`, and `train_metrics`. These objects are used by the prediction maps and partial dependence scripts.

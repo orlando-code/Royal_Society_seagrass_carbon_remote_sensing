@@ -58,12 +58,12 @@ Used for **exclude_regions** filtering and for supplement/summary maps. Depends 
 
 ---
 
-## plot_config.R
+## plot_config.R (in `modelling/plots/`)
 
-Plot styling and labelling:
+Plot styling and labelling live in **`modelling/plots/plot_config.R`** (not under `modelling/R/`). It defines:
 
 - **REGION_COLOURS**, **SPECIES_COLOURS**, **MODEL_COLOURS** – named colour vectors for consistent use in figures.
 - **VAR_LABELS** – human-friendly names for covariates (used in axis/legend labels).
 - **label_vars()** – maps variable names to display labels (falls back to the original name if not in **VAR_LABELS**).
 
-Sourced by **cv_pipeline.R**, **supplement.R**, **model_comparison.R**, and any script that needs consistent colours or variable labels in plots.
+Sourced by **`helpers.R`** (via `seagrass_init_repo` defaults), **`cv_pipeline.R`**, **`supplement.R`**, **`model_comparison.R`**, and plot scripts under **`modelling/plots/`** that need consistent colours or variable labels.

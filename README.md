@@ -19,13 +19,13 @@ source("modelling/analysis/tuning_seed_sweep.R")
 source("modelling/run_multiseed_pixel_grouped.R")
 ```
 
-Generated files are stored in  `output/` in a timestamped subfolder e.g. `output/pixel_grouped_<timestamp>`. These include covariate selection, robust tuning/evaluation, final models, prediction maps, diagnostics, and supplement folders. Cached files shared between runs with different `pipeline_config.R` files e.g. prediction grids go in `output/cache/`.
+Generated files are stored under `output/`. The robust multiseed driver writes a **run-scoped** folder named from the selection seeds, e.g. `output/pixel_grouped_48-52-53-70-73/` (see `robust_fold_seed_list` / `seed_registry` in `pipeline_config.R`). That folder holds covariate selection, robust tuning/evaluation, diagnostics, and run metadata. Shared regime outputs (e.g. `output/pixel_grouped/covariate_selection/`) still use `cv_output_dir` from `cv_regime_name`. Cached artefacts shared across runs (e.g. prediction grids, fold caches) go in `output/cache/`.
 
 ---
 
 ## Config (`pipeline_config.R`)
 
-Pipeline settings are centralized in `modelling/pipeline_config.R` (`get_pipeline_config()`), then consumed by `modelling/run_multiseed_pixel_grouped.R`and subsidiary scripts.
+Pipeline settings are centralized in `modelling/pipeline_config.R` (`get_pipeline_config()`), then consumed by `modelling/run_multiseed_pixel_grouped.R` and subsidiary scripts.
 
 ### Plotting / reporting
 
@@ -34,12 +34,13 @@ Pipeline settings are centralized in `modelling/pipeline_config.R` (`get_pipelin
 
 ### Pipeline toggles
 
-- `do_shap_refined_tuning` – re-tune hyperparameters after robust SHAP pruning.
+- `do_shap_refined_tuning` – re-tune hyperparameters after robust SHAP pruning (multiseed driver Step 3).
+- `do_tuning_seed_sweep_refined_tuning` – second robust tuning pass after SHAP pruning inside **standalone** `tuning_seed_sweep.R` subsets; set `TRUE` to mirror multiseed Step 3.
 - `do_sensitivity` – run sensitivity suite and associated plots.
 - `do_diagnostics` – run train/test fraction and variance diagnostics.
 - `do_fit_final_models`, `do_supplement` – final model fitting and additional supplementary figures.
-- `multiseed_run_output_id` – suffix for this driver run’s evaluation folder under `cv_pipeline/multiseed_runs/`; default `NULL` uses a timestamp so repeated runs do not overwrite each other.
-- `use_robust_seeds_from_tuning_sweep` – if `TRUE`, load `robust_fold_seed_list` (and `eval_fold_seed_list` if stored) from `output/<cv_regime>/cv_pipeline/tuning_seed_sweep_runs/chosen_seeds_latest.rds` after running `modelling/analysis/tuning_seed_sweep.R`. This is helpful since `tuning_seed_sweep.R` is very compute and time-intensive.
+- `multiseed_run_output_id` – retained for compatibility; the multiseed driver’s primary output path is `output/pixel_grouped_<robust_seeds>/` derived from `robust_fold_seed_list`, not this id.
+- `use_robust_seeds_from_tuning_sweep` – if `TRUE`, load `robust_fold_seed_list` (and `eval_fold_seed_list` if stored) from `output/tuning_seed_sweep_runs/chosen_seeds_latest.rds` after running `modelling/analysis/tuning_seed_sweep.R`. The tuning-seed sweep itself writes under `output/tuning_seed_sweep_runs/sweep_<run_id>/` (see that script’s header). Reusing a sweep folder requires both the same **planned subset manifest** and the same **effective sweep config** on disk; otherwise a new `sweep_<id>` is created.
 
 ### Target and transforms
 
@@ -85,20 +86,23 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 
 ![Flowchart](report/flowchart.png)
 
+Primary outputs for a run live under **`output/pixel_grouped_<robust_fold_seeds>/`** (hyphen-separated seed string). Shared baseline paths still use **`output/<cv_regime>/`** from `cv_regime_name` / `cv_output_dir`.
 
-| Step    | What it does                                                   | Outputs                                                                           |
-| ------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `-1`    | Load config and create directories                             | `output/<cv_regime>/`, `output/cache/`, generaterun metadata                      |
-| `0`     | Build `data/all_extracted_new.rds` if missing                  | `data/all_extracted_new.rds`                                                      |
-| `3`     | Robust multiseed hyperparameter tuning                         | `cv_pipeline/robust_pixel_grouped_tuning_robustSeeds`_*                           |
-| `4`     | Robust SHAP covariate pruning + SHAP plots                     | `output/<cv_regime>/covariate_selection/robust_pixel_grouped/`                    |
-| `5`     | Optional robust re-tuning with SHAP-selected covariates        | updated robust configs                                                            |
-| `6`     | Robust held-out evaluation on disjoint eval seeds              | `cv_pipeline/multiseed_runs/<evaluation_stem>_<run_id>/` (timestamped by default) |
-| `7`     | Sensitivity analyses and plots (optional)                      | `.../multiseed_runs/.../sensitivity_suite/` (same run folder)                     |
-| `8`     | Train/test fraction and target-variance diagnostics (optional) | diagnostics CSV/plots                                                             |
-| `9`     | Fit final models from robust configs and robust covariates     | `output/<cv_regime>/final_models/`                                                |
-| `10`    | Benchmark testing against species-mean baseline                | `output/<cv_regime>/analysis/`                                                    |
-| `11-13` | Spatial maps, partial dependence, supplement                   | `predictions/`, `covariate_selection/`, `output/supplement/`                      |
+| Step    | What it does                                                   | Typical outputs (run folder unless noted)                                        |
+| ------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `-1`    | Load config; assign `run_output_dir`; write run metadata       | `output/pixel_grouped_<seeds>/_run_metadata/`, `output/<cv_regime>/`, `output/cache/` |
+| `0`     | Build `data/all_extracted_new.rds` if missing                | `data/all_extracted_new.rds`                                                     |
+| `1`     | Robust hyperparameter tuning (initial covariates)            | `.../cv_pipeline/robust_pixel_grouped_tuning/` (`best_config_*_robust.rds`, …)   |
+| `2`     | Robust SHAP pruning + Step 2b SHAP importance plots            | `.../covariate_selection/robust_pixel_grouped/`                                  |
+| `3`     | Optional re-tuning on SHAP-pruned covariates (`do_shap_refined_tuning`) | updates `.../cv_pipeline/robust_pixel_grouped_tuning/`                           |
+| `4`     | Robust evaluation on `eval_fold_seed_list`                   | `across_seeds_summary.csv` and related CSVs under `output/pixel_grouped_<seeds>/` (run root) |
+| `5`     | R² sensitivity suite + plots (optional, `do_sensitivity`)    | `.../sensitivity_suite/`                                                         |
+| `6`     | Train/test fraction diagnostics (optional, `do_diagnostics`)   | diagnostics under run folder                                                     |
+| `7`     | Fit final models (`fit_final_models.R`)                      | `output/<cv_regime>/final_models/`                                               |
+| `8`     | Model comparison vs baselines                                  | `output/<cv_regime>/analysis/`                                                   |
+| `9`     | Spatial prediction maps                                        | `output/<cv_regime>/predictions/`                                                |
+| `10`    | Partial dependence (final models)                              | `output/<cv_regime>/covariate_selection/` (PDP figures)                          |
+| `11`    | Supplement figures                                             | `output/supplement/`                                                             |
 
 
 ---
@@ -114,19 +118,26 @@ seagrass_mapping/
 │   └── MEOW/                     # MEOW shapefile for region assignment (download online: see below)
 ├── modelling/
 │   ├── run_multiseed_pixel_grouped.R  # Main driver for publication workflow
-│   ├── config/                   # Central pipeline config
+│   ├── pipeline_config.R         # Central pipeline + seed registry
 │   ├── multiseed/                # Robust multiseed tuning/pruning/eval
-│   ├── analysis/                 # Model comparison, sensitivity, diagnostics
+│   ├── analysis/                 # Model comparison, sensitivity, tuning seed sweep, diagnostics
 │   ├── pipeline/                 # Data build, pruning, CV, tuning, importance, final fits
-│   ├── plots/                    # Figures: PDPs, prediction maps, supplement
-│   ├── R/                        # Shared R helpers, ML, raster extraction, plot config
+│   ├── plots/                    # Figures: PDPs, prediction maps, supplement, plot_config.R
+│   ├── R/                        # Shared R helpers, ML, raster extraction
 ├── output/                       # All pipeline outputs (replaces old figures/)
 │   ├── cache/                    # Shared cached spatial folds and prediction grids
-│   ├── <cv_regime>/<timestamp>   # Regime-specific outputs (based on `cv_type`)
-│   │   ├── covariate_selection/  # Pruning results, importance, PDPs
-│   │   ├── cv_pipeline/          # Tuning configs, multiseed_runs/, tuning_seed_sweep_runs/
+│   ├── tuning_seed_sweep_runs/   # Standalone sweep: sweep_<id>/, chosen_seeds_latest.rds
+│   ├── pixel_grouped_<seeds>/    # Multiseed run folder (robust_fold_seed_list in the name)
+│   │   ├── covariate_selection/  # Run-scoped robust SHAP outputs
+│   │   ├── cv_pipeline/          # Run-scoped robust_pixel_grouped_tuning/
+│   │   ├── _run_metadata/        # pipeline_config_effective.rds for that run
+│   │   └── …                     # evaluation, sensitivity_suite, diagnostics, etc.
+│   ├── <cv_regime>/              # Shared regime tree (`cv_output_dir`, e.g. output/pixel_grouped/)
+│   │   ├── covariate_selection/  # Baseline pruning, PDPs from driver Step 10
+│   │   ├── cv_pipeline/          # Legacy/baseline tuning paths
 │   │   ├── final_models/         # XGB_final.rds, GAM_final.rds, GPR_final.rds
 │   │   ├── predictions/          # Prediction maps (+ SE where available)
+│   │   └── analysis/             # Model comparison outputs
 │   └── supplement/               # Shared supplement outputs
 ├── report/                       # Figures for report and repository
 └── README.md
@@ -139,7 +150,7 @@ seagrass_mapping/
 - `"location_grouped"` -> `output/location_grouped` (group by unique latitude/longitude pairs)
 - `"spatial"` -> `output/spatial_<cv_blocksize>m` (group by spatial block. Not recommended due to existing spatial clustering and small dataset)
 
-See `modelling/pipeline/README.md`, `modelling/plots/README.md`, `modelling/multiseed/README.md`, and `modelling/R/README.md` for per-directory details.
+See `modelling/pipeline/_README.md`, `modelling/plots/_README.md`, `modelling/multiseed/_README.md`, `modelling/analysis/_README.md`, and `modelling/R/_README.md` for per-directory details.
 
 ---
 
@@ -148,8 +159,8 @@ See `modelling/pipeline/README.md`, `modelling/plots/README.md`, `modelling/mult
 This is a short overview: see the README files in the relevant directories for more information.
 
 - `pipeline_config.R` defines defaults and seed policy.
-- `run_multiseed_pixel_grouped.R` orchestrates build -> robust selection -> robust evaluation -> final outputs.
-- Effective run settings are written to `output/<cv_regime>/run_metadata/pipeline_config_effective.rds`.
+- `run_multiseed_pixel_grouped.R` orchestrates build → robust selection (tune → SHAP → optional re-tune) → robust evaluation → sensitivity/diagnostics → final outputs.
+- Effective run settings are written to `output/pixel_grouped_<seeds>/_run_metadata/pipeline_config_effective.rds` for each multiseed run.
 - Final fitted models are saved to `output/<cv_regime>/final_models/` and reused by map/PDP scripts.
 
 ---
@@ -193,10 +204,10 @@ All fold types are cached/reused via `output/cache/` to speed up re-runs.
   - optional: `Rscript modelling/analysis/tuning_seed_sweep.R`
   - `Rscript modelling/run_multiseed_pixel_grouped.R`
 3. Record and archive:
-  - `output/<cv_regime>/run_metadata/pipeline_config_effective.rds`
-  - the timestamped folder under `output/<cv_regime>/cv_pipeline/multiseed_runs/` for that run (evaluation CSVs, `sensitivity_suite/` if run).
+  - `output/pixel_grouped_<seeds>/_run_metadata/pipeline_config_effective.rds`
+  - the same `output/pixel_grouped_<seeds>/` tree (evaluation CSVs, `sensitivity_suite/` if run, etc.).
 4. Once models have been saved and predictions generated, the `prediction_maps.ipynb` Jupyter notebook can be used to generate the predictive maps of carbon stocks. This requires downloading extra datasets (see below).
-Seed policy is documented in `modelling/SEED_REGISTRY.md`.
+Seed policy is documented in `modelling/_SEED_REGISTRY.md`.
 
 ## Environmental data
 
