@@ -26,7 +26,7 @@ set.seed(42)
 
 source("modelling/R/helpers.R")
 source("modelling/R/assign_region_from_latlon.R")
-source("modelling/R/plot_config.R")
+source("modelling/plots/plot_config.R")
 source("modelling/R/extract_covariates_from_rasters.R")
 load_packages(c(
   "here", "mgcv", "tidyverse", "ggplot2", "randomForest", "blockCV",

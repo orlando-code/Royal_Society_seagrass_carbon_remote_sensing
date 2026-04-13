@@ -3,8 +3,7 @@
 ## Hyperparameter selection objective:
 ##   - For each candidate hyperparameter set, evaluate CV performance
 ##     on *multiple* pixel-grouped fold instantiations (`robust_fold_seed_list`).
-##   - Select the candidate with minimum robust RMSE score:
-##       mean_rmse + robust_rmse_lambda * sd_rmse
+##   - Select the candidate with minimum robust mean RMSE.
 ##
 ## This script expects robust per-model predictor sets to exist, typically from:
 ##   robust_shap_covariate_pruning.R
@@ -44,8 +43,8 @@ apply_pipeline_defaults(
     "cv_regime_name", "cv_type", "target_var", "log_transform_target",
     "exclude_regions", "n_folds", "cv_blocksize", "robust_fold_seed_list",
     "robust_pruned_importance_type", "correlation_filter_threshold",
-    "xgb_max_grid_candidates", "robust_pruned_csv_override",
-    "include_seagrass_species", "robust_rmse_lambda"
+    "xgb_max_grid_candidates",
+    "include_seagrass_species", "model_list"
   ),
   envir = .GlobalEnv
 )
@@ -65,22 +64,24 @@ cv_blocksize <- get("cv_blocksize", envir = .GlobalEnv) # unused for pixel_group
 robust_fold_seed_list <- get("robust_fold_seed_list", envir = .GlobalEnv)
 robust_fold_seed_list <- as.integer(robust_fold_seed_list)
 include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
-robust_rmse_lambda <- max(0, as.numeric(get("robust_rmse_lambda", envir = .GlobalEnv)))
 
-robust_dir_default <- file.path(project_root, "output", cv_regime_name, "cv_pipeline", "robust_pixel_grouped_tuning")
-robust_dir_override <- if (exists("robust_tuning_dir_override", envir = .GlobalEnv, inherits = FALSE)) {
-  get("robust_tuning_dir_override", envir = .GlobalEnv)
-} else {
-  NA_character_
+run_output_dir <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
+if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir))) {
+  stop("run_output_dir must be set in .GlobalEnv for robust hyperparameter tuning.")
 }
-robust_dir <- if (!is.na(robust_dir_override) && nzchar(robust_dir_override)) robust_dir_override else robust_dir_default
+run_output_dir <- as.character(run_output_dir)
+subset_work_root <- if (basename(run_output_dir) == "evaluation") dirname(run_output_dir) else run_output_dir
+robust_dir <- if (basename(run_output_dir) == "evaluation") {
+  file.path(subset_work_root, "tuning")
+} else {
+  file.path(run_output_dir, "cv_pipeline", "robust_pixel_grouped_tuning")
+}
 dir.create(robust_dir, recursive = TRUE, showWarnings = FALSE)
 
 cat("Robust hyperparameter tuning (pixel_grouped)\n")
 cat("  robust_fold_seed_list:", paste(robust_fold_seed_list, collapse = ", "), "\n")
 cat("  include_seagrass_species:", include_seagrass_species, "\n")
 cat("  n_folds:", n_folds, "\n")
-cat("  robust_rmse_lambda:", robust_rmse_lambda, "\n")
 cat("  writing outputs to:", robust_dir, "\n")
 
 # ---------------------------------------------------------------------------
@@ -132,10 +133,12 @@ cat("  Predictor vars for fold hashing:", length(predictor_vars_full), "\n")
 seeds_str <- paste(robust_fold_seed_list, collapse = "-")
 robust_pruned_importance_type <- get("robust_pruned_importance_type", envir = .GlobalEnv)
 robust_pruned_importance_type <- match.arg(robust_pruned_importance_type, choices = c("perm", "shap"))
-robust_pruned_csv_override <- get("robust_pruned_csv_override", envir = .GlobalEnv)
-
-robust_cov_dir <- file.path(project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped")
-default_robust_pruned_csv <- if (identical(robust_pruned_importance_type, "shap")) {
+robust_cov_dir <- if (basename(run_output_dir) == "evaluation") {
+  file.path(subset_work_root, "covariates")
+} else {
+  file.path(run_output_dir, "covariate_selection", "robust_pixel_grouped")
+}
+robust_pruned_csv <- if (identical(robust_pruned_importance_type, "shap")) {
   file.path(
     robust_cov_dir,
     paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_str, ".csv")
@@ -146,25 +149,13 @@ default_robust_pruned_csv <- if (identical(robust_pruned_importance_type, "shap"
     paste0("pruned_model_variables_perm_robust_pixel_grouped_seeds_", seeds_str, ".csv")
   )
 }
-
-robust_pruned_csv <- if (!is.na(robust_pruned_csv_override) && nzchar(robust_pruned_csv_override)) {
-  robust_pruned_csv_override
-} else {
-  default_robust_pruned_csv
-}
-
 if (!file.exists(robust_pruned_csv)) {
-  fallback_csv <- file.path(
-    project_root, "output", cv_regime_name, "covariate_selection",
-    if (identical(robust_pruned_importance_type, "shap")) "pruned_model_variables_shap.csv" else "pruned_model_variables_perm.csv"
+  cat(
+    "  Robust pruned covariate file not found for configured seeds.\n",
+    "  Using full predictor set as initial covariates for tuning:\n    ",
+    robust_pruned_csv, "\n",
+    sep = ""
   )
-  if (file.exists(fallback_csv)) {
-    cat("\nWARNING: robust pruned vars not found:\n  ", robust_pruned_csv,
-        "\nFalling back to non-robust pruned vars:\n  ", fallback_csv, "\n")
-    robust_pruned_csv <- fallback_csv
-  } else {
-    cat("\nWARNING: no pruned-vars CSV found; falling back to correlation-filtered predictors for all models.\n")
-  }
 }
 
 predictor_vars_by_model <- list()
@@ -176,35 +167,19 @@ if (file.exists(robust_pruned_csv)) {
     if (length(vars) >= 2) predictor_vars_by_model[[m]] <- vars
   }
 } else {
-  corr_vars <- prune_by_correlation(
-    data = core_data,
-    predictor_vars = predictor_vars_full,
-    target_var = "median_carbon_density",
-    cor_threshold = as.numeric(get("correlation_filter_threshold", envir = .GlobalEnv))
-  )
-  if (isTRUE(include_seagrass_species) && "seagrass_species" %in% names(core_data)) {
-    corr_vars <- unique(c(corr_vars, "seagrass_species"))
-  }
-  for (m in c("GPR", "GAM", "XGB", "LR")) {
-    vars <- intersect(corr_vars, colnames(core_data))
-    if (length(vars) >= 2) predictor_vars_by_model[[m]] <- vars
+  for (m in model_list) {
+    if (length(predictor_vars_full) >= 2L) {
+      predictor_vars_by_model[[m]] <- predictor_vars_full
+    }
   }
 }
-models <- intersect(names(predictor_vars_by_model), c("GPR", "GAM", "XGB", "LR"))
+models <- intersect(names(predictor_vars_by_model), model_list)
 if (length(models) == 0L) stop("No models found after loading robust pruned variables.")
-cat("  Robust predictor sets loaded for:", paste(models, collapse = ", "), "\n")
-
-# ---------------------------------------------------------------------------
-# Baseline configs (optional; used to enrich candidate ranges)
-# ---------------------------------------------------------------------------
-config_dir <- file.path(project_root, "output", cv_regime_name, "cv_pipeline")
-cfg_xgb_path <- file.path(config_dir, "best_config_xgb.rds")
-cfg_gam_path <- file.path(config_dir, "best_config_gam.rds")
-cfg_gpr_path <- file.path(config_dir, "best_config_gpr.rds")
-
-cfg_xgb <- if (file.exists(cfg_xgb_path)) readRDS(cfg_xgb_path) else list()
-cfg_gam <- if (file.exists(cfg_gam_path)) readRDS(cfg_gam_path) else list()
-cfg_gpr <- if (file.exists(cfg_gpr_path)) readRDS(cfg_gpr_path) else list()
+if (file.exists(robust_pruned_csv)) {
+  cat("  Robust predictor sets loaded for:", paste(models, collapse = ", "), "\n")
+} else {
+  cat("  Initial full predictor sets loaded for:", paste(models, collapse = ", "), "\n")
+}
 
 # ---------------------------------------------------------------------------
 # Fold builder per seed
@@ -251,13 +226,10 @@ robust_rmse_stats <- function(model_name, hp_by_model) {
   robust_mean_rmse <- mean(rmses, na.rm = TRUE)
   robust_sd_rmse <- stats::sd(rmses, na.rm = TRUE)
   if (!is.finite(robust_sd_rmse)) robust_sd_rmse <- 0
-  robust_rmse_score <- robust_mean_rmse + robust_rmse_lambda * robust_sd_rmse
   list(
     robust_mean_rmse = robust_mean_rmse,
     robust_sd_rmse = robust_sd_rmse,
-    robust_n_rmse = sum(is.finite(rmses)),
-    robust_rmse_lambda = robust_rmse_lambda,
-    robust_rmse_score = robust_rmse_score
+    robust_n_rmse = sum(is.finite(rmses))
   )
 }
 
@@ -359,14 +331,14 @@ if ("XGB" %in% models) {
   cat("  Full grid size:", nrow(full_grid), "— selecting representative candidates (deterministic)\n")
   max_candidates <- as.integer(get("xgb_max_grid_candidates", envir = .GlobalEnv))
   baseline_row <- data.frame(
-    nrounds = cfg_xgb$nrounds %||% 100L,
-    max_depth = cfg_xgb$max_depth %||% 6L,
-    learning_rate = cfg_xgb$learning_rate %||% 0.1,
-    min_child_weight = cfg_xgb$min_child_weight %||% 1L,
-    subsample = cfg_xgb$subsample %||% 0.8,
-    colsample_bytree = cfg_xgb$colsample_bytree %||% 0.8,
-    min_split_loss = cfg_xgb$min_split_loss %||% 0,
-    reg_reg_lambda = cfg_xgb$reg_reg_lambda %||% 1,
+    nrounds = 100L,
+    max_depth = 6L,
+    learning_rate = 0.1,
+    min_child_weight = 1L,
+    subsample = 0.8,
+    colsample_bytree = 0.8,
+    min_split_loss = 0,
+    reg_reg_lambda = 1,
     stringsAsFactors = FALSE
   )
   key_cols <- c("max_depth", "learning_rate", "min_child_weight", "reg_reg_lambda")
@@ -398,22 +370,19 @@ if ("XGB" %in% models) {
     row$robust_mean_rmse <- obj$robust_mean_rmse
     row$robust_sd_rmse <- obj$robust_sd_rmse
     row$robust_n_rmse <- obj$robust_n_rmse
-    row$robust_rmse_lambda <- obj$robust_rmse_lambda
-    row$robust_rmse_score <- obj$robust_rmse_score
     grid_rows[[i]] <- row
     if (i %% 10 == 0 || i == nrow(grid)) {
-      cat(sprintf("  [%d/%d] nrounds=%d depth=%d lr=%.2f mcw=%d ss=%.1f csbt=%.1f gamma=%g lambda=%g -> meanRMSE=%.6f sdRMSE=%.6f score=%.6f\n",
+      cat(sprintf("  [%d/%d] nrounds=%d depth=%d lr=%.2f mcw=%d ss=%.1f csbt=%.1f gamma=%g lambda=%g -> meanRMSE=%.6f sdRMSE=%.6f\n",
         i, nrow(grid), row$nrounds, row$max_depth, row$learning_rate,
         row$min_child_weight, row$subsample, row$colsample_bytree,
         row$min_split_loss, row$reg_reg_lambda,
-        obj$robust_mean_rmse, obj$robust_sd_rmse, obj$robust_rmse_score))
+        obj$robust_mean_rmse, obj$robust_sd_rmse))
     }
   }
   xgb_grid_tbl <- dplyr::bind_rows(grid_rows)
-  best_idx <- which.min(xgb_grid_tbl$robust_rmse_score)
+  best_idx <- which.min(xgb_grid_tbl$robust_mean_rmse)
   best_row <- xgb_grid_tbl[best_idx, , drop = FALSE]
-  cat("\n  Best XGB config (robust score =", round(best_row$robust_rmse_score, 6),
-      "; mean RMSE =", round(best_row$robust_mean_rmse, 6),
+  cat("\n  Best XGB config (mean RMSE =", round(best_row$robust_mean_rmse, 6),
       "; sd RMSE =", round(best_row$robust_sd_rmse, 6), "):\n")
   cat("    nrounds=", best_row$nrounds, " max_depth=", best_row$max_depth,
       " lr=", best_row$learning_rate, " mcw=", best_row$min_child_weight,
@@ -450,20 +419,17 @@ if ("GAM" %in% models) {
       robust_mean_rmse = obj$robust_mean_rmse,
       robust_sd_rmse = obj$robust_sd_rmse,
       robust_n_rmse = obj$robust_n_rmse,
-      robust_rmse_lambda = obj$robust_rmse_lambda,
-      robust_rmse_score = obj$robust_rmse_score,
       stringsAsFactors = FALSE
     )
     cat(
       "  k_covariate=", k_cov,
       " -> meanRMSE=", round(obj$robust_mean_rmse, 6),
-      " sdRMSE=", round(obj$robust_sd_rmse, 6),
-      " score=", round(obj$robust_rmse_score, 6), "\n",
+      " sdRMSE=", round(obj$robust_sd_rmse, 6), "\n",
       sep = ""
     )
   }
   gam_tbl <- dplyr::bind_rows(rows)
-  best_idx <- which.min(gam_tbl$robust_rmse_score)
+  best_idx <- which.min(gam_tbl$robust_mean_rmse)
   best_k <- gam_tbl$k_covariate[best_idx]
   gam_config <- list(k_covariate = best_k, robust_cv_metrics = gam_tbl)
   saveRDS(gam_config, file.path(robust_dir, "best_config_gam_robust.rds"))
@@ -475,20 +441,11 @@ if ("GAM" %in% models) {
 # ---------------------------------------------------------------------------
 if ("GPR" %in% models) {
   cat("\n=== Robust tuning: GPR ===\n")
-  kernel_candidates <- unique(c(cfg_gpr$kernel %||% "matern52", "matern52", "matern32", "gaussian"))
+  kernel_candidates <- c("matern52", "matern32", "gaussian")
   nug_min_vals <- c(1e-8, 1e-6, 1e-4)
   nug_max_vals <- c(10, 50, 100)
-
-  # If baseline exists, prefer nearby values; otherwise evaluate full defaults.
-  if (!is.null(cfg_gpr$nug.min) && !is.null(cfg_gpr$nug.max)) {
-    log_base_min <- log10(cfg_gpr$nug.min %||% 1e-6)
-    log_base_max <- log10(cfg_gpr$nug.max %||% 50)
-    nug_min_candidates <- nug_min_vals[order(abs(log10(nug_min_vals) - log_base_min))][1:2]
-    nug_max_candidates <- nug_max_vals[order(abs(log10(nug_max_vals) - log_base_max))][1:2]
-  } else {
-    nug_min_candidates <- nug_min_vals
-    nug_max_candidates <- nug_max_vals
-  }
+  nug_min_candidates <- nug_min_vals
+  nug_max_candidates <- nug_max_vals
 
   rows <- list()
   for (kernel in kernel_candidates) {
@@ -502,20 +459,17 @@ if ("GPR" %in% models) {
           robust_mean_rmse = obj$robust_mean_rmse,
           robust_sd_rmse = obj$robust_sd_rmse,
           robust_n_rmse = obj$robust_n_rmse,
-          robust_rmse_lambda = obj$robust_rmse_lambda,
-          robust_rmse_score = obj$robust_rmse_score,
           stringsAsFactors = FALSE
         )
         cat("  kernel=", kernel, " nug.min=", nug_min, " nug.max=", nug_max,
             " -> meanRMSE=", round(obj$robust_mean_rmse, 6),
-            " sdRMSE=", round(obj$robust_sd_rmse, 6),
-            " score=", round(obj$robust_rmse_score, 6), "\n", sep = "")
+            " sdRMSE=", round(obj$robust_sd_rmse, 6), "\n", sep = "")
       }
     }
   }
   gpr_tbl <- dplyr::bind_rows(rows)
   if (nrow(gpr_tbl) == 0L) stop("No valid GPR hyperparameter candidates after restriction.")
-  best_idx <- which.min(gpr_tbl$robust_rmse_score)
+  best_idx <- which.min(gpr_tbl$robust_mean_rmse)
   best_row <- gpr_tbl[best_idx, , drop = FALSE]
   gpr_config <- list(
     kernel = best_row$kernel,
@@ -538,8 +492,6 @@ if ("LR" %in% models) {
     robust_mean_rmse = obj$robust_mean_rmse,
     robust_sd_rmse = obj$robust_sd_rmse,
     robust_n_rmse = obj$robust_n_rmse,
-    robust_rmse_lambda = obj$robust_rmse_lambda,
-    robust_rmse_score = obj$robust_rmse_score,
     stringsAsFactors = FALSE
   )
   lm_config <- list(robust_cv_metrics = lm_tbl)

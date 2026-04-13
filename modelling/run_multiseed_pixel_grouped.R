@@ -25,7 +25,6 @@
 # Usage: setwd(project_root); source("<robust pipeline driver>")
 #        Or: Rscript <robust pipeline driver>
 # =============================================================================
-
 if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
   init_path <- file.path("modelling", "R", "init_repo.R")
   if (!file.exists(init_path)) {
@@ -48,7 +47,7 @@ set.seed(42)
 
 cat("\n")
 cat(paste(rep("=", 94), collapse = ""), "\n")
-cat("ROBUST PIXEL_GROUPED: CONFIG -> ROBUST-PRUNE -> ROBUST-TUNE -> ROBUST-EVAL -> FINAL-MODELS\n")
+cat("ROBUST PIXEL_GROUPED: CONFIG -> ROBUST-TUNE -> ROBUST-SHAP-PRUNE -> ROBUST-TUNE-SHAP-PRUNED -> ROBUST-EVAL -> FINAL-MODELS\n")
 cat(paste(rep("=", 94), collapse = ""), "\n\n")
 
 # -----------------------------------------------------------------------------
@@ -99,7 +98,7 @@ eval_fold_seed_list   <- as.integer(cfg$eval_fold_seed_list)     # seeds for hel
 use_robust_seeds_from_tuning_sweep <- isTRUE(cfg$use_robust_seeds_from_tuning_sweep)
 use_paper_seed_registry <- isTRUE(cfg$use_paper_seed_registry)
 chosen_seeds_rds <- file.path(
-  cv_output_dir, "cv_pipeline", "tuning_seed_sweep_runs", "chosen_seeds_latest.rds"
+  "output", "tuning_seed_sweep_runs", "chosen_seeds_latest.rds"
 )
 if (isTRUE(use_robust_seeds_from_tuning_sweep)) {
   if (!file.exists(chosen_seeds_rds)) {
@@ -124,27 +123,15 @@ if (isTRUE(use_paper_seed_registry)) {
   robust_fold_seed_list <- as.integer(sr$paper_robust_fold_seed_list)
 }
 
+seed_subset <- paste(robust_fold_seed_list, collapse = "-")
 multiseed_run_output_id <- cfg$multiseed_run_output_id
-if (is.null(multiseed_run_output_id) || length(multiseed_run_output_id) != 1L ||
-    !nzchar(as.character(multiseed_run_output_id))) {
-  multiseed_run_output_id <- format(Sys.time(), "%Y%m%d_%H%M%S")
-} else {
-  multiseed_run_output_id <- as.character(multiseed_run_output_id)
-}
-
-eval_folder_stem <- build_seeded_run_folder_name(
-  cv_type_label = cv_type_label,
-  folder_type = "evaluation",
-  repeat_seed_list = eval_fold_seed_list,
-  robust_seed_list = robust_fold_seed_list,
-  include_seed_values = TRUE
-)
-run_output_dir <- file.path(
-  cv_output_dir,
-  "cv_pipeline",
-  "multiseed_runs",
-  paste0(eval_folder_stem, "_", multiseed_run_output_id)
-)
+run_output_dir <- file.path("output", paste0("pixel_grouped_", seed_subset))
+# All pipeline scripts that read `cv_output_dir` (final models, maps, tuning
+# configs, baseline covariate dirs, etc.) must resolve under this run folder,
+# not the generic cfg$cv_output_dir (output/pixel_grouped).
+cv_output_dir <- run_output_dir
+# assign run_output_dir to global so all subsequent files can find it
+assign("run_output_dir", run_output_dir, envir = .GlobalEnv)
 
 # SHAP pruning controls
 shap_n_points       <- as.integer(cfg$shap_n_points)
@@ -155,21 +142,10 @@ shap_selection_max_vars_grid <- as.integer(cfg$shap_selection_max_vars_grid)
 
 # Robust pruning importance type
 robust_pruned_importance_type <- cfg$robust_pruned_importance_type
-robust_rmse_lambda <- as.numeric(cfg$robust_rmse_lambda)
 
 # Pipeline toggles (control runtime for development vs publication)
 do_shap_refined_tuning <- isTRUE(cfg$do_shap_refined_tuning)
 do_sensitivity         <- isTRUE(cfg$do_sensitivity)
-# Optional nested robust seed-count sweep (very expensive):
-# re-run robust tuning/pruning/eval at multiple robust seed counts.
-# This is now executed via standalone script:
-#   Rscript modelling/analysis/tuning_seed_sweep.R
-do_tuning_seed_sweep <- isTRUE(cfg$do_tuning_seed_sweep)
-tuning_seed_sweep_counts <- as.integer(cfg$tuning_seed_sweep_counts)
-tuning_seed_pool <- as.integer(cfg$tuning_seed_pool)
-tuning_sweep_eval_seed_list <- as.integer(cfg$tuning_sweep_eval_seed_list)
-tuning_seed_sampling <- cfg$tuning_seed_sampling
-do_tuning_seed_sweep_refined_tuning <- isTRUE(cfg$do_tuning_seed_sweep_refined_tuning)
 do_diagnostics         <- isTRUE(cfg$do_diagnostics)
 do_fit_final_models    <- isTRUE(cfg$do_fit_final_models)
 do_supplement          <- isTRUE(cfg$do_supplement)
@@ -194,10 +170,6 @@ config_vars <- c(
   "multiseed_run_output_id", "use_robust_seeds_from_tuning_sweep",
   "shap_n_points", "shap_folds_per_seed", "shap_max_gpr_train",
   "shap_selection_coverage_grid", "shap_selection_max_vars_grid",
-  "robust_rmse_lambda",
-  "do_tuning_seed_sweep", "tuning_seed_sweep_counts", "tuning_seed_pool",
-  "tuning_sweep_eval_seed_list", "tuning_seed_sampling",
-  "do_tuning_seed_sweep_refined_tuning",
   "robust_pruned_importance_type",
   "xgb_max_grid_candidates",
   "n_lons", "n_lats"
@@ -211,7 +183,7 @@ for (d in c("output", "output/cache",
 }
 
 # Persist effective run configuration for reproducibility/auditing.
-run_metadata_dir <- file.path(cv_output_dir, "run_metadata")
+run_metadata_dir <- file.path(run_output_dir, "_run_metadata")
 dir.create(run_metadata_dir, recursive = TRUE, showWarnings = FALSE)
 run_cfg_vars <- unique(c(
   config_vars,
@@ -220,6 +192,13 @@ run_cfg_vars <- unique(c(
   "cv_output_dir"
 ))
 effective_run_cfg <- setNames(lapply(run_cfg_vars, function(nm) get(nm, envir = .GlobalEnv)), run_cfg_vars)
+seagrass_confirm_same_config(
+  current_cfg = effective_run_cfg,
+  search_root = "output",
+  exclude_keys = c("run_output_dir", "multiseed_run_output_id"),
+  prompt_prefix = "multiseed pipeline",
+  path_regex = "output/pixel_grouped_[^/]+/_run_metadata/pipeline_config_effective\\.rds$"
+)
 saveRDS(effective_run_cfg, file.path(run_metadata_dir, "pipeline_config_effective.rds"))
 dput(effective_run_cfg, file = file.path(run_metadata_dir, "pipeline_config_effective.dput"))
 cat("  wrote run config to:         ", file.path(run_metadata_dir, "pipeline_config_effective.rds"), "\n")
@@ -236,7 +215,7 @@ cat("  exclude_regions:             ",
 cat("  model_list:                  ", paste(model_list, collapse = ", "), "\n")
 cat("  include_seagrass_species:    ", include_seagrass_species, "\n")
 cat("  n_folds:                     ", n_folds, "\n")
-cat("  cv_type (baseline):          ", cv_type, "\n")
+cat("  cv_type:          ", cv_type, "\n")
 cat("  cv_output_dir:               ", cv_output_dir, "\n")
 cat("  run_output_dir:              ", run_output_dir, "\n")
 cat("  robust_fold_seed_list:       ", paste(robust_fold_seed_list, collapse = ", "), "\n")
@@ -247,18 +226,10 @@ cat("  shap_max_gpr_train:          ", shap_max_gpr_train, "\n")
 cat("  shap_selection_coverage_grid:", paste(shap_selection_coverage_grid, collapse = ", "), "\n")
 cat("  shap_selection_max_vars_grid:", paste(shap_selection_max_vars_grid, collapse = ", "), "\n")
 cat("  robust_pruned_importance:    ", robust_pruned_importance_type, "\n")
-cat("  robust_rmse_lambda:          ", robust_rmse_lambda, "\n")
-cat("  multiseed_run_output_id:     ", multiseed_run_output_id, "\n")
 cat("  use_robust_seeds_from_sweep: ", use_robust_seeds_from_tuning_sweep, "\n")
 cat("  use_paper_seed_registry:     ", use_paper_seed_registry, "\n")
 cat("  do_shap_refined_tuning:      ", do_shap_refined_tuning, "\n")
 cat("  do_sensitivity:              ", do_sensitivity, "\n")
-cat("  do_tuning_seed_sweep:        ", do_tuning_seed_sweep, "\n")
-cat("  tuning_seed_sweep_counts:    ", paste(tuning_seed_sweep_counts, collapse = ", "), "\n")
-cat("  tuning_seed_pool:            ", paste(tuning_seed_pool, collapse = ", "), "\n")
-cat("  tuning_sweep_eval_seed_list: ", paste(tuning_sweep_eval_seed_list, collapse = ", "), "\n")
-cat("  tuning_seed_sampling:        ", tuning_seed_sampling, "\n")
-cat("  sweep_refined_tuning:        ", do_tuning_seed_sweep_refined_tuning, "\n")
 cat("  do_diagnostics:              ", do_diagnostics, "\n")
 cat("  do_fit_final_models:         ", do_fit_final_models, "\n")
 cat("  do_supplement:               ", do_supplement, "\n")
@@ -289,45 +260,38 @@ cat("\n")
 cat("  --- Phase I: seeded pixel_grouped robust selection ---\n\n")
 assign("cv_type", "pixel_grouped", envir = .GlobalEnv)
 
-# -----------------------------------------------------------------------------
-# Step 3: Robust hyperparameter tuning (initial covariates)
-#
-# Uses robust_fold_seed_list to evaluate each candidate config across multiple
-# fold instantiations. Covariate sets come from the fallback chain:
-#   1. Robust SHAP-pruned vars (if available from a previous Step 4 run)
-#   2. Baseline SHAP/perm vars from Step 1
-# -----------------------------------------------------------------------------
-cat("\t\tStep 3: Robust hyperparameter tuning (initial covariates)\n")
+#-----------------------------------------------------------------------------
+cat("\t\tStep 1: Robust hyperparameter tuning (initial covariates)\n")
 assign("robust_pruned_importance_type", robust_pruned_importance_type, envir = .GlobalEnv)
 source("modelling/multiseed/robust_hyperparameter_tuning.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# Step 4: Robust SHAP covariate pruning
+# Step 2: Robust SHAP covariate pruning
 #
 # Computes SHAP importance on fold-specific training sets across multiple
 # seeds, then selects top covariates per model based on averaged |SHAP|.
-# Uses robust hyperparams from Step 3 (or baseline fallback).
+# Uses model baseline hyperparams.
 # -----------------------------------------------------------------------------
-cat("\t\tStep 4: Robust SHAP covariate pruning\n")
+cat("\t\tStep 2: Robust SHAP covariate pruning\n")
 source("modelling/multiseed/robust_shap_covariate_pruning.R")
-cat("\t\tStep 4b: Robust SHAP importance plots (mean +/- SD)\n")
+cat("\t\tStep 2b: Robust SHAP importance plots (mean +/- SD)\n")
 source("modelling/plots/robust_shap_importance_plots.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# Step 5: Robust hyperparameter tuning with SHAP-selected covariates
+# Step 3: Robust hyperparameter tuning with SHAP-selected covariates
 #
-# Re-runs robust tuning using the SHAP-pruned covariate sets from Step 4.
+# Re-runs robust tuning using the SHAP-pruned covariate sets from Step 2.
 # This iterative refinement (tune -> prune -> re-tune) is the core
 # methodology for the small-dataset setting.
 # -----------------------------------------------------------------------------
 if (isTRUE(do_shap_refined_tuning)) {
-  cat("\t\tStep 5: Robust hyperparameter tuning (SHAP-selected covariates)\n")
+  cat("\t\tStep 3: Robust hyperparameter tuning (SHAP-selected covariates)\n")
   source("modelling/multiseed/robust_hyperparameter_tuning.R")
   cat("\n")
 } else {
-  cat("\t\tStep 5: Skipping SHAP-refined tuning (do_shap_refined_tuning=FALSE)\n\n")
+  cat("\t\tStep 3: Skipping SHAP-refined tuning (do_shap_refined_tuning=FALSE)\n\n")
 }
 
 # =============================================================================
@@ -335,94 +299,82 @@ if (isTRUE(do_shap_refined_tuning)) {
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Step 6: Robust evaluation across held-out seeds
+# Step 4: Robust evaluation across held-out seeds
 #
 # Evaluates the final (tuned covariates + tuned hyperparams) on
 # eval_fold_seed_list, which is disjoint from robust_fold_seed_list.
 # -----------------------------------------------------------------------------
-cat("\t\tStep 6: Robust evaluation across eval seeds\n")
+cat("\t\tStep 4: Robust evaluation across eval seeds\n")
 assign("cv_type", "pixel_grouped", envir = .GlobalEnv)
 source("modelling/multiseed/robust_evaluation.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# Step 7: R2 sensitivity analysis (performance vs seed count, fold count)
+# Step 5: R2 sensitivity analysis (performance vs seed count, fold count)
 # -----------------------------------------------------------------------------
 if (isTRUE(do_sensitivity)) {
-  cat("\t\tStep 7: R2 sensitivity analysis\n")
+  cat("\t\tStep 5: R2 sensitivity analysis\n")
   source("modelling/analysis/sensitivity_suite.R")
   source("modelling/plots/sensitivity_plots.R")
-  if (isTRUE(do_tuning_seed_sweep)) {
-    cat("  NOTE: tuning seed-count sweep is standalone.\n")
-    cat("  Run separately (tmux-friendly): Rscript modelling/analysis/tuning_seed_sweep.R\n")
-  }
   cat("\n")
 } else {
-  cat("\t\tStep 7: Skipping R2 sensitivity analysis (do_sensitivity=FALSE)\n\n")
+  cat("\t\tStep 5: Skipping R2 sensitivity analysis (do_sensitivity=FALSE)\n\n")
 }
 
 # -----------------------------------------------------------------------------
-# Step 8: Train/test fraction & target-variance diagnostic
+# Step 6: Train/test fraction & target-variance diagnostic
 # -----------------------------------------------------------------------------
 if (isTRUE(do_diagnostics)) {
-  cat("\t\tStep 8: Train/test fraction & target-variance diagnostics\n")
+  cat("\t\tStep 6: Train/test fraction & target-variance diagnostics\n")
   perf_detailed_override <- file.path(run_output_dir, "by_seed_detailed.csv")
   assign("perf_detailed_csv_override", perf_detailed_override, envir = .GlobalEnv)
   assign("fold_seed_list", eval_fold_seed_list, envir = .GlobalEnv)
   source("modelling/multiseed/train_test_fraction_diagnostic.R")
   cat("\n")
 } else {
-  cat("\t\tStep 8: Skipping diagnostics (do_diagnostics=FALSE)\n\n")
+  cat("\t\tStep 6: Skipping diagnostics (do_diagnostics=FALSE)\n\n")
 }
 
 # -----------------------------------------------------------------------------
-# Step 9: Fit and save final models using robust tuning/covariates
+# Step 7: Fit and save final models using robust tuning/covariates
 # -----------------------------------------------------------------------------
-cat("\t\tStep 9: Fit and save final models (robust configs/vars)\n")
-seeds_sel_str <- paste(robust_fold_seed_list, collapse = "-")
+cat("\t\tStep 7: Fit and save final models (robust configs/vars)\n")
 assign("use_robust_final_configs", TRUE, envir = .GlobalEnv)
-assign("robust_pruned_csv_override",
-        file.path(
-          "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped",
-          paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_sel_str, ".csv")
-        ),
-        envir = .GlobalEnv)
 source("modelling/pipeline/fit_final_models.R")
 cat("\n")
-
 # -----------------------------------------------------------------------------
-# Step 10: Directly compare model outputs with baselines
+# Step 8: Directly compare model outputs with baselines
 # -----------------------------------------------------------------------------
-cat("\t\tStep 10: Model comparison\n")
+cat("\t\tStep 8: Model comparison\n")
 source("modelling/analysis/model_comparison.R")
 cat("\n")
 
 
 # -----------------------------------------------------------------------------
-# Step 11: Create model prediction maps
+# Step 9: Create model prediction maps
 # -----------------------------------------------------------------------------
-cat("\t\tStep 11: Create spatial prediction maps\n")
+cat("\t\tStep 9: Create spatial prediction maps\n")
 source("modelling/plots/spatial_prediction_maps.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
-# Step 12: Partial dependence plots
+# Step 10: Partial dependence plots
 # -----------------------------------------------------------------------------
-cat("\t\tStep 12: Partial dependence plots (from final models)\n")
+cat("\t\tStep 10: Partial dependence plots (from final models)\n")
 source("modelling/plots/partial_dependence_all_models.R")
 cat("\n")
 
 
 # -----------------------------------------------------------------------------
-# Step 13: Supplement figures
+# Step 11: Supplement figures
 # -----------------------------------------------------------------------------
-cat("\t\tStep 13: Supplement figures\n")
+cat("\t\tStep 11: Supplement figures\n")
 source("modelling/plots/supplement.R")
 cat("\n")
 
 
 # =============================================================================
-# Done
+# Final summary
 # =============================================================================
 cat(paste(rep("=", 70), collapse = ""), "\n")
 cat("ROBUST PIXEL_GROUPED PIPELINE COMPLETE\n")
@@ -431,10 +383,8 @@ cat("Seed policy:\n")
 cat("  Selection/tuning seeds: ", paste(robust_fold_seed_list, collapse = ", "), "\n")
 cat("  Evaluation seeds:       ", paste(eval_fold_seed_list, collapse = ", "), "\n")
 cat("  Separation:             optimise on selection seeds, evaluate on eval seeds\n\n")
-cat("Outputs (cv_regime = ", cv_regime_name, "):\n", sep = "")
-cat("  ", cv_output_dir, "/covariate_selection/ – Covariate pruning (baseline + robust SHAP)\n", sep = "")
-cat("  ", run_output_dir, " – This run's evaluation + sensitivity_suite + diagnostics\n", sep = "")
-cat("  ", cv_output_dir, "/cv_pipeline/multiseed_runs/ – Timestamped evaluation runs\n", sep = "")
-cat("  ", cv_output_dir, "/cv_pipeline/tuning_seed_sweep_runs/ – Standalone sweep runs + chosen_seeds_latest.rds\n", sep = "")
-cat("  ", cv_output_dir, "/cv_pipeline/         – Robust tuning dirs (shared by seed string)\n", sep = "")
+cat("Outputs (cv_regime = ", cv_regime_name, ", run root = ", run_output_dir, "):\n", sep = "")
+cat("  covariate_selection/ – Baseline + robust SHAP pruning\n", sep = "")
+cat("  cv_pipeline/         – Robust tuning + related CV artefacts\n", sep = "")
+cat("  final_models/, predictions/, analysis/, sensitivity_suite/, etc. – same run root\n", sep = "")
 cat("\n")

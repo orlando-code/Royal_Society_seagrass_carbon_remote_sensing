@@ -13,8 +13,6 @@
 ##     - model_comparison_pooled_summary.csv
 ##     - model_comparison_paired_deltas.csv
 ##     - model_comparison_paired_pooled_deltas.csv
-# remove all variables
-rm(list = ls())
 if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
   init_path <- file.path("modelling", "R", "init_repo.R")
   if (!file.exists(init_path)) {
@@ -28,7 +26,7 @@ if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
 }
 project_root <- seagrass_init_repo(
   packages = c("here", "dplyr", "readr", "tidyr", "ggplot2", "patchwork"),
-  source_files = c("modelling/pipeline_config.R", "modelling/R/plot_config.R")
+  source_files = c("modelling/pipeline_config.R", "modelling/plots/plot_config.R")
 )
 
 if (getRversion() >= "2.15.1") {
@@ -39,11 +37,11 @@ cfg <- get_pipeline_config()
 apply_pipeline_defaults(
   cfg,
   c(
-    "cv_regime_name", "cv_output_dir", "cv_type", "cv_blocksize",
+    "cv_regime_name", "cv_output_dir", "cv_type", "cv_blocksize", "run_output_dir",
     "target_var", "log_transform_target", "exclude_regions",
     "use_shap_per_model", "include_seagrass_species", "robust_fold_seed_list",
     "eval_fold_seed_list", "n_folds",
-    "robust_tuning_dir_override", "dpi", "model_list"
+    "dpi", "model_list", "robust_pruned_importance_type"
   ), envir = .GlobalEnv)
 # Optional strict alignment to a specific robust evaluation run directory.
 # Example:
@@ -129,34 +127,43 @@ core_data <- dat %>%
 if (nrow(core_data) < 10L) stop("Too few complete rows after filtering.")
 core_data$median_carbon_density <- core_data[[target_var]]
 
-cov_dir <- file.path(project_root, cv_output_dir, "covariate_selection")
-config_dir <- file.path(project_root, cv_output_dir, "cv_pipeline")
-robust_tuning_dir_default <- file.path(config_dir, "robust_pixel_grouped_tuning")
-robust_tuning_dir_override <- get0("robust_tuning_dir_override", envir = .GlobalEnv, ifnotfound = NA_character_)
-if (!is.na(model_comparison_eval_run_dir)) {
-  target_seed_str <- paste(robust_fold_seed_list, collapse = "-")
-  run_specific_tuning_dir <- file.path(config_dir, paste0("robust_pixel_grouped_tuning_robustSeeds_", target_seed_str))
-  if (dir.exists(run_specific_tuning_dir)) {
-    robust_tuning_dir_override <- run_specific_tuning_dir
-  }
-}
-robust_tuning_dir <- if (!is.na(robust_tuning_dir_override) && nzchar(robust_tuning_dir_override) && dir.exists(robust_tuning_dir_override)) {
-  robust_tuning_dir_override
+active_run_output_dir <- if (!is.na(model_comparison_eval_run_dir)) {
+  model_comparison_eval_run_dir
 } else {
-  robust_tuning_dir_default
+  get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
 }
+if (is.na(active_run_output_dir) || !nzchar(as.character(active_run_output_dir))) {
+  stop("run_output_dir must be set in .GlobalEnv (or set model_comparison_eval_run_dir) for model_comparison.R")
+}
+active_run_output_dir <- as.character(active_run_output_dir)
+if (!dir.exists(active_run_output_dir)) {
+  stop("Run output directory does not exist: ", active_run_output_dir)
+}
+
+config_dir <- file.path(project_root, cv_output_dir, "cv_pipeline")
+robust_tuning_dir <- file.path(active_run_output_dir, "cv_pipeline", "robust_pixel_grouped_tuning")
+if (!dir.exists(robust_tuning_dir)) {
+  stop("Required robust tuning directory not found under run output dir: ", robust_tuning_dir)
+}
+robust_pruned_importance_type <- match.arg(
+  get("robust_pruned_importance_type", envir = .GlobalEnv),
+  choices = c("perm", "shap")
+)
+robust_vars <- load_run_scoped_robust_predictor_vars(
+  run_output_dir = active_run_output_dir,
+  robust_fold_seed_list = robust_fold_seed_list,
+  robust_pruned_importance_type = robust_pruned_importance_type,
+  valid_cols = colnames(core_data),
+  model_list = model_list
+)
 cat("  robust_tuning_dir:", robust_tuning_dir, "\n")
 
 predictor_vars_by_model <- list()
 hyperparams_by_model <- list()
 for (m in model_list) {
-  predictor_vars_by_model[[m]] <- load_model_vars_with_fallback(
-    model_name = m,
-    cov_dir = cov_dir,
-    valid_cols = colnames(core_data),
-    use_shap_first = use_shap_per_model,
-    robust_fold_seed_list = robust_fold_seed_list
-  )
+  pvars <- robust_vars$predictor_vars_by_model[[m]]
+  if (is.null(pvars) || length(pvars) < 2L) next
+  predictor_vars_by_model[[m]] <- pvars
   cfg_model <- load_best_model_config(
     model_name = m,
     config_dir = config_dir,
@@ -166,6 +173,11 @@ for (m in model_list) {
     include_legacy = FALSE
   )
   hyperparams_by_model[[m]] <- model_hyperparams_from_config(m, cfg_model)
+}
+predictor_vars_by_model <- predictor_vars_by_model[intersect(names(predictor_vars_by_model), names(hyperparams_by_model))]
+hyperparams_by_model <- hyperparams_by_model[intersect(names(hyperparams_by_model), names(predictor_vars_by_model))]
+if (length(predictor_vars_by_model) == 0L) {
+  stop("No models with both robust pruned covariates and robust tuning configs under run_output_dir.")
 }
 
 fit_model_once <- function(model_name, prep, hp = NULL) {

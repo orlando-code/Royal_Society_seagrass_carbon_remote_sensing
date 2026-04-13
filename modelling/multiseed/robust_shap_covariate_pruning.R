@@ -6,9 +6,8 @@
 ## and average the absolute SHAP values across folds and seeds.
 ##
 ## Output:
-##   output/<cv_regime_name>/covariate_selection/robust_pixel_grouped/
-##     pruned_model_variables_shap_robust_pixel_grouped_seeds_<...>.csv
-##   Or, if .GlobalEnv$robust_cov_dir_override is set (e.g. tuning seed sweep), that directory.
+##   <run_output_dir>/covariate_selection/robust_pixel_grouped/ (main run), or
+##   <subset_work>/covariates/ (tuning sweep subset run).
 ##     shap_importance_by_seed_fold_robust_pixel_grouped_seeds_<...>.csv
 ##     shap_importance_by_seed_robust_pixel_grouped_seeds_<...>.csv
 ##
@@ -170,16 +169,19 @@ cat("  SHAP predictor vars:", length(importance_predictor_vars), "\n")
 # ---------------------------------------------------------------------------
 # Load robust hyperparameters (so SHAP uses the same tuned settings)
 # ---------------------------------------------------------------------------
-robust_tuning_dir_default <- file.path(project_root, "output", cv_regime_name, "cv_pipeline", "robust_pixel_grouped_tuning")
-robust_tuning_dir_override <- if (exists("robust_tuning_dir_override", envir = .GlobalEnv, inherits = FALSE)) {
-  get("robust_tuning_dir_override", envir = .GlobalEnv)
-} else {
-  NA_character_
+run_output_dir <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
+if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir))) {
+  stop("run_output_dir must be set in .GlobalEnv for robust SHAP pruning.")
 }
-robust_tuning_dir <- if (!is.na(robust_tuning_dir_override) && nzchar(robust_tuning_dir_override)) {
-  robust_tuning_dir_override
+run_output_dir <- as.character(run_output_dir)
+subset_work_root <- if (basename(run_output_dir) == "evaluation") dirname(run_output_dir) else run_output_dir
+robust_tuning_dir <- if (basename(run_output_dir) == "evaluation") {
+  file.path(subset_work_root, "tuning")
 } else {
-  robust_tuning_dir_default
+  file.path(run_output_dir, "cv_pipeline", "robust_pixel_grouped_tuning")
+}
+if (!dir.exists(robust_tuning_dir)) {
+  stop("Required robust tuning directory not found: ", robust_tuning_dir)
 }
 hp_bundle <- build_hyperparams_by_model(
   models = model_list,
@@ -196,11 +198,10 @@ hyperparams_by_model <- hp_bundle$hyperparams_by_model
 # ---------------------------------------------------------------------------
 # Compute SHAP importance on fold-specific training sets (robust across seeds)
 # ---------------------------------------------------------------------------
-robust_cov_dir_override <- get0("robust_cov_dir_override", envir = .GlobalEnv, ifnotfound = NA_character_)
-robust_cov_dir <- if (!is.na(robust_cov_dir_override) && nzchar(as.character(robust_cov_dir_override))) {
-  as.character(robust_cov_dir_override)
+robust_cov_dir <- if (basename(run_output_dir) == "evaluation") {
+  file.path(subset_work_root, "covariates")
 } else {
-  file.path(project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped")
+  file.path(run_output_dir, "covariate_selection", "robust_pixel_grouped")
 }
 dir.create(robust_cov_dir, recursive = TRUE, showWarnings = FALSE)
 
