@@ -4,9 +4,12 @@
 #   Re-run robust tuning + robust SHAP pruning + robust evaluation for different
 #   robust seed counts (e.g., 2/5/10/15/20), then write outputs under a dedicated
 #   run folder (no overwrites across sweeps):
-#   output/<cv_regime>/cv_pipeline/tuning_seed_sweep_runs/sweep_<run_id>/
+#   output/tuning_seed_sweep_runs/sweep_<run_id>/
 #     - sensitivity_tuning_seed_sweep_summary.csv, manifests, plots, subset_work/<subset_id>/...
-#   Writes chosen_seeds_latest.rds under tuning_seed_sweep_runs/ for optional use by
+#   Sweep directory reuse (same run id) requires both an identical planned subset manifest *and*
+#   an identical effective sweep config on disk (_run_metadata/pipeline_config_effective.rds);
+#   otherwise a new sweep_<run_id> folder is allocated.
+#   Writes chosen_seeds_latest.rds under output/tuning_seed_sweep_runs/ for optional use by
 #   run_multiseed_pixel_grouped.R when use_robust_seeds_from_tuning_sweep = TRUE.
 #
 # Typical tmux usage:
@@ -15,12 +18,12 @@
 #   Rscript modelling/analysis/tuning_seed_sweep.R
 #
 # Optional overrides via .GlobalEnv before sourcing:
-#   cv_regime_name, robust_pruned_importance_type,
-#   tuning_seed_sweep_counts, tuning_seed_pool, tuning_sweep_eval_seed_list,
+#   cv_regime_name, robust_pruned_importance_type, eval_fold_seed_list,
+#   tuning_seed_sweep_counts, tuning_seed_pool,
 #   tuning_seed_sampling, do_tuning_seed_sweep_refined_tuning,
 #   tuning_seed_sweep_repeats, tuning_seed_sweep_random_seed,
 #   tuning_seed_sweep_skip_existing, tuning_seed_sweep_unique_subsets,
-#   tuning_seed_sweep_parallel_jobs, tuning_seed_sweep_run_id (NULL -> timestamp folder)
+#   tuning_seed_sweep_parallel_jobs, tuning_seed_sweep_run_id (optional explicit folder suffix)
 
 if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
   init_path <- file.path("modelling", "R", "init_repo.R")
@@ -46,12 +49,12 @@ apply_pipeline_defaults(
   cfg,
   c(
     "cv_regime_name", "cv_type_label", "tuning_seed_sweep_counts", "tuning_seed_pool",
-    "tuning_sweep_eval_seed_list", "tuning_seed_sampling",
+    "eval_fold_seed_list", "tuning_seed_sampling",
     "do_tuning_seed_sweep_refined_tuning", "robust_pruned_importance_type",
     "tuning_seed_sweep_repeats", "tuning_seed_sweep_random_seed",
     "tuning_seed_sweep_skip_existing", "tuning_seed_sweep_unique_subsets",
     "tuning_seed_sweep_parallel_jobs", "model_list",
-    "robust_rmse_lambda", "tuning_seed_sweep_force_recompute",
+    "tuning_seed_sweep_force_recompute",
     "tuning_seed_sweep_run_id"
   ),
   envir = .GlobalEnv
@@ -61,7 +64,7 @@ cv_regime_name <- get("cv_regime_name", envir = .GlobalEnv)
 cv_type_label <- get("cv_type_label", envir = .GlobalEnv)
 tuning_seed_sweep_counts <- as.integer(get("tuning_seed_sweep_counts", envir = .GlobalEnv))
 tuning_seed_pool <- as.integer(get("tuning_seed_pool", envir = .GlobalEnv))
-tuning_sweep_eval_seed_list <- as.integer(get("tuning_sweep_eval_seed_list", envir = .GlobalEnv))
+eval_fold_seed_list <- as.integer(get("eval_fold_seed_list", envir = .GlobalEnv))
 tuning_seed_sampling <- match.arg(
   get("tuning_seed_sampling", envir = .GlobalEnv),
   choices = c("prefix", "random")
@@ -73,61 +76,49 @@ tuning_seed_sweep_random_seed <- as.integer(get("tuning_seed_sweep_random_seed",
 tuning_seed_sweep_skip_existing <- isTRUE(get("tuning_seed_sweep_skip_existing", envir = .GlobalEnv))
 tuning_seed_sweep_unique_subsets <- isTRUE(get("tuning_seed_sweep_unique_subsets", envir = .GlobalEnv))
 tuning_seed_sweep_parallel_jobs <- as.integer(get("tuning_seed_sweep_parallel_jobs", envir = .GlobalEnv))
-robust_rmse_lambda <- max(0, as.numeric(get("robust_rmse_lambda", envir = .GlobalEnv)))
 tuning_seed_sweep_force_recompute <- isTRUE(get("tuning_seed_sweep_force_recompute", envir = .GlobalEnv))
 model_list <- intersect(get("model_list", envir = .GlobalEnv), c("GPR", "GAM", "XGB", "LR"))
 
-tuning_seed_sweep_run_id <- get0("tuning_seed_sweep_run_id", envir = .GlobalEnv, ifnotfound = NULL)
-if (is.null(tuning_seed_sweep_run_id) || length(tuning_seed_sweep_run_id) != 1L ||
-    !nzchar(as.character(tuning_seed_sweep_run_id))) {
-  tuning_seed_sweep_run_id <- format(Sys.time(), "%Y%m%d_%H%M%S")
-} else {
-  tuning_seed_sweep_run_id <- as.character(tuning_seed_sweep_run_id)
-}
-
-tuning_sweep_runs_root <- file.path(project_root, "output", cv_regime_name, "cv_pipeline", "tuning_seed_sweep_runs")
+tuning_sweep_runs_root <- file.path(project_root, "output", "tuning_seed_sweep_runs")
 dir.create(tuning_sweep_runs_root, recursive = TRUE, showWarnings = FALSE)
-out_dir <- file.path(tuning_sweep_runs_root, paste0("sweep_", tuning_seed_sweep_run_id))
-if (dir.exists(out_dir) && length(list.files(out_dir, all.files = TRUE, no.. = TRUE)) > 0L) {
-  stop(
-    "Tuning sweep output directory already exists and is not empty:\n  ", out_dir,
-    "\nChoose a new tuning_seed_sweep_run_id or remove/rename the folder."
-  )
-}
-dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-
-writeLines(
-  c(
-    "Tuning seed-count sweep run.",
-    paste("Run id:", tuning_seed_sweep_run_id),
-    paste("Created:", format(Sys.time(), tz = "UTC"), "UTC"),
-    "Subset evaluations, tuning, and SHAP outputs for each subset live under subset_work/<subset_id>/.",
-    "Promoted seeds for the main multiseed pipeline: see chosen_seeds_for_pipeline.rds (and chosen_seeds_latest.rds in the parent tuning_seed_sweep_runs/ folder)."
-  ),
-  file.path(out_dir, "README.txt")
-)
-
-cat("Running standalone tuning seed-count sweep\n")
-cat("  sweep output dir:", out_dir, "\n")
-cat("  cv_regime_name:", cv_regime_name, "\n")
-cat("  tuning_seed_sweep_counts:", paste(tuning_seed_sweep_counts, collapse = ", "), "\n")
-cat("  tuning_seed_pool size:", length(tuning_seed_pool), "\n")
-cat("  tuning_sweep_eval_seed_list:", paste(tuning_sweep_eval_seed_list, collapse = ", "), "\n")
-cat("  tuning_seed_sampling:", tuning_seed_sampling, "\n")
-cat("  tuning_seed_sweep_repeats:", tuning_seed_sweep_repeats, "\n")
-cat("  tuning_seed_sweep_random_seed:", tuning_seed_sweep_random_seed, "\n")
-cat("  tuning_seed_sweep_skip_existing:", tuning_seed_sweep_skip_existing, "\n")
-cat("  tuning_seed_sweep_unique_subsets:", tuning_seed_sweep_unique_subsets, "\n")
-cat("  tuning_seed_sweep_parallel_jobs:", tuning_seed_sweep_parallel_jobs, "\n")
-cat("  tuning_seed_sweep_force_recompute:", tuning_seed_sweep_force_recompute, "\n")
-cat("  robust_rmse_lambda:", robust_rmse_lambda, "\n")
-cat("  do_tuning_seed_sweep_refined_tuning:", do_tuning_seed_sweep_refined_tuning, "\n")
 
 # Keep only feasible counts and in ascending unique order.
 tuning_seed_sweep_counts <- sort(unique(tuning_seed_sweep_counts[tuning_seed_sweep_counts >= 1L]))
 tuning_seed_sweep_counts <- tuning_seed_sweep_counts[tuning_seed_sweep_counts <= length(tuning_seed_pool)]
 if (length(tuning_seed_sweep_counts) == 0L) {
   stop("No valid tuning_seed_sweep_counts after filtering by tuning_seed_pool length.")
+}
+
+list_sweep_dirs <- function(root_dir) {
+  d <- list.dirs(root_dir, full.names = TRUE, recursive = FALSE)
+  d[grepl("^sweep_", basename(d))]
+}
+
+read_registry_file <- function(path) {
+  req <- c("n_tuning_seeds", "sweep_repeat_id", "tuning_seed_list")
+  if (!file.exists(path)) return(NULL)
+  x <- readr::read_csv(path, show_col_types = FALSE)
+  if (!all(req %in% names(x))) return(NULL)
+  x[, req, drop = FALSE]
+}
+
+load_subset_registry <- function() {
+  # Prefer the newest existing sweep registry as canonical subset memory.
+  sweep_dirs <- list_sweep_dirs(tuning_sweep_runs_root)
+  if (length(sweep_dirs) > 0L) {
+    reg_candidates <- file.path(sweep_dirs, "subset_registry.csv")
+    reg_candidates <- reg_candidates[file.exists(reg_candidates)]
+    if (length(reg_candidates) > 0L) {
+      reg_candidates <- reg_candidates[order(file.info(reg_candidates)$mtime, decreasing = TRUE)]
+      x <- read_registry_file(reg_candidates[[1L]])
+      if (!is.null(x)) return(x)
+    }
+  }
+  legacy_reg <- file.path(
+    project_root, "output", cv_regime_name, "cv_pipeline", "sensitivity_suite",
+    "sensitivity_tuning_seed_sweep_subset_registry.csv"
+  )
+  read_registry_file(legacy_reg)
 }
 
 # Save and restore globals modified by this sweep.
@@ -139,12 +130,8 @@ had_cv_type <- exists("cv_type", envir = .GlobalEnv, inherits = FALSE)
 old_cv_type <- if (had_cv_type) get("cv_type", envir = .GlobalEnv, inherits = FALSE) else NULL
 had_pruned_type <- exists("robust_pruned_importance_type", envir = .GlobalEnv, inherits = FALSE)
 old_pruned_type <- if (had_pruned_type) get("robust_pruned_importance_type", envir = .GlobalEnv, inherits = FALSE) else NULL
-had_tuning_dir_override <- exists("robust_tuning_dir_override", envir = .GlobalEnv, inherits = FALSE)
-old_tuning_dir_override <- if (had_tuning_dir_override) get("robust_tuning_dir_override", envir = .GlobalEnv, inherits = FALSE) else NULL
 had_run_output_dir <- exists("run_output_dir", envir = .GlobalEnv, inherits = FALSE)
 old_run_output_dir <- if (had_run_output_dir) get("run_output_dir", envir = .GlobalEnv, inherits = FALSE) else NULL
-had_robust_cov_dir <- exists("robust_cov_dir_override", envir = .GlobalEnv, inherits = FALSE)
-old_robust_cov_dir <- if (had_robust_cov_dir) get("robust_cov_dir_override", envir = .GlobalEnv, inherits = FALSE) else NULL
 on.exit({
   if (had_robust) {
     assign("robust_fold_seed_list", old_robust, envir = .GlobalEnv)
@@ -170,22 +157,10 @@ on.exit({
     rm("robust_pruned_importance_type", envir = .GlobalEnv)
   }
 
-  if (had_tuning_dir_override) {
-    assign("robust_tuning_dir_override", old_tuning_dir_override, envir = .GlobalEnv)
-  } else if (exists("robust_tuning_dir_override", envir = .GlobalEnv, inherits = FALSE)) {
-    rm("robust_tuning_dir_override", envir = .GlobalEnv)
-  }
-
   if (had_run_output_dir) {
     assign("run_output_dir", old_run_output_dir, envir = .GlobalEnv)
   } else if (exists("run_output_dir", envir = .GlobalEnv, inherits = FALSE)) {
     rm("run_output_dir", envir = .GlobalEnv)
-  }
-
-  if (had_robust_cov_dir) {
-    assign("robust_cov_dir_override", old_robust_cov_dir, envir = .GlobalEnv)
-  } else if (exists("robust_cov_dir_override", envir = .GlobalEnv, inherits = FALSE)) {
-    rm("robust_cov_dir_override", envir = .GlobalEnv)
   }
 }, add = TRUE)
 
@@ -218,29 +193,11 @@ make_subset_plan <- function(n_sel, repeats, seed_pool, sampling, enforce_unique
   out
 }
 
-registry_csv <- file.path(out_dir, "subset_registry.csv")
-
-load_subset_registry <- function() {
-  req <- c("n_tuning_seeds", "sweep_repeat_id", "tuning_seed_list")
-  read_reg <- function(path) {
-    if (!file.exists(path)) return(NULL)
-    x <- readr::read_csv(path, show_col_types = FALSE)
-    if (!all(req %in% names(x))) return(NULL)
-    x[, req, drop = FALSE]
-  }
-  x <- read_reg(registry_csv)
-  if (!is.null(x)) return(x)
-  legacy_reg <- file.path(
-    project_root, "output", cv_regime_name, "cv_pipeline", "sensitivity_suite",
-    "sensitivity_tuning_seed_sweep_subset_registry.csv"
-  )
-  read_reg(legacy_reg)
-}
-
 #' One-time seed: copy canonical subsets from an old manifest_run.csv into the registry.
 registry_from_manifest_run <- function() {
+  sweep_dirs <- list_sweep_dirs(tuning_sweep_runs_root)
   mr_cands <- c(
-    file.path(out_dir, "sensitivity_tuning_seed_sweep_manifest_run.csv"),
+    file.path(sweep_dirs, "sensitivity_tuning_seed_sweep_manifest_run.csv"),
     file.path(
       project_root, "output", cv_regime_name, "cv_pipeline", "sensitivity_suite",
       "sensitivity_tuning_seed_sweep_manifest_run.csv"
@@ -278,10 +235,9 @@ subset_registry <- load_subset_registry()
 if (is.null(subset_registry)) {
   subset_registry <- registry_from_manifest_run()
   if (!is.null(subset_registry)) {
-    readr::write_csv(subset_registry, registry_csv)
     cat(
-      "Created subset_registry.csv from existing manifest_run.\n",
-      "Future runs will reuse these subsets when tuning_seed_sweep_repeats is reduced.\n",
+      "Loaded subset registry from existing manifest_run.\n",
+      "Future runs can reuse these subsets when tuning_seed_sweep_repeats is reduced.\n",
       sep = ""
     )
   }
@@ -389,7 +345,192 @@ for (n_sel in tuning_seed_sweep_counts) {
 
 task_df <- dplyr::bind_rows(task_rows)
 
-# Persist registry: previous rows plus any newly generated subsets (top-up or fresh n).
+if (nrow(task_df) == 0L) stop("No sweep tasks were generated.")
+task_df$sweep_subset_id <- paste0(
+  "n", task_df$n_tuning_seeds,
+  "_r", task_df$sweep_repeat_id,
+  "_", gsub("-", "_", task_df$tuning_seed_list)
+)
+task_df$sweep_sampling <- tuning_seed_sampling
+
+manifest_core <- function(df) {
+  # Match on canonical planning keys; derived columns (subset IDs) can change
+  # across script versions while representing the same planned sweep.
+  req <- c("n_tuning_seeds", "sweep_repeat_id", "tuning_seed_list")
+  out <- df[, req, drop = FALSE]
+  out$n_tuning_seeds <- as.integer(out$n_tuning_seeds)
+  out$sweep_repeat_id <- as.integer(out$sweep_repeat_id)
+  out$tuning_seed_list <- as.character(out$tuning_seed_list)
+  out <- out[order(out$n_tuning_seeds, out$sweep_repeat_id, out$tuning_seed_list), , drop = FALSE]
+  rownames(out) <- NULL
+  out
+}
+
+same_manifest_plan <- function(a, b) {
+  aa <- as.data.frame(manifest_core(a), stringsAsFactors = FALSE)
+  bb <- as.data.frame(manifest_core(b), stringsAsFactors = FALSE)
+  rownames(aa) <- NULL
+  rownames(bb) <- NULL
+  identical(aa, bb)
+}
+
+find_matching_sweep_dir <- function(task_df) {
+  target <- manifest_core(task_df)
+  sweep_dirs <- list_sweep_dirs(tuning_sweep_runs_root)
+  if (length(sweep_dirs) == 0L) return(NULL)
+  for (d in sweep_dirs) {
+    p <- file.path(d, "sensitivity_tuning_seed_sweep_manifest_planned.csv")
+    if (!file.exists(p)) next
+    old <- tryCatch(readr::read_csv(p, show_col_types = FALSE), error = function(e) NULL)
+    if (is.null(old)) next
+    req <- c("n_tuning_seeds", "sweep_repeat_id", "tuning_seed_list")
+    if (!all(req %in% names(old))) next
+    if (same_manifest_plan(old, target)) return(d)
+  }
+  NULL
+}
+
+next_sequential_sweep_id <- function(root_dir, width = 3L) {
+  sweep_dirs <- list_sweep_dirs(root_dir)
+  ids <- integer()
+  if (length(sweep_dirs) > 0L) {
+    nm <- basename(sweep_dirs)
+    hit <- regexec("^sweep_([0-9]+)$", nm)
+    mt <- regmatches(nm, hit)
+    ids <- as.integer(vapply(mt, function(x) if (length(x) == 2L) x[[2L]] else NA_character_, character(1)))
+    ids <- ids[!is.na(ids)]
+  }
+  next_id <- if (length(ids) == 0L) 0L else max(ids) + 1L
+  sprintf(paste0("%0", width, "d"), next_id)
+}
+
+# Effective sweep settings (excluding run folder id) used to decide whether an existing
+# sweep_* directory from a manifest match or explicit tuning_seed_sweep_run_id is still valid.
+pending_effective_sweep_cfg <- list(
+  cv_regime_name = cv_regime_name,
+  cv_type_label = cv_type_label,
+  tuning_seed_sweep_counts = tuning_seed_sweep_counts,
+  tuning_seed_pool = tuning_seed_pool,
+  eval_fold_seed_list = eval_fold_seed_list,
+  tuning_seed_sampling = tuning_seed_sampling,
+  do_tuning_seed_sweep_refined_tuning = do_tuning_seed_sweep_refined_tuning,
+  robust_pruned_importance_type = robust_pruned_importance_type,
+  tuning_seed_sweep_repeats = tuning_seed_sweep_repeats,
+  tuning_seed_sweep_random_seed = tuning_seed_sweep_random_seed,
+  tuning_seed_sweep_skip_existing = tuning_seed_sweep_skip_existing,
+  tuning_seed_sweep_unique_subsets = tuning_seed_sweep_unique_subsets,
+  tuning_seed_sweep_parallel_jobs = tuning_seed_sweep_parallel_jobs,
+  model_list = model_list,
+  tuning_seed_sweep_force_recompute = tuning_seed_sweep_force_recompute
+)
+
+tuning_sweep_dir_saved_config_compatible <- function(sweep_dir, pending_cfg) {
+  fp <- file.path(sweep_dir, "_run_metadata", "pipeline_config_effective.rds")
+  if (!file.exists(fp)) {
+    return(TRUE)
+  }
+  old <- tryCatch(readRDS(fp), error = function(e) NULL)
+  if (is.null(old) || !is.list(old)) {
+    return(FALSE)
+  }
+  ex <- "tuning_seed_sweep_run_id"
+  a <- seagrass_strip_config_keys(pending_cfg, exclude_keys = ex)
+  b <- seagrass_strip_config_keys(old, exclude_keys = ex)
+  isTRUE(all.equal(a, b, check.attributes = FALSE))
+}
+
+tuning_seed_sweep_run_id <- get0("tuning_seed_sweep_run_id", envir = .GlobalEnv, ifnotfound = NULL)
+explicit_out_dir <- NULL
+if (!is.null(tuning_seed_sweep_run_id) && length(tuning_seed_sweep_run_id) == 1L && nzchar(as.character(tuning_seed_sweep_run_id))) {
+  explicit_out_dir <- file.path(tuning_sweep_runs_root, paste0("sweep_", as.character(tuning_seed_sweep_run_id)))
+}
+
+matching_out_dir <- find_matching_sweep_dir(task_df)
+if (!is.null(matching_out_dir) && !tuning_sweep_dir_saved_config_compatible(matching_out_dir, pending_effective_sweep_cfg)) {
+  cat(
+    "Found identical planned manifest under:\n  ", matching_out_dir,
+    "\n  but saved effective sweep config differs from the current pipeline; allocating a new sweep directory.\n",
+    sep = ""
+  )
+  matching_out_dir <- NULL
+}
+
+if (!is.null(explicit_out_dir) && dir.exists(explicit_out_dir) &&
+    !tuning_sweep_dir_saved_config_compatible(explicit_out_dir, pending_effective_sweep_cfg)) {
+  cat(
+    "Explicit tuning_seed_sweep_run_id points to:\n  ", explicit_out_dir,
+    "\n  but saved effective sweep config there differs from the current pipeline; allocating a new sweep directory (run id will be chosen automatically).\n",
+    "  To reuse that path, align pipeline_config with that folder's _run_metadata/pipeline_config_effective.dput or remove the folder.\n",
+    sep = ""
+  )
+  explicit_out_dir <- NULL
+}
+
+if (!is.null(matching_out_dir)) {
+  sweep_out_dir <- matching_out_dir
+  tuning_seed_sweep_run_id <- sub("^sweep_", "", basename(sweep_out_dir))
+  cat("Found identical planned manifest and matching effective sweep config. Reusing sweep directory:\n  ", sweep_out_dir, "\n", sep = "")
+} else if (!is.null(explicit_out_dir)) {
+  sweep_out_dir <- explicit_out_dir
+  if (!dir.exists(sweep_out_dir)) dir.create(sweep_out_dir, recursive = TRUE, showWarnings = FALSE)
+  tuning_seed_sweep_run_id <- sub("^sweep_", "", basename(sweep_out_dir))
+  cat(
+    "No identical planned manifest found; using explicit sweep output directory:\n  ",
+    sweep_out_dir, "\n",
+    sep = ""
+  )
+} else {
+  tuning_seed_sweep_run_id <- next_sequential_sweep_id(tuning_sweep_runs_root, width = 3L)
+  sweep_out_dir <- file.path(tuning_sweep_runs_root, paste0("sweep_", tuning_seed_sweep_run_id))
+  dir.create(sweep_out_dir, recursive = TRUE, showWarnings = FALSE)
+  cat("Starting new sweep directory:\n  ", sweep_out_dir, "\n", sep = "")
+}
+registry_csv <- file.path(sweep_out_dir, "subset_registry.csv")
+manifest_planned_csv <- file.path(sweep_out_dir, "sensitivity_tuning_seed_sweep_manifest_planned.csv")
+run_metadata_dir <- file.path(sweep_out_dir, "_run_metadata")
+dir.create(run_metadata_dir, recursive = TRUE, showWarnings = FALSE)
+
+effective_sweep_cfg <- utils::modifyList(
+  pending_effective_sweep_cfg,
+  list(tuning_seed_sweep_run_id = tuning_seed_sweep_run_id)
+)
+seagrass_confirm_same_config(
+  current_cfg = effective_sweep_cfg,
+  search_root = file.path(project_root, "output"),
+  exclude_keys = c("tuning_seed_sweep_run_id"),
+  prompt_prefix = "tuning seed sweep",
+  path_regex = "output/tuning_seed_sweep_runs/sweep_[^/]+/_run_metadata/pipeline_config_effective\\.rds$"
+)
+saveRDS(effective_sweep_cfg, file.path(run_metadata_dir, "pipeline_config_effective.rds"))
+dput(effective_sweep_cfg, file = file.path(run_metadata_dir, "pipeline_config_effective.dput"))
+
+writeLines(
+  c(
+    "Tuning seed-count sweep run.",
+    paste("Run id:", tuning_seed_sweep_run_id),
+    paste("Created:", format(Sys.time(), tz = "UTC"), "UTC"),
+    "Subset evaluations, tuning, and SHAP outputs for each subset live under subset_work/<subset_id>/.",
+    "Promoted seeds for the main multiseed pipeline: see chosen_seeds_for_pipeline.rds (and chosen_seeds_latest.rds in the parent tuning_seed_sweep_runs/ folder)."
+  ),
+  file.path(sweep_out_dir, "_README.txt")
+)
+
+cat("Running standalone tuning seed-count sweep\n")
+cat("  sweep output dir:", sweep_out_dir, "\n")
+cat("  cv_regime_name:", cv_regime_name, "\n")
+cat("  tuning_seed_sweep_counts:", paste(tuning_seed_sweep_counts, collapse = ", "), "\n")
+cat("  tuning_seed_pool size:", length(tuning_seed_pool), "\n")
+cat("  eval_fold_seed_list:", paste(eval_fold_seed_list, collapse = ", "), "\n")
+cat("  tuning_seed_sampling:", tuning_seed_sampling, "\n")
+cat("  tuning_seed_sweep_repeats:", tuning_seed_sweep_repeats, "\n")
+cat("  tuning_seed_sweep_random_seed:", tuning_seed_sweep_random_seed, "\n")
+cat("  tuning_seed_sweep_skip_existing:", tuning_seed_sweep_skip_existing, "\n")
+cat("  tuning_seed_sweep_unique_subsets:", tuning_seed_sweep_unique_subsets, "\n")
+cat("  tuning_seed_sweep_parallel_jobs:", tuning_seed_sweep_parallel_jobs, "\n")
+cat("  tuning_seed_sweep_force_recompute:", tuning_seed_sweep_force_recompute, "\n")
+cat("  do_tuning_seed_sweep_refined_tuning:", do_tuning_seed_sweep_refined_tuning, "\n")
+
+# Persist registry after selecting output directory.
 if (length(registry_new_rows) > 0L) {
   subset_registry <- merge_registry(subset_registry, dplyr::bind_rows(registry_new_rows))
 }
@@ -402,15 +543,7 @@ if (!is.null(subset_registry) && nrow(subset_registry) > 0L) {
     )
   }
 }
-if (nrow(task_df) == 0L) stop("No sweep tasks were generated.")
-task_df$sweep_subset_id <- paste0(
-  "n", task_df$n_tuning_seeds,
-  "_r", task_df$sweep_repeat_id,
-  "_", gsub("-", "_", task_df$tuning_seed_list)
-)
-task_df$sweep_sampling <- tuning_seed_sampling
 
-manifest_planned_csv <- file.path(out_dir, "sensitivity_tuning_seed_sweep_manifest_planned.csv")
 readr::write_csv(task_df, manifest_planned_csv)
 cat("Wrote planned subset manifest to:\n  ", manifest_planned_csv, "\n", sep = "")
 
@@ -423,10 +556,9 @@ collect_eval_table <- function(eval_summary_csv, seeds_str, n_sel, rep_idx, subs
   eval_tbl$sweep_subset_id <- subset_id
   eval_tbl$sweep_sampling <- sampling
 
-  cov_base <- if (!is.null(cov_summary_dir) && nzchar(as.character(cov_summary_dir))) {
-    as.character(cov_summary_dir)
-  } else {
-    file.path(project_root, "output", cv_regime_name, "covariate_selection", "robust_pixel_grouped")
+  cov_base <- as.character(cov_summary_dir)
+  if (is.null(cov_summary_dir) || !nzchar(cov_base)) {
+    stop("collect_eval_table requires cov_summary_dir (subset covariate directory).")
   }
 
   shap_summary_csv <- file.path(
@@ -464,7 +596,7 @@ run_one_subset <- function(task_row) {
   subset_id <- paste0("n", n_sel, "_r", rep_idx, "_", gsub("-", "_", seeds_str))
   cat("  Sweep n_tuning_seeds =", n_sel, " | repeat=", rep_idx, " | robust seeds:", seeds_str, "\n")
 
-  subset_work_root <- file.path(out_dir, "subset_work", subset_id)
+  subset_work_root <- file.path(sweep_out_dir, "subset_work", subset_id)
   eval_dir <- file.path(subset_work_root, "evaluation")
   cov_dir_subset <- file.path(subset_work_root, "covariates")
   tuning_dir_subset <- file.path(subset_work_root, "tuning")
@@ -552,12 +684,10 @@ run_one_subset <- function(task_row) {
 
   if (!identical(stage_mode, "reuse_eval")) {
     assign("robust_fold_seed_list", sel_seeds, envir = .GlobalEnv)
-    assign("eval_fold_seed_list", tuning_sweep_eval_seed_list, envir = .GlobalEnv)
+    assign("eval_fold_seed_list", eval_fold_seed_list, envir = .GlobalEnv)
     assign("cv_type", "pixel_grouped", envir = .GlobalEnv)
     assign("robust_pruned_importance_type", robust_pruned_importance_type, envir = .GlobalEnv)
-    assign("robust_tuning_dir_override", tuning_dir_subset, envir = .GlobalEnv)
     assign("run_output_dir", eval_dir, envir = .GlobalEnv)
-    assign("robust_cov_dir_override", cov_dir_subset, envir = .GlobalEnv)
 
     run_stage(stage_mode)
   } else {
@@ -610,23 +740,22 @@ if (length(sweep_rows) > 0L) {
     ) %>%
     dplyr::select(-stage_mode_done)
 }
-manifest_run_csv <- file.path(out_dir, "sensitivity_tuning_seed_sweep_manifest_run.csv")
+manifest_run_csv <- file.path(sweep_out_dir, "sensitivity_tuning_seed_sweep_manifest_run.csv")
 readr::write_csv(sweep_status_df, manifest_run_csv)
 cat("Wrote run subset manifest to:\n  ", manifest_run_csv, "\n", sep = "")
 
 sweep_df <- dplyr::bind_rows(sweep_rows)
 if (nrow(sweep_df) > 0L) {
-  sweep_csv <- file.path(out_dir, "sensitivity_tuning_seed_sweep_summary.csv")
+  sweep_csv <- file.path(sweep_out_dir, "sensitivity_tuning_seed_sweep_summary.csv")
   readr::write_csv(sweep_df, sweep_csv)
   cat("Wrote tuning seed sweep summary to:\n  ", sweep_csv, "\n", sep = "")
   source(file.path(project_root, "modelling/plots/plot_tuning_seed_sweep.R"))
-  plot_tuning_seed_sweep_summary(sweep_df, out_dir)
+  plot_tuning_seed_sweep_summary(sweep_df, sweep_out_dir)
   rep5 <- pick_representative_tuning_seed_subset(
     sweep_df,
     n_tuning_seeds = 5L,
     metric_col = "mean_mean_rmse",
-    metric_sd_col = "sd_mean_rmse",
-    rmse_lambda = robust_rmse_lambda
+    metric_sd_col = "sd_mean_rmse"
   )
   if (!is.null(rep5)) {
     rep_row <- data.frame(
@@ -635,21 +764,18 @@ if (nrow(sweep_df) > 0L) {
       n_tuning_seeds = rep5$n_tuning_seeds,
       mean_mean_rmse_across_models = rep5$mean_metric_across_models,
       mean_sd_rmse_across_models = rep5$mean_sd_metric_across_models,
-      robust_rmse_score_across_models = rep5$robust_rmse_score_across_models,
       mean_pooled_rmse_mean_across_models = rep5$mean_metric_across_models,
       median_pooled_rmse_mean_across_subsets_at_n = NA_real_,
-      robust_rmse_lambda = rep5$robust_rmse_lambda,
       selection_rule = rep5$selection_rule,
       stringsAsFactors = FALSE
     )
-    rep_csv <- file.path(out_dir, "sensitivity_tuning_seed_sweep_representative_n5.csv")
+    rep_csv <- file.path(sweep_out_dir, "sensitivity_tuning_seed_sweep_representative_n5.csv")
     readr::write_csv(rep_row, rep_csv)
     cat(
       "Representative 5-seed subset (closest to median mean RMSE across subsets):\n  ",
       rep_row$robust_fold_seed_list[1], "\n",
       "Wrote:\n  ", rep_csv, "\n",
       "selection_rule: ", rep_row$selection_rule[1], "\n",
-      "reported robust score = mean_mean_rmse + ", rep_row$robust_rmse_lambda[1], " * mean_sd_rmse\n",
       "Set pipeline_config robust_fold_seed_list to c(",
       paste0(rep5$robust_fold_seed_list, "L", collapse = ", "),
       ") if promoting this sweep.\n",
@@ -658,18 +784,18 @@ if (nrow(sweep_df) > 0L) {
 
     chosen_payload <- list(
       robust_fold_seed_list = as.integer(rep5$robust_fold_seed_list),
-      eval_fold_seed_list = as.integer(tuning_sweep_eval_seed_list),
+      eval_fold_seed_list = as.integer(eval_fold_seed_list),
       tuning_seed_list = rep5$tuning_seed_list,
       n_tuning_seeds = rep5$n_tuning_seeds,
       sweep_run_id = tuning_seed_sweep_run_id,
-      sweep_run_dir = out_dir,
+      sweep_run_dir = sweep_out_dir,
       written_at = Sys.time()
     )
-    saveRDS(chosen_payload, file.path(out_dir, "chosen_seeds_for_pipeline.rds"))
+    saveRDS(chosen_payload, file.path(sweep_out_dir, "chosen_seeds_for_pipeline.rds"))
     saveRDS(chosen_payload, file.path(tuning_sweep_runs_root, "chosen_seeds_latest.rds"))
     cat(
       "Wrote chosen seeds for main pipeline:\n  ",
-      file.path(out_dir, "chosen_seeds_for_pipeline.rds"), "\n  ",
+      file.path(sweep_out_dir, "chosen_seeds_for_pipeline.rds"), "\n  ",
       file.path(tuning_sweep_runs_root, "chosen_seeds_latest.rds"),
       "\nSet use_robust_seeds_from_tuning_sweep = TRUE in pipeline_config, or copy integers into robust_fold_seed_list.\n",
       sep = ""

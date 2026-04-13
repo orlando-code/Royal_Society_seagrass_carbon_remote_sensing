@@ -60,20 +60,21 @@ write.csv(
 # Deployment robustness check (multi-seed robust evaluation outputs)
 # ---------------------------------------------------------------------------
 robust_eval_candidates <- c(
-  Sys.glob(file.path(base_dir, "multiseed_runs", "pixel_grouped_evaluation_*")),
-  Sys.glob(file.path(base_dir, "pixel_grouped_evaluation_*x_*_seeds*")),
-  Sys.glob(file.path(base_dir, "robust_pixel_grouped_evaluation_robustSeeds_*"))
+  Sys.glob(file.path("output", "pixel_grouped_*"))
 )
 robust_eval_candidates <- unique(robust_eval_candidates)
 robust_eval_candidates <- robust_eval_candidates[dir.exists(robust_eval_candidates)]
-legacy_repeated_dir <- file.path(base_dir, "repeated_pixel_grouped_seed_check")
+robust_eval_candidates <- robust_eval_candidates[
+  file.exists(file.path(robust_eval_candidates, "across_seeds_summary.csv")) &
+    file.exists(file.path(robust_eval_candidates, "by_seed_detailed.csv"))
+]
 
 if (length(robust_eval_candidates) > 0L) {
   # Prefer the newest robust run directory if multiple exist.
   dir_info <- file.info(robust_eval_candidates)
   robust_dir <- robust_eval_candidates[which.max(dir_info$mtime)]
 } else {
-  robust_dir <- legacy_repeated_dir
+  robust_dir <- NA_character_
 }
 
 rob_sum_path <- file.path(robust_dir, "across_seeds_summary.csv")
