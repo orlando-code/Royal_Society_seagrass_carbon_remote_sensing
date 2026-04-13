@@ -98,7 +98,7 @@ imp_top <- imp_top %>%
     ymax = shap_importance_mean + shap_importance_sd
   )
 
-make_model_plot <- function(dfm, m, legend_models) {
+make_model_plot <- function(dfm, m, legend_models, show_legend = FALSE) {
   dfm <- dplyr::arrange(dfm, shap_importance_mean)
   dfm$model <- factor(dfm$model, levels = legend_models)
   ggplot2::ggplot(
@@ -109,8 +109,8 @@ make_model_plot <- function(dfm, m, legend_models) {
       fill = model
     )
   ) +
-    ggplot2::geom_col(alpha = 0.85) +
-    ggplot2::geom_errorbar(ggplot2::aes(xmin = ymin, xmax = ymax), width = 0.2, colour = "black", linewidth = 0.35) +
+    ggplot2::geom_col(alpha = 0.85, show.legend = show_legend) +
+    ggplot2::geom_errorbar(ggplot2::aes(xmin = ymin, xmax = ymax), width = 0.2, colour = "black", linewidth = 0.35, show.legend = show_legend) +
     ggplot2::scale_fill_manual(
       values = MODEL_COLOURS[legend_models],
       breaks = legend_models,
@@ -133,30 +133,30 @@ make_model_plot <- function(dfm, m, legend_models) {
 
 models <- unique(imp_top$model)
 
-plots <- lapply(models, function(m) {
+# First plot carries legend; others suppress it.
+plots <- lapply(seq_along(models), function(i) {
+  m <- models[[i]]
   make_model_plot(
     imp_top %>% dplyr::filter(model == m),
     m,
-    models
+    models,
+    show_legend = (i == 1)
   )
 })
-
 names(plots) <- models
-
-combined <- patchwork::wrap_plots(
-  plots,
-  ncol = length(plots)
-) +
-  patchwork::plot_layout(guides = "collect") +
+# Build panel row and dedicate one row to legend.
+panel_row <- patchwork::wrap_plots(plots, ncol = length(plots))
+legend_row <- patchwork::guide_area()
+combined <- (panel_row / legend_row) +
+  patchwork::plot_layout(heights = c(1, 0.10), guides = "collect") +
   patchwork::plot_annotation(
-    title = if (show_titles)
-      "Robust multi-seed SHAP importance (mean ± SD)" else NULL,
-    subtitle = if (show_titles)
-      paste0("Top ", top_n, " variables per model; seeds=", seeds_str) else NULL
+    title = if (show_titles) "Robust multi-seed SHAP importance (mean ± SD)" else NULL,
+    subtitle = if (show_titles) paste0("Top ", top_n, " variables per model; seeds=", seeds_str) else NULL
   ) &
   ggplot2::theme(
     legend.position = "bottom",
-    legend.direction = "horizontal"
+    legend.direction = "horizontal",
+    legend.box = "horizontal"
   )
 
 out_combined <- file.path(robust_cov_dir, "shap_importance_robust_errorbars_combined.png")
