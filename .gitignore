@@ -56,3 +56,4 @@ renv/library/
 
 # python cache files
 __pycache__/
+*ignore
