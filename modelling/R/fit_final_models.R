@@ -74,9 +74,7 @@ nrow(unique(dat[raster_covariates]))
 nrow(unique(core_data[raster_covariates]))
 
 
-# target_var <- get("target_var", envir = .GlobalEnv)
 predictor_vars <- raster_covariates[raster_covariates %in% colnames(dat)]
-# include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
 extra_cols <- c(if (include_seagrass_species) "seagrass_species" else character(0), "region")
 
 selected_cols <- c(
@@ -138,8 +136,6 @@ load_model_vars_final <- function(model_name) {
 }
 
 # Model/general settings
-# log_response   <- isTRUE(get("log_transform_target", envir = .GlobalEnv))
-# n_tune_folds   <- as.integer(get("n_folds", envir = .GlobalEnv))
 cv_types_allowed <- c("random", "location_grouped", "pixel_grouped", "spatial")
 # cv_type_raw <- cfg$cv_type
 if (length(cv_type) != 1L || !cv_type %in% cv_types_allowed) {
@@ -156,15 +152,6 @@ if (length(cv_type) != 1L || !cv_type %in% cv_types_allowed) {
     )
   }
 }
-# cv_blocksize  <- get("cv_blocksize", envir = .GlobalEnv)
-# exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
-
-# count number of unique combinations of environmental variables in core_data (predictor_vars)
-predictor_minus_species <- predictor_vars[!predictor_vars %in% "seagrass_species"]
-
-n_unique_rows <- nrow(unique(core_data[predictor_minus_species]))
-nrow(unique(core_data[predictor_minus_species]))
-nrow(unique(core_data[predictor_vars]))
 
 cat("Training rows:", nrow(core_data),
     " | Shared predictors:", length(shared_vars),
