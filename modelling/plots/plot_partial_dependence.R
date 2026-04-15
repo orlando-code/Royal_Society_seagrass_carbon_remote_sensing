@@ -1,4 +1,4 @@
-# Partial Dependence Plots for XGB, GAM, GPR, and LR final models
+# Partial Dependence Plots for final (XGB, GAM, GPR, LR) models
 #
 # Uses iml::FeatureEffect (method = "pdp") to compute and plot the marginal
 # effect of each predictor for each model's final fitted object.
@@ -11,7 +11,7 @@ if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
   init_path <- file.path("modelling", "R", "init_repo.R")
   if (!file.exists(init_path)) {
     ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/partial_dependence_all_models.R", call. = FALSE)
+    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/plot_partial_dependence.R", call. = FALSE)
     script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
     init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
   }
@@ -34,7 +34,9 @@ cfg <- get_pipeline_config()
 apply_pipeline_defaults(
   cfg,
   c(
-    "cv_output_dir", "target_var", "exclude_regions", "model_list", "n_lons", "n_lats", "dpi", "show_titles", "prediction_map_use_log_fill", "prediction_map_log_fill_epsilon"
+    "cv_output_dir", "run_output_dir", "cv_regime_name", "robust_fold_seed_list",
+    "target_var", "exclude_regions", "model_list", "n_lons", "n_lats", "dpi",
+    "show_titles", "prediction_map_use_log_fill", "prediction_map_log_fill_epsilon"
   ),
   envir = .GlobalEnv
 )
@@ -67,9 +69,73 @@ core_data <- dat %>%
   dplyr::filter(complete.cases(.)) %>%
   as.data.frame()
 
-cv_out  <- get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = "output")
+resolve_pdp_run_dir <- function() {
+  cv_regime_name <- as.character(get0("cv_regime_name", envir = .GlobalEnv, ifnotfound = "pixel_grouped"))
+  robust_seeds <- as.integer(get0("robust_fold_seed_list", envir = .GlobalEnv, ifnotfound = integer(0)))
+  robust_seed_str <- paste(robust_seeds, collapse = "-")
+  preferred_seed_dir <- if (length(robust_seeds) > 0L) {
+    file.path("output", paste0(cv_regime_name, "_", robust_seed_str))
+  } else {
+    NA_character_
+  }
+  run_output_dir <- as.character(get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_))
+  cv_output_dir <- as.character(get0("cv_output_dir", envir = .GlobalEnv, ifnotfound = file.path("output", cv_regime_name)))
+  candidates <- unique(c(preferred_seed_dir, run_output_dir, cv_output_dir))
+  candidates <- candidates[!is.na(candidates) & nzchar(candidates)]
+  candidates <- candidates[dir.exists(candidates)]
+  if (length(candidates) == 0L) {
+    stop(
+      "Could not resolve model output directory for PDPs.\n",
+      "Checked:\n  ",
+      paste(unique(c(preferred_seed_dir, run_output_dir, cv_output_dir)), collapse = "\n  "),
+      call. = FALSE
+    )
+  }
+  candidates[[1L]]
+}
+
+cv_out  <- resolve_pdp_run_dir()
+cat("Using PDP model output directory:", cv_out, "\n")
 out_dir <- file.path(cv_out, "covariate_selection")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+validate_model_list_for_pdp <- function(model_list, cv_out) {
+  requested <- unique(as.character(model_list))
+  requested <- requested[nzchar(requested)]
+  if (length(requested) == 0L) {
+    stop("model_list from current config is empty; nothing to plot.", call. = FALSE)
+  }
+
+  final_dir <- file.path(cv_out, "final_models")
+  if (!dir.exists(final_dir)) {
+    stop("Missing final model directory for PDP plotting: ", final_dir, call. = FALSE)
+  }
+
+  final_rds <- Sys.glob(file.path(final_dir, "*_final.rds"))
+  available <- sub("_final\\.rds$", "", basename(final_rds))
+  available <- unique(available[nzchar(available)])
+
+  missing_requested <- setdiff(requested, available)
+  if (length(missing_requested) > 0L) {
+    stop(
+      "Requested model_list contains models not present in final_models.\n",
+      "Requested: ", paste(requested, collapse = ", "), "\n",
+      "Available: ", paste(available, collapse = ", "), "\n",
+      "Missing: ", paste(missing_requested, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  extra_available <- setdiff(available, requested)
+  if (length(extra_available) > 0L) {
+    cat("Excluding models not requested by model_list:", paste(extra_available, collapse = ", "), "\n")
+  }
+
+  requested
+}
+
+model_list <- validate_model_list_for_pdp(model_list, cv_out)
+cat("Requested model_list for PDP:", paste(model_list, collapse = ", "), "\n")
 
 # ---------------------------------------------------------------------------
 # Build iml::Predictor for a final model
@@ -243,7 +309,9 @@ predictors_by_model <- stats::setNames(
   model_list
 )
 
-# Shared-variable PDPs across models
+# ---------------------------------------------------------------------------
+# Plot PDPs for all models' shared variables
+# ---------------------------------------------------------------------------
 shared_vars <- Reduce(intersect, all_vars_by_model)
 if (length(shared_vars) > 0L) {
   cat("  Computing shared-variable PDPs (", length(shared_vars), " vars shared by configured models)...\n", sep = "")

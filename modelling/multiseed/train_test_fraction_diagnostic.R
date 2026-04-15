@@ -6,32 +6,20 @@
 ##   - y_sd in the test fold (sd(observed))
 ##
 ## Then join to per-fold performance from robust evaluation output
-## (or legacy repeated seed-check output, if provided) to see whether
-## folds with small test fraction / low y variance are driving negative R².
-##
-if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
-  init_path <- file.path("modelling", "R", "init_repo.R")
-  if (!file.exists(init_path)) {
-    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
-    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
-    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
-  }
-  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
-  sys.source(init_path, envir = .GlobalEnv)
-}
+## to see whether folds with small test fraction / low y variance are
+## driving negative R².
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) source("modelling/R/init_repo.R")
 project_root <- seagrass_init_repo(
-  include_helpers = FALSE,
-  require_core_inputs = FALSE,
-  check_renv = FALSE
+  packages = c("here", "dplyr", "readr", "ggplot2", "patchwork"),
+  source_files = c(
+    "modelling/R/extract_covariates_from_rasters.R",
+    "modelling/R/assign_region_from_latlon.R",
+    "modelling/pipeline_config.R"
+  ),
+  include_helpers = TRUE,
+  require_core_inputs = TRUE,
+  check_renv = TRUE
 )
-project_root <- getwd()
-
-source(file.path(project_root, "modelling/R/helpers.R"))
-source(file.path(project_root, "modelling/R/assign_region_from_latlon.R"))
-source(file.path(project_root, "modelling/pipeline_config.R"))
-load_packages(c("here", "dplyr", "readr", "ggplot2", "patchwork"))
-
 cfg <- get_pipeline_config()
 apply_pipeline_defaults(
   cfg,
@@ -119,8 +107,14 @@ n_total <- nrow(core_data)
 stopifnot(n_total > 20L)
 cat("  Complete-case rows:", n_total, "\n")
 
-out_dir <- file.path(run_output_dir, "train_test_fraction_diagnostic")
-dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+sens_dir <- file.path(run_output_dir, "sensitivity_suite")
+plots_dir <- file.path(sens_dir, "plots")
+dir.create(sens_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(plots_dir, recursive = TRUE, showWarnings = FALSE)
+
+fold_stats_csv <- file.path(sens_dir, "sensitivity_train_test_fraction_by_seed_by_fold.csv")
+summary_csv <- file.path(sens_dir, "sensitivity_train_test_fraction_summary_by_model.csv")
+png_path <- file.path(plots_dir, "sensitivity_r2_vs_y_sd_and_test_fraction.png")
 
 fold_stats_rows <- list()
 for (seed in fold_seed_list) {
@@ -154,7 +148,7 @@ for (seed in fold_seed_list) {
 }
 
 fold_stats <- dplyr::bind_rows(fold_stats_rows)
-write.csv(fold_stats, file.path(out_dir, "fold_stats_by_seed_by_fold.csv"), row.names = FALSE)
+write.csv(fold_stats, fold_stats_csv, row.names = FALSE)
 
 # Join to repeated CV per-fold performance (deployment check)
 perf_csv_override <- get("perf_detailed_csv_override", envir = .GlobalEnv)
@@ -180,7 +174,7 @@ if (file.exists(perf_csv)) {
       .groups = "drop"
     )
 
-  write.csv(summary_by_model, file.path(out_dir, "summary_by_model.csv"), row.names = FALSE)
+  write.csv(summary_by_model, summary_csv, row.names = FALSE)
 
   cat("\nSummary by model (joined to repeated CV per-fold performance):\n")
   print(summary_by_model)
@@ -197,19 +191,18 @@ if (file.exists(perf_csv)) {
     theme_minimal(base_size = 12) +
     labs(title = "R2 vs test fold fraction (pixel_grouped)", x = "test_fraction", y = "R2 per fold")
 
-  png_path <- file.path(out_dir, "r2_vs_y_sd_and_test_fraction.png")
   ggsave(png_path, patchwork::wrap_plots(p_r2_vs_y_sd, p_r2_vs_test_frac, ncol = 2),
          width = 12, height = 5, dpi = 200)
 
   cat("\nWrote:\n",
-      file.path(out_dir, "fold_stats_by_seed_by_fold.csv"), "\n",
-      file.path(out_dir, "summary_by_model.csv"), "\n",
-      file.path(out_dir, "r2_vs_y_sd_and_test_fraction.png"), "\n",
+      fold_stats_csv, "\n",
+      summary_csv, "\n",
+      png_path, "\n",
       sep = "")
 } else {
   cat("\nWARNING: No repeated check file found; skipping join to performance.\n  ", perf_csv, "\n")
   cat("\nWrote:\n",
-      file.path(out_dir, "fold_stats_by_seed_by_fold.csv"), "\n",
+      fold_stats_csv, "\n",
       sep = "")
 }
 

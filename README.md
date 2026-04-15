@@ -13,7 +13,7 @@ From the project root:
 renv::restore(prompt = FALSE)
 
 # 1) Optional (expensive): robust tuning seed sweep
-source("modelling/analysis/tuning_seed_sweep.R")
+source("modelling/analysis/run_tuning_seed_sweep.R")
 
 # 2) Main robust multiseed pipeline (recommended publication workflow)
 source("modelling/run_multiseed_pixel_grouped.R")
@@ -35,12 +35,12 @@ Pipeline settings are centralized in `modelling/pipeline_config.R` (`get_pipelin
 ### Pipeline toggles
 
 - `do_shap_refined_tuning` – re-tune hyperparameters after robust SHAP pruning (multiseed driver Step 3).
-- `do_tuning_seed_sweep_refined_tuning` – second robust tuning pass after SHAP pruning inside **standalone** `tuning_seed_sweep.R` subsets; set `TRUE` to mirror multiseed Step 3.
+- `do_tuning_seed_sweep_refined_tuning` – second robust tuning pass after SHAP pruning inside **standalone** `run_tuning_seed_sweep.R` subsets; set `TRUE` to mirror multiseed Step 3.
 - `do_sensitivity` – run sensitivity suite and associated plots.
 - `do_diagnostics` – run train/test fraction and variance diagnostics.
 - `do_fit_final_models`, `do_supplement` – final model fitting and additional supplementary figures.
 - `multiseed_run_output_id` – retained for compatibility; the multiseed driver’s primary output path is `output/pixel_grouped_<robust_seeds>/` derived from `robust_fold_seed_list`, not this id.
-- `use_robust_seeds_from_tuning_sweep` – if `TRUE`, load `robust_fold_seed_list` (and `eval_fold_seed_list` if stored) from `output/tuning_seed_sweep_runs/chosen_seeds_latest.rds` after running `modelling/analysis/tuning_seed_sweep.R`. The tuning-seed sweep itself writes under `output/tuning_seed_sweep_runs/sweep_<run_id>/` (see that script’s header). Reusing a sweep folder requires both the same **planned subset manifest** and the same **effective sweep config** on disk; otherwise a new `sweep_<id>` is created.
+- `use_robust_seeds_from_tuning_sweep` – if `TRUE`, load `robust_fold_seed_list` (and `eval_fold_seed_list` if stored) from `output/tuning_seed_sweep_runs/chosen_seeds_latest.rds` after running `modelling/analysis/run_tuning_seed_sweep.R`. The tuning-seed sweep itself writes under `output/tuning_seed_sweep_runs/sweep_<run_id>/` (see that script’s header). Reusing a sweep folder requires both the same **planned subset manifest** and the same **effective sweep config** on disk; otherwise a new `sweep_<id>` is created.
 
 ### Target and transforms
 
@@ -98,7 +98,7 @@ Primary outputs for a run live under **`output/pixel_grouped_<robust_fold_seeds>
 | `4`     | Robust evaluation on `eval_fold_seed_list`                   | `across_seeds_summary.csv` and related CSVs under `output/pixel_grouped_<seeds>/` (run root) |
 | `5`     | R² sensitivity suite + plots (optional, `do_sensitivity`)    | `.../sensitivity_suite/`                                                         |
 | `6`     | Train/test fraction diagnostics (optional, `do_diagnostics`)   | diagnostics under run folder                                                     |
-| `7`     | Fit final models (`fit_final_models.R`)                      | `output/<cv_regime>/final_models/`                                               |
+| `7`     | Fit final models (`modelling/R/fit_final_models.R`)          | `output/<cv_regime>/final_models/`                                               |
 | `8`     | Model comparison vs baselines                                  | `output/<cv_regime>/analysis/`                                                   |
 | `9`     | Spatial prediction maps                                        | `output/<cv_regime>/predictions/`                                                |
 | `10`    | Partial dependence (final models)                              | `output/<cv_regime>/covariate_selection/` (PDP figures)                          |
@@ -121,7 +121,7 @@ seagrass_mapping/
 │   ├── pipeline_config.R         # Central pipeline + seed registry
 │   ├── multiseed/                # Robust multiseed tuning/pruning/eval
 │   ├── analysis/                 # Model comparison, sensitivity, tuning seed sweep, diagnostics
-│   ├── pipeline/                 # Data build, pruning, CV, tuning, importance, final fits
+│   ├── pipeline/                 # Legacy/deprecation notes + historical stubs
 │   ├── plots/                    # Figures: PDPs, prediction maps, supplement, plot_config.R
 │   ├── R/                        # Shared R helpers, ML, raster extraction
 ├── output/                       # All pipeline outputs (replaces old figures/)
@@ -184,7 +184,7 @@ The pipeline reuses caches where possible. All cache files live under `output/ca
 
 ## Cross-Validation Approaches
 
-The pipeline evaluates predictive performance under multiple fold construction strategies (see `modelling/pipeline/cv_pipeline.R`). This matters because the data are spatially clustered and some observations share identical `(longitude, latitude)` raster-derived covariates.
+The pipeline evaluates predictive performance under multiple fold construction strategies (legacy implementation archived under `deprecated/cv_pipeline.R`). This matters because the data are spatially clustered and some observations share identical `(longitude, latitude)` raster-derived covariates.
 
 - `random_split` – Naive split across rows; train/test may contain points from the same location (and duplicate covariates can leak), so results are a highly optimistic baseline for out-of-sample prediction.
 - `location_grouped_random` – All rows that share the exact same `(longitude, latitude)` are assigned to the same fold; this prevents leakage from duplicate coordinates but not from distinct locations that fall in the same coarse raster pixel.
@@ -201,7 +201,7 @@ All fold types are cached/reused via `output/cache/` to speed up re-runs.
 1. Place required inputs under `data/` (`all_extracted_new.rds` can be built by step 0, rasters and region shapefiles must be downloaded as described below).
 2. Run from the repository root:
   - `Rscript -e "renv::restore(prompt = FALSE)"`
-  - optional: `Rscript modelling/analysis/tuning_seed_sweep.R`
+  - optional: `Rscript modelling/analysis/run_tuning_seed_sweep.R`
   - `Rscript modelling/run_multiseed_pixel_grouped.R`
 3. Record and archive:
   - `output/pixel_grouped_<seeds>/_run_metadata/pipeline_config_effective.rds`

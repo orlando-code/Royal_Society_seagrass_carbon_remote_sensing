@@ -115,12 +115,12 @@ build_core_data <- function(project_root) {
   all_extracted_path <- file.path(project_root, "data", "all_extracted_new.rds")
   if (file.exists(all_extracted_path)) return(invisible(TRUE))
 
-  build_script <- file.path(project_root, "modelling", "pipeline", "build_all_extracted_new.R")
+  build_script <- file.path(project_root, "modelling", "R", "build_all_extracted_new.R")
   if (!file.exists(build_script)) return(invisible(FALSE))
 
   message(
     "Core input missing: ", all_extracted_path, "\n",
-    "Attempting to build it now via modelling/pipeline/build_all_extracted_new.R ..."
+    "Attempting to build it now via modelling/R/build_all_extracted_new.R ..."
   )
   build_ok <- tryCatch(
     {

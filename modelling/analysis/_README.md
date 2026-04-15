@@ -7,9 +7,9 @@ already produced under **`output/<cv_regime>/`**, **`output/pixel_grouped_<seeds
 
 ---
 
-## tuning_seed_sweep.R
+## run_tuning_seed_sweep.R
 
-**Called when:** Ad-hoc robust tuning sensitivity runs (often in `tmux` via `Rscript modelling/analysis/tuning_seed_sweep.R`), optionally before the main driver. It is **not** sourced from `run_multiseed_pixel_grouped.R`.
+**Called when:** Ad-hoc robust tuning sensitivity runs (often in `tmux` via `Rscript modelling/analysis/run_tuning_seed_sweep.R`), optionally before the main driver. It is **not** sourced from `run_multiseed_pixel_grouped.R`.
 
 Re-runs robust tuning + robust SHAP pruning + optional second tuning pass (`do_tuning_seed_sweep_refined_tuning`, mirror multiseed Step 3) + robust evaluation across different counts of robust seeds (e.g. `1/3/5/10/15` from `pipeline_config.R`). Writes to **`output/tuning_seed_sweep_runs/sweep_<run_id>/`** (summaries, manifests, plots, `subset_work/<subset_id>/`, `_run_metadata/pipeline_config_effective.rds`). A new `sweep_<id>` is used when the planned subset manifest does not match any existing sweep **or** when the saved effective sweep config under a candidate folder differs from the current pipeline. **`output/tuning_seed_sweep_runs/chosen_seeds_latest.rds`** (and `chosen_seeds_for_pipeline.rds` inside the sweep folder) are updated for optional reuse when `use_robust_seeds_from_tuning_sweep = TRUE` in `run_multiseed_pixel_grouped.R`.
 

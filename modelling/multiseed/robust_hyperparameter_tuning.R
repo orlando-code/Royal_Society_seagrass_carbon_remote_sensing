@@ -13,36 +13,25 @@
 ##     - best_config_<model>_robust.rds
 ##     - robust_cv_metrics_<model>.csv
 ##
-if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
-  init_path <- file.path("modelling", "R", "init_repo.R")
-  if (!file.exists(init_path)) {
-    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
-    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
-    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
-  }
-  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
-  sys.source(init_path, envir = .GlobalEnv)
-}
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) source("modelling/R/init_repo.R")
 project_root <- seagrass_init_repo(
-  include_helpers = FALSE,
-  require_core_inputs = FALSE,
-  check_renv = FALSE
+  packages = c("here", "dplyr", "readr", "mgcv", "randomForest", "GauPro", "xgboost", "sf"),
+  source_files = c(
+    "modelling/R/extract_covariates_from_rasters.R",
+    "modelling/R/assign_region_from_latlon.R",
+    "modelling/pipeline_config.R"
+  ),
+  include_helpers = TRUE,
+  require_core_inputs = TRUE,
+  check_renv = TRUE
 )
-project_root <- getwd()
-
-source(file.path(project_root, "modelling/R/helpers.R"))
-source(file.path(project_root, "modelling/R/assign_region_from_latlon.R"))
-source(file.path(project_root, "modelling/pipeline_config.R"))
-load_packages(c("here", "dplyr", "readr", "mgcv", "randomForest", "GauPro", "xgboost", "sf"))
-
 cfg <- get_pipeline_config()
 apply_pipeline_defaults(
   cfg,
   c(
     "cv_regime_name", "cv_type", "target_var", "log_transform_target",
     "exclude_regions", "n_folds", "cv_blocksize", "robust_fold_seed_list",
-    "robust_pruned_importance_type", "correlation_filter_threshold",
+    "robust_pruned_importance_type", "use_correlation_filter", "correlation_filter_threshold",
     "xgb_max_grid_candidates",
     "include_seagrass_species", "model_list"
   ),
@@ -64,6 +53,8 @@ cv_blocksize <- get("cv_blocksize", envir = .GlobalEnv) # unused for pixel_group
 robust_fold_seed_list <- get("robust_fold_seed_list", envir = .GlobalEnv)
 robust_fold_seed_list <- as.integer(robust_fold_seed_list)
 include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
+use_correlation_filter <- isTRUE(get("use_correlation_filter", envir = .GlobalEnv))
+correlation_filter_threshold <- as.numeric(get("correlation_filter_threshold", envir = .GlobalEnv))
 
 run_output_dir <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
 if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir))) {
@@ -93,15 +84,15 @@ if (length(exclude_regions) > 0L) {
   dat <- dat[is.na(dat$region) | !dat$region %in% exclude_regions, ]
 }
 
-predictor_vars_full <- setdiff(
-  colnames(dat),
-  c(
-    "latitude", "longitude", "number_id_final_version",
-    "seagrass_species",
-    "region", target_var
-  )
+candidate_sets <- build_robust_candidate_predictor_sets(
+  dat = dat,
+  target_var = target_var,
+  use_correlation_filter = use_correlation_filter,
+  correlation_filter_threshold = correlation_filter_threshold,
+  verbose = TRUE
 )
-predictor_vars_full <- predictor_vars_full[predictor_vars_full %in% colnames(dat)]
+predictor_vars_full <- candidate_sets$predictor_vars_full
+tuning_candidate_predictor_vars <- candidate_sets$candidate_predictor_vars
 
 species_region_cols <- intersect(
   c(if (include_seagrass_species) "seagrass_species" else character(0), "region"),
@@ -120,12 +111,14 @@ complete_dat <- dat %>%
 
 complete_dat$median_carbon_density <- complete_dat[[target_var]]
 predictor_vars_full <- predictor_vars_full[predictor_vars_full %in% colnames(complete_dat)]
+tuning_candidate_predictor_vars <- tuning_candidate_predictor_vars[tuning_candidate_predictor_vars %in% colnames(complete_dat)]
 
 stopifnot("median_carbon_density" %in% names(complete_dat))
 core_data <- as.data.frame(complete_dat)
 
 cat("  Complete-case rows:", nrow(core_data), "\n")
 cat("  Predictor vars for fold hashing:", length(predictor_vars_full), "\n")
+cat("  Pre-tuning candidate predictors:", length(tuning_candidate_predictor_vars), "\n")
 
 # ---------------------------------------------------------------------------
 # Load robust pruned predictor sets
@@ -152,7 +145,7 @@ robust_pruned_csv <- if (identical(robust_pruned_importance_type, "shap")) {
 if (!file.exists(robust_pruned_csv)) {
   cat(
     "  Robust pruned covariate file not found for configured seeds.\n",
-    "  Using full predictor set as initial covariates for tuning:\n    ",
+    "  Using pre-tuning candidate predictor set as initial covariates:\n    ",
     robust_pruned_csv, "\n",
     sep = ""
   )
@@ -168,8 +161,8 @@ if (file.exists(robust_pruned_csv)) {
   }
 } else {
   for (m in model_list) {
-    if (length(predictor_vars_full) >= 2L) {
-      predictor_vars_by_model[[m]] <- predictor_vars_full
+    if (length(tuning_candidate_predictor_vars) >= 2L) {
+      predictor_vars_by_model[[m]] <- tuning_candidate_predictor_vars
     }
   }
 }
@@ -178,7 +171,7 @@ if (length(models) == 0L) stop("No models found after loading robust pruned vari
 if (file.exists(robust_pruned_csv)) {
   cat("  Robust predictor sets loaded for:", paste(models, collapse = ", "), "\n")
 } else {
-  cat("  Initial full predictor sets loaded for:", paste(models, collapse = ", "), "\n")
+  cat("  Initial candidate predictor sets loaded for:", paste(models, collapse = ", "), "\n")
 }
 
 # ---------------------------------------------------------------------------

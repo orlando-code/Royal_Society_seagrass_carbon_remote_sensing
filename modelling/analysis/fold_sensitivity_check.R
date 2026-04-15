@@ -192,7 +192,6 @@ hp_bundle <- build_hyperparams_by_model(
   robust_config_dir = robust_config_dir,
   prefer_robust = TRUE,
   include_baseline = TRUE,
-  include_legacy = TRUE,
   include_only_with_config = TRUE
 )
 hyperparams_by_model <- hp_bundle$hyperparams_by_model
