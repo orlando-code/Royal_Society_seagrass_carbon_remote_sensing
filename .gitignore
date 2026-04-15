@@ -56,4 +56,5 @@ renv/library/
 
 # python cache files
 __pycache__/
+python_helpers/ignore.ipynb
 *ignore
