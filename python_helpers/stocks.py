@@ -131,7 +131,7 @@ def plot_comparison_bars(df: pd.DataFrame, dpi: int = 300):
         # Mark missing values with crosses so one-sided availability is explicit.
         missing_gomis = ~np.isfinite(gomis_vals)
         missing_study = ~np.isfinite(study_vals)
-        print("ASdfasd")
+
         ax.set_xticks(x)
         country_labels = [str(country).replace(" ", "\n") for country in countries]
         ax.set_xticklabels(country_labels, ha="center", fontsize=10, rotation=45)
@@ -142,7 +142,7 @@ def plot_comparison_bars(df: pd.DataFrame, dpi: int = 300):
         ax.yaxis.grid(True, linestyle="--", alpha=0.5, zorder=0)
         ax.set_axisbelow(True)
         ax.spines[["top", "right"]].set_visible(False)
-        # ax.set_yscale("log")
+        ax.set_yscale("log")
 
         # Place crosses just above lower log bound so they are visible.
         y_min, y_max = ax.get_ylim()
