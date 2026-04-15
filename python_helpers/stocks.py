@@ -28,6 +28,23 @@ def safe_weighted_average(values, weights):
     return np.average(values[mask], weights=weights[mask])
 
 
+def weighted_mean_standard_error(se, weights, values_for_mask):
+    """SE of area-weighted mean: sqrt(sum(w_i^2 * se_i^2)) / sum(w_i); mask matches ``safe_weighted_average``."""
+    se = np.asarray(se, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    values_for_mask = np.asarray(values_for_mask, dtype=float)
+    mask = ~np.isnan(values_for_mask)
+    if np.sum(mask) == 0 or np.sum(weights[mask]) == 0:
+        return np.nan
+    se_m = se[mask]
+    w_m = weights[mask]
+    if not np.all(np.isfinite(se_m)) or not np.all(np.isfinite(w_m)):
+        return np.nan
+    if np.any(w_m <= 0):
+        return np.nan
+    return float(np.sqrt(np.sum((w_m**2) * (se_m**2))) / np.sum(w_m))
+
+
 def plot_comparison_bars(df: pd.DataFrame, dpi: int = 300):
     GOMIS_COLOR = "#0C0787"
     STUDY_COLOR = "#FBA237"
@@ -263,7 +280,7 @@ def plot_territory_species_stacked_all(
     show_total_errorbars: bool = False,
     dpi: int = 300,
     figsize: tuple[float, float] = (12.0, 5.0),
-    ylim: tuple[float, float] | None = (0, 25e4),
+    ylim: tuple[float, float] | None = None,
     xlabel: str = "National Territory",
     ylabel: str = "Carbon Stock (GgC)",
     legend_bbox: tuple[float, float] = (0.5, 1.1),
