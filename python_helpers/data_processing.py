@@ -469,13 +469,14 @@ def add_stock_columns(
     """
     out = ea_gdf.copy()
     out["area_ha"] = out.geometry.area / 1e4
+    # Clip density before all stock derivations so areal stock and total stock match.
+    out["gC_cm3"] = out["gC_cm3"].clip(*clip_gC_cm3)
     out["stock_kg_ha"] = stocks.convert_carbon_density_to_carbon_areal_stock(
         out["gC_cm3"], depth_cm
     )
     out["stock_kg_ha_se"] = stocks.convert_carbon_density_to_carbon_areal_stock(
         out["gC_cm3_se"], depth_cm
     )
-    out["gC_cm3"] = out["gC_cm3"].clip(*clip_gC_cm3)
     out["stock_Gg"] = stocks.convert_carbon_density_to_carbon_stock(
         out["gC_cm3"], depth_cm, out.geometry.area
     )
@@ -530,8 +531,10 @@ def build_national_metrics(ea_gdf: gpd.GeoDataFrame):
                     "stock_kg_ha": stocks.safe_weighted_average(
                         g["stock_kg_ha"], g["area_ha"]
                     ),
-                    "stock_kg_ha_se": stocks.safe_weighted_average(
-                        g["stock_kg_ha_se"], g["area_ha"]
+                    "stock_kg_ha_se": stocks.weighted_mean_standard_error(
+                        g["stock_kg_ha_se"],
+                        g["area_ha"],
+                        g["stock_kg_ha"],
                     ),
                     "stock_Gg": g["stock_Gg"].sum(),
                     # Propagate SE for summed stock using root-sum-of-squares
