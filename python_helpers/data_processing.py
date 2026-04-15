@@ -424,7 +424,7 @@ def prepare_european_stock_tables(
     gdf_attributed_joined: gpd.GeoDataFrame,
     pts_attributed_joined: gpd.GeoDataFrame,
     *,
-    excluded_sovereign: str = "Tunisia",
+    excluded_sovereign: str | list[str] = "Tunisia",
     equal_area_epsg: int = 3035,
 ):
     """Prepare cleaned stock-analysis GeoDataFrames for European summaries.
@@ -439,8 +439,10 @@ def prepare_european_stock_tables(
         gpd.GeoDataFrame: Filtered polygon GeoDataFrame in equal-area CRS.
         gpd.GeoDataFrame: Filtered point GeoDataFrame with join artifact columns removed.
     """
+    if isinstance(excluded_sovereign, str):
+        excluded_sovereign = [excluded_sovereign]
     gdf_filtered = gdf_attributed_joined[
-        gdf_attributed_joined["SOVEREIGN1"] != excluded_sovereign
+        ~gdf_attributed_joined["SOVEREIGN1"].isin(excluded_sovereign)
     ].copy()
     pts_filtered = pts_attributed_joined.drop(
         columns=[
