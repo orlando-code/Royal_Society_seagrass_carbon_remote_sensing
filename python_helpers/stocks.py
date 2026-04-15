@@ -15,7 +15,17 @@ def convert_carbon_density_to_carbon_stock(
 def convert_carbon_density_to_carbon_areal_stock(
     carbon_density: np.ndarray, depth: float
 ) -> np.ndarray:
-    """Convert carbon density from gC/cm3 to areal stock in kgC/ha."""
+    """Convert carbon density from gC/cm3 to areal stock in kgC/ha.
+
+    Args:
+        carbon_density (np.ndarray): Carbon density in gC/cm3.
+        depth (float): Depth in cm.
+
+    Returns:
+        np.ndarray: Areal stock in kgC/ha.
+
+    Units: g/cm3 * cm * (1e4 cm2 in 1m2) * (1e4 m2 in 1ha) * (1e-3 kg in a gram) = kg/ha
+    """
     return carbon_density * depth * 1e4 * 1e4 * 1e-3
 
 
@@ -121,7 +131,7 @@ def plot_comparison_bars(df: pd.DataFrame, dpi: int = 300):
         # Mark missing values with crosses so one-sided availability is explicit.
         missing_gomis = ~np.isfinite(gomis_vals)
         missing_study = ~np.isfinite(study_vals)
-
+        print("ASdfasd")
         ax.set_xticks(x)
         country_labels = [str(country).replace(" ", "\n") for country in countries]
         ax.set_xticklabels(country_labels, ha="center", fontsize=10, rotation=45)
@@ -132,7 +142,7 @@ def plot_comparison_bars(df: pd.DataFrame, dpi: int = 300):
         ax.yaxis.grid(True, linestyle="--", alpha=0.5, zorder=0)
         ax.set_axisbelow(True)
         ax.spines[["top", "right"]].set_visible(False)
-        ax.set_yscale("log")
+        # ax.set_yscale("log")
 
         # Place crosses just above lower log bound so they are visible.
         y_min, y_max = ax.get_ylim()
