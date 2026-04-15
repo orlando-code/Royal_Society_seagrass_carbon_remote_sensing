@@ -17,10 +17,12 @@ get_pipeline_config <- function(overrides = list()) {
     exclude_regions = c("Black Sea"),
 
     # Models / pruning defaults
-    model_list = c("GPR", "GAM", "XGB", "LR"),
+    # model_list = c("GPR", "GAM", "XGB", "LR"),
+    model_list = c("GPR", "GAM", "LR"),
     include_seagrass_species = TRUE,
     use_correlation_filter = TRUE,
-    correlation_filter_threshold = 0.8,
+    # correlation_filter_threshold = 0.8,
+    correlation_filter_threshold = 0.7,
     permutation_max_vars = 15L,
     n_permutations = 1L,
     permutation_coverage = 0.99,
@@ -42,8 +44,10 @@ get_pipeline_config <- function(overrides = list()) {
     # - tuning_seed_pool: candidate seed pool for tuning-seed subset sweep
     # - fold_seed_list: fold seeds for sensitivity checks
     seed_registry = list(
-      active_robust_fold_seed_list = c(48L, 52L, 53L, 70L, 73L),
-      paper_robust_fold_seed_list   = c(48L, 52L, 53L, 70L, 73L),
+      # active_robust_fold_seed_list = c(48L, 52L, 53L, 70L, 73L),
+      # paper_robust_fold_seed_list   = c(48L, 52L, 53L, 70L, 73L),
+      active_robust_fold_seed_list  = c(51L, 53L, 56L, 73L, 77L),
+      paper_robust_fold_seed_list   = c(51L, 53L, 56L, 73L, 77L),
       eval_fold_seed_list           = 100L:121L,
       tuning_seed_pool              = 42L:81L,
       fold_seed_list                = 42L:62L
@@ -73,15 +77,15 @@ get_pipeline_config <- function(overrides = list()) {
     multiseed_run_output_id = NULL,
     # If TRUE, robust_fold_seed_list (and eval_fold_seed_list if present) are read from
     # output/tuning_seed_sweep_runs/chosen_seeds_latest.rds
-    # after a tuning seed sweep (see tuning_seed_sweep.R).
+    # after a tuning seed sweep (see run_tuning_seed_sweep.R).
     use_robust_seeds_from_tuning_sweep = FALSE,
 
     # Tuning sweep controls
     # tuning_seed_sweep_counts = c(2L, 5L, 10L, 15L, 20L),
     tuning_seed_sweep_counts = c(1L, 3L, 5L, 10L, 15L),
     tuning_seed_sampling = "random",
-    # Subset registry (see tuning_seed_sweep.R): lowering repeats reuses existing runs; raising only tops up.
-    tuning_seed_sweep_repeats = 3L,
+    # Subset registry (see run_tuning_seed_sweep.R): lowering repeats reuses existing runs; raising only tops up.
+    tuning_seed_sweep_repeats = 5L,
     tuning_seed_sweep_random_seed = 42L,
     tuning_seed_sweep_skip_existing = TRUE,
     # If TRUE, do not trust cached eval artifacts during sweep runs; recompute
@@ -90,7 +94,7 @@ get_pipeline_config <- function(overrides = list()) {
     tuning_seed_sweep_unique_subsets = TRUE,
     tuning_seed_sweep_parallel_jobs = 12L,
     # NULL -> sweep folder name uses timestamp; set a string to name the run directory.
-    tuning_seed_sweep_run_id = NULL,
+    tuning_seed_sweep_run_id = "001",
 
     # XGB candidate budget
     xgb_max_grid_candidates = 120L,
@@ -119,9 +123,9 @@ get_pipeline_config <- function(overrides = list()) {
 
   if (is.list(cfg$seed_registry) && length(cfg$seed_registry) > 0L) {
     sr <- cfg$seed_registry
-    # Backward compatibility: allow top-level seed overrides in `overrides`,
+    # Allow top-level seed overrides in `overrides`,
     # but normalize them into `seed_registry` so there is one canonical source.
-    if (!is.null(cfg$robust_fold_seed_list)) sr$active_robust_fold_seed_list <- as.integer(cfg$robust_fold_seed_list)
+    if (!is.null(cfg$active_robust_fold_seed_list)) sr$active_robust_fold_seed_list <- as.integer(cfg$active_robust_fold_seed_list)
     if (!is.null(cfg$tuning_seed_pool)) sr$tuning_seed_pool <- as.integer(cfg$tuning_seed_pool)
     if (!is.null(cfg$eval_fold_seed_list)) sr$eval_fold_seed_list <- as.integer(cfg$eval_fold_seed_list)
     if (!is.null(cfg$fold_seed_list)) sr$fold_seed_list <- as.integer(cfg$fold_seed_list)

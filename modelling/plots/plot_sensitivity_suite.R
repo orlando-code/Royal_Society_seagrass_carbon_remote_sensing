@@ -1,31 +1,67 @@
-if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
-  init_path <- file.path("modelling", "R", "init_repo.R")
-  if (!file.exists(init_path)) {
-    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
-    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
-    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
-  }
-  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
-  sys.source(init_path, envir = .GlobalEnv)
-}
+## Standalone sensitivity plotting script.
+##
+## Sources at runtime:
+## - modelling/R/init_repo.R (bootstrap; via seagrass_init_repo)
+## - modelling/pipeline_config.R (run configuration, output directory resolution)
+## - modelling/plots/plot_config.R (plot themes, model colours, linetypes)
+##
+## Reads CSVs from:
+## - <run_output_dir>/sensitivity_suite/
+## - latest available output/tuning_seed_sweep_runs/sweep_*/sensitivity_tuning_seed_sweep_summary.csv
+
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) source("modelling/R/init_repo.R")
 project_root <- seagrass_init_repo(
-  include_helpers = FALSE,
+  packages = c("dplyr", "ggplot2", "readr", "tidyr"),
+  source_files = c("modelling/pipeline_config.R", "modelling/plots/plot_config.R"),
+  include_helpers = TRUE,
   require_core_inputs = FALSE,
   check_renv = FALSE
 )
-project_root <- getwd()
-
 library(dplyr)
 library(ggplot2)
 library(readr)
 library(tidyr)
-source(file.path(project_root, "modelling/pipeline_config.R"))
-source(file.path(project_root, "modelling/plots/plot_config.R"))
+
+plot_log_sp <- function(message_text) {
+  message(sprintf("[plot:plot_sensitivity_suite] %s", message_text))
+}
+
+rel_path_sp <- function(path) {
+  p <- normalizePath(path, winslash = "/", mustWork = FALSE)
+  root <- normalizePath(project_root, winslash = "/", mustWork = FALSE)
+  sub(paste0("^", root, "/?"), "", p)
+}
+
+filter_models_required <- function(df, model_list, df_label) {
+  if (!"model" %in% names(df)) return(df)
+  requested <- unique(as.character(model_list))
+  requested <- requested[nzchar(requested)]
+  if (length(requested) == 0L) {
+    stop("model_list from current config is empty; nothing to plot.", call. = FALSE)
+  }
+  available <- unique(as.character(df$model))
+  available <- available[nzchar(available)]
+  missing_requested <- setdiff(requested, available)
+  if (length(missing_requested) > 0L) {
+    stop(
+      "Requested model_list contains models not present in ", df_label, ".\n",
+      "Requested: ", paste(requested, collapse = ", "), "\n",
+      "Available: ", paste(available, collapse = ", "), "\n",
+      "Missing: ", paste(missing_requested, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  extra_available <- setdiff(available, requested)
+  if (length(extra_available) > 0L) {
+    plot_log_sp(paste0(df_label, " has extra models that will be excluded: ", paste(extra_available, collapse = ", ")))
+  }
+  df[df$model %in% requested, , drop = FALSE]
+}
+
 cfg <- get_pipeline_config()
 apply_pipeline_defaults(
   cfg,
-  c("cv_regime_name", "cv_type_label", "robust_fold_seed_list", "eval_fold_seed_list", "dpi", "show_titles"),
+  c("cv_regime_name", "cv_type_label", "robust_fold_seed_list", "eval_fold_seed_list", "dpi", "show_titles", "model_list", "run_output_dir"),
   envir = .GlobalEnv
 )
 
@@ -59,9 +95,21 @@ cv_regime_name <- get("cv_regime_name", envir = .GlobalEnv)
 cv_pipeline_dir <- file.path(project_root, "output", cv_regime_name, "cv_pipeline")
 
 resolve_robust_eval_dir <- function() {
+  robust_seed_str <- paste(as.integer(get("robust_fold_seed_list", envir = .GlobalEnv)), collapse = "-")
+  preferred_seed_dir <- file.path(project_root, "output", paste0(get("cv_regime_name", envir = .GlobalEnv), "_", robust_seed_str))
+  if (dir.exists(preferred_seed_dir)) {
+    return(preferred_seed_dir)
+  }
+
   run_output_dir <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
   if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir))) {
-    stop("run_output_dir must be set in .GlobalEnv for sensitivity_plots.R")
+    candidates <- Sys.glob(file.path(project_root, "output", paste0(get("cv_regime_name", envir = .GlobalEnv), "_*")))
+    candidates <- candidates[dir.exists(candidates)]
+    if (length(candidates) == 0L) {
+      stop("Could not resolve run_output_dir from current config.", call. = FALSE)
+    }
+    run_output_dir <- candidates[which.max(file.info(candidates)$mtime)]
+    plot_log_sp(paste0("run_output_dir not set; falling back to most recent candidate: ", run_output_dir))
   }
   run_output_dir <- as.character(run_output_dir)
   if (!dir.exists(run_output_dir)) {
@@ -92,6 +140,17 @@ required_inputs <- c(
   "sensitivity_fold_environment_by_fold.csv",
   "sensitivity_fold_environment_r2_effect.csv",
   "sensitivity_fold_environment_distribution.csv"
+)
+plot_log_sp("Sources: modelling/R/init_repo.R, modelling/pipeline_config.R, modelling/plots/plot_config.R")
+plot_log_sp(paste0("Input sensitivity directory: ", rel_path_sp(sens_dir)))
+plot_log_sp(paste0("Output plot directory: ", rel_path_sp(plots_dir)))
+plot_log_sp(paste0("Requested model_list: ", paste(as.character(model_list), collapse = ", ")))
+plot_log_sp(
+  paste0(
+    "Required CSVs: ",
+    paste(file.path(rel_path_sp(sens_dir), required_inputs), collapse = ", "),
+    " ; Optional sweep CSV: sensitivity_tuning_seed_sweep_summary.csv"
+  )
 )
 input_paths <- setNames(vapply(required_inputs, resolve_input_file, character(1)), required_inputs)
 path_present <- !is.na(input_paths) & nzchar(input_paths) & file.exists(input_paths)
@@ -125,10 +184,10 @@ if (!has_full_sensitivity_inputs && (is.na(tuning_seed_sweep_path) || !file.exis
   )
 }
 if (!has_full_sensitivity_inputs) {
-  message(
-    "Missing full sensitivity-suite CSVs; generating sweep plots only.\n",
-    "Missing:\n  ", paste(missing_inputs, collapse = "\n  ")
-  )
+  plot_log_sp(paste0(
+    "Missing full sensitivity-suite CSVs; generating sweep plots only.\nMissing:\n  ",
+    paste(missing_inputs, collapse = "\n  ")
+  ))
 }
 
 if (has_full_sensitivity_inputs) {
@@ -141,14 +200,23 @@ if (has_full_sensitivity_inputs) {
   env_by_fold_df <- readr::read_csv(input_paths[["sensitivity_fold_environment_by_fold.csv"]], show_col_types = FALSE)
   env_effect_df <- readr::read_csv(input_paths[["sensitivity_fold_environment_r2_effect.csv"]], show_col_types = FALSE)
   env_dist_df <- readr::read_csv(input_paths[["sensitivity_fold_environment_distribution.csv"]], show_col_types = FALSE)
+
+  summary_df <- filter_models_required(summary_df, model_list, "sensitivity_summary.csv")
+  by_fold_df <- filter_models_required(by_fold_df, model_list, "sensitivity_by_fold.csv")
+  train_effect_df <- filter_models_required(train_effect_df, model_list, "sensitivity_train_size_effect.csv")
+  ss_effect_df <- filter_models_required(ss_effect_df, model_list, "sensitivity_ss_total_r2_effect.csv")
+  seed_conv_df <- filter_models_required(seed_conv_df, model_list, "sensitivity_seed_count_convergence.csv")
+  seed_plateau_df <- filter_models_required(seed_plateau_df, model_list, "sensitivity_seed_count_plateau.csv")
+  env_by_fold_df <- filter_models_required(env_by_fold_df, model_list, "sensitivity_fold_environment_by_fold.csv")
+  env_effect_df <- filter_models_required(env_effect_df, model_list, "sensitivity_fold_environment_r2_effect.csv")
+  env_dist_df <- filter_models_required(env_dist_df, model_list, "sensitivity_fold_environment_distribution.csv")
 }
 tuning_seed_sweep_df <- if (!is.na(tuning_seed_sweep_path) && file.exists(tuning_seed_sweep_path)) {
-  readr::read_csv(tuning_seed_sweep_path, show_col_types = FALSE)
+  z <- readr::read_csv(tuning_seed_sweep_path, show_col_types = FALSE)
+  filter_models_required(z, model_list, basename(tuning_seed_sweep_path))
 } else {
   NULL
 }
-
-# Default ggplot theme: theme_paper() from modelling/plots/plot_config.R (sourced above).
 
 if (has_full_sensitivity_inputs) {
 # 1) Fold-count sensitivity: pooled vs mean-fold R2 by k
@@ -511,9 +579,15 @@ if (!is.null(tuning_seed_sweep_df) && nrow(tuning_seed_sweep_df) > 0L &&
   source(file.path(project_root, "modelling/plots/plot_tuning_seed_sweep.R"))
   sweep_plot_dir <- dirname(tuning_seed_sweep_path)
   dir.create(sweep_plot_dir, recursive = TRUE, showWarnings = FALSE)
-  plot_tuning_seed_sweep_summary(tuning_seed_sweep_df, sweep_plot_dir)
+  plot_tuning_seed_sweep_summary(
+    sweep_df = tuning_seed_sweep_df,
+    out_dir = sweep_plot_dir,
+    project_root = project_root,
+    dpi = dpi,
+    model_list = model_list
+  )
 } else {
-  message("No tuning seed sweep summary found; skipping sweep R2/RMSE plots.")
+  plot_log_sp("No tuning seed sweep summary found; skipping sweep R2/RMSE plots.")
 }
 
-cat("Wrote sensitivity plots to:\n", plots_dir, "\n", sep = "")
+plot_log_sp(paste0("Wrote sensitivity plots to: ", rel_path_sp(plots_dir)))

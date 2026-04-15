@@ -202,7 +202,6 @@ load_fixed_model_setup <- function(project_root, run_output_dir, cv_regime_name,
     robust_config_dir = robust_tuning_dir,
     prefer_robust = TRUE,
     include_baseline = TRUE,
-    include_legacy = TRUE,
     include_only_with_config = TRUE
   )
   hyperparams_by_model <- hp_bundle$hyperparams_by_model

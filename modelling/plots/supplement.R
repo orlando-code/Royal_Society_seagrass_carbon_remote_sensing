@@ -45,7 +45,6 @@ apply_pipeline_defaults(
 if (!"dplyr" %in% loadedNamespaces()) suppressPackageStartupMessages(library(dplyr))
 if (exists("dpi", envir = .GlobalEnv)) dpi <- get("dpi", envir = .GlobalEnv) else dpi <- 150
 
-# Output directory (theme: theme_paper() from modelling/plots/plot_config.R, sourced above)
 OUT_DIR <- "output/supplement"
 dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
 
@@ -309,14 +308,31 @@ cat("\n==============================\n")
 robust_fold_seed_list <- get("robust_fold_seed_list", envir = .GlobalEnv)
 cv_regime_name_supp <- get("cv_regime_name", envir = .GlobalEnv)
 seeds_str_supp <- paste(robust_fold_seed_list, collapse = "-")
-robust_pruned_path <- file.path(
-  "output", cv_regime_name_supp, "covariate_selection", "robust_pixel_grouped",
-  paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_str_supp, ".csv")
+run_output_dir_supp <- as.character(get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_))
+seed_run_dir_supp <- file.path("output", paste0(cv_regime_name_supp, "_", seeds_str_supp))
+
+# Prefer run-scoped robust SHAP vars, then seed-derived run folder.
+robust_pruned_candidates <- c(
+  if (!is.na(run_output_dir_supp) && nzchar(run_output_dir_supp))
+    file.path(run_output_dir_supp, "covariate_selection", "robust_pixel_grouped",
+              paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_str_supp, ".csv")) else character(0),
+  file.path(seed_run_dir_supp, "covariate_selection", "robust_pixel_grouped",
+            paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_str_supp, ".csv")),
+  file.path("output", cv_regime_name_supp, "covariate_selection", "robust_pixel_grouped",
+            paste0("pruned_model_variables_shap_robust_pixel_grouped_seeds_", seeds_str_supp, ".csv")),
+  file.path("output", cv_regime_name_supp, "covariate_selection", "pruned_model_variables_shap.csv")
 )
-# Fall back to non-robust SHAP vars if robust file doesn't exist
-if (!file.exists(robust_pruned_path)) {
-  robust_pruned_path <- file.path("output", cv_regime_name_supp, "covariate_selection", "pruned_model_variables_shap.csv")
+robust_pruned_candidates <- unique(robust_pruned_candidates[nzchar(robust_pruned_candidates)])
+robust_pruned_hits <- robust_pruned_candidates[file.exists(robust_pruned_candidates)]
+if (length(robust_pruned_hits) == 0L) {
+  stop(
+    "Could not find SHAP-pruned variable file for supplement plotting.\n",
+    "Searched:\n  ", paste(robust_pruned_candidates, collapse = "\n  "),
+    call. = FALSE
+  )
 }
+robust_pruned_path <- robust_pruned_hits[[1L]]
+cat("Using pruned variable file:\n  ", robust_pruned_path, "\n", sep = "")
 model_list <- get("model_list", envir = .GlobalEnv)
 ess_similarity_percentile <- as.numeric(get0("ess_similarity_percentile", envir = .GlobalEnv, ifnotfound = 0.10))
 ess_similarity_percentile <- max(0, min(1, ess_similarity_percentile))

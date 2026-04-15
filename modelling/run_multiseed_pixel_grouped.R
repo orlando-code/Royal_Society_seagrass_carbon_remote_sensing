@@ -25,22 +25,16 @@
 # Usage: setwd(project_root); source("<robust pipeline driver>")
 #        Or: Rscript <robust pipeline driver>
 # =============================================================================
-if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
-  init_path <- file.path("modelling", "R", "init_repo.R")
-  if (!file.exists(init_path)) {
-    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/run_multiseed_pixel_grouped.R", call. = FALSE)
-    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
-    init_path <- normalizePath(file.path(dirname(script_path), "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
-  }
-  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
-  sys.source(init_path, envir = .GlobalEnv)
-}
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) source("modelling/R/init_repo.R")
 project_root <- seagrass_init_repo(
-  packages = c("here", "dplyr", "readr"),
-  source_files = c("modelling/pipeline_config.R"),
+  packages = c("here", "dplyr", "readr", "ggplot2", "iml", "sf"),
+  source_files = c(
+    "modelling/R/assign_region_from_latlon.R",
+    "modelling/pipeline_config.R",
+    "modelling/plots/plot_config.R"
+  ),
   include_helpers = TRUE,
-  require_core_inputs = FALSE,
+  require_core_inputs = TRUE,
   check_renv = TRUE
 )
 set.seed(42)
@@ -130,6 +124,7 @@ run_output_dir <- file.path("output", paste0("pixel_grouped_", seed_subset))
 # configs, baseline covariate dirs, etc.) must resolve under this run folder,
 # not the generic cfg$cv_output_dir (output/pixel_grouped).
 cv_output_dir <- run_output_dir
+
 # assign run_output_dir to global so all subsequent files can find it
 assign("run_output_dir", run_output_dir, envir = .GlobalEnv)
 
@@ -244,7 +239,7 @@ if (!dir.exists("data/covariate_rasters")) {
   stop("Required input directory missing: data/covariate_rasters")
 }
 if (!file.exists("data/all_extracted_new.rds")) {
-  source("modelling/pipeline/build_all_extracted_new.R")
+  source("modelling/R/build_all_extracted_new.R")
 } else {
   cat("  Using existing data/all_extracted_new.rds\n")
 }
@@ -276,7 +271,7 @@ cat("\n")
 cat("\t\tStep 2: Robust SHAP covariate pruning\n")
 source("modelling/multiseed/robust_shap_covariate_pruning.R")
 cat("\t\tStep 2b: Robust SHAP importance plots (mean +/- SD)\n")
-source("modelling/plots/robust_shap_importance_plots.R")
+source("modelling/plots/plot_robust_shap_importance.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
@@ -315,7 +310,7 @@ cat("\n")
 if (isTRUE(do_sensitivity)) {
   cat("\t\tStep 5: R2 sensitivity analysis\n")
   source("modelling/analysis/sensitivity_suite.R")
-  source("modelling/plots/sensitivity_plots.R")
+  source("modelling/plots/plot_sensitivity_suite.R")
   cat("\n")
 } else {
   cat("\t\tStep 5: Skipping R2 sensitivity analysis (do_sensitivity=FALSE)\n\n")
@@ -340,7 +335,7 @@ if (isTRUE(do_diagnostics)) {
 # -----------------------------------------------------------------------------
 cat("\t\tStep 7: Fit and save final models (robust configs/vars)\n")
 assign("use_robust_final_configs", TRUE, envir = .GlobalEnv)
-source("modelling/pipeline/fit_final_models.R")
+source("modelling/R/fit_final_models.R")
 cat("\n")
 # -----------------------------------------------------------------------------
 # Step 8: Directly compare model outputs with baselines
@@ -354,14 +349,14 @@ cat("\n")
 # Step 9: Create model prediction maps
 # -----------------------------------------------------------------------------
 cat("\t\tStep 9: Create spatial prediction maps\n")
-source("modelling/plots/spatial_prediction_maps.R")
+source("modelling/plots/plot_spatial_prediction_maps.R")
 cat("\n")
 
 # -----------------------------------------------------------------------------
 # Step 10: Partial dependence plots
 # -----------------------------------------------------------------------------
 cat("\t\tStep 10: Partial dependence plots (from final models)\n")
-source("modelling/plots/partial_dependence_all_models.R")
+source("modelling/plots/plot_partial_dependence.R")
 cat("\n")
 
 

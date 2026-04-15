@@ -399,7 +399,7 @@ write_prediction_grid_netcdf <- function(grid_df, prediction_slices, out_path, m
   ncdf4::ncatt_put(nc, 0, "Conventions", "CF-1.8")
   ncdf4::ncatt_put(nc, 0, "prediction_species_count", n_species)
   ncdf4::ncatt_put(nc, 0, "prediction_species_values", paste(species_vals, collapse = "|"))
-  ncdf4::ncatt_put(nc, 0, "history", paste(format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ"), "created by spatial_prediction_maps.R"))
+  ncdf4::ncatt_put(nc, 0, "history", paste(format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ"), "created by plot_spatial_prediction_maps.R"))
   ncdf4::ncatt_put(nc, 0, "geospatial_lon_min", min(lon_vals))
   ncdf4::ncatt_put(nc, 0, "geospatial_lon_max", max(lon_vals))
   ncdf4::ncatt_put(nc, 0, "geospatial_lat_min", min(lat_vals))

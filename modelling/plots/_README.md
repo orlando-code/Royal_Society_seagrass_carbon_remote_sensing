@@ -4,7 +4,7 @@ Figure-generation scripts called from `modelling/run_multiseed_pixel_grouped.R` 
 
 ---
 
-## partial_dependence_all_models.R
+## plot_partial_dependence.R
 
 **Called when:** Step 10 from `modelling/run_multiseed_pixel_grouped.R`.
 
@@ -12,7 +12,7 @@ Builds **iml::Predictor** wrappers for each final model (from `**output/<cv_regi
 
 ---
 
-## spatial_prediction_maps.R
+## plot_spatial_prediction_maps.R
 
 **Called when:** Step 9 from `modelling/run_multiseed_pixel_grouped.R`.
 
@@ -28,7 +28,7 @@ Produces all supplement figures: region outlines (MEOW-based), target histograms
 
 ---
 
-## robust_shap_importance_plots.R
+## plot_robust_shap_importance.R
 
 **Called when:** Step 2b from `modelling/run_multiseed_pixel_grouped.R` (immediately after robust SHAP pruning).
 
@@ -36,7 +36,7 @@ Builds robust SHAP importance plots (mean and variability across robust seeds/fo
 
 ---
 
-## sensitivity_plots.R
+## plot_sensitivity_suite.R
 
 **Called when:** Step 5 from `modelling/run_multiseed_pixel_grouped.R` (immediately after `modelling/analysis/sensitivity_suite.R` when `do_sensitivity` is true), or when summarising existing sensitivity inputs.
 
@@ -46,6 +46,6 @@ Reads sensitivity outputs under the run / regime output tree and may source **`p
 
 ## plot_tuning_seed_sweep.R
 
-**Called when:** `modelling/analysis/tuning_seed_sweep.R` (end of sweep) and optionally from **`sensitivity_plots.R`**.
+**Called when:** `modelling/analysis/run_tuning_seed_sweep.R` (end of sweep) and optionally from **`plot_sensitivity_suite.R`**.
 
 Defines **`plot_tuning_seed_sweep_summary()`**; writes RMSE/R² figures next to the sweep summary CSV (typically under **`output/tuning_seed_sweep_runs/sweep_<run_id>/`**).

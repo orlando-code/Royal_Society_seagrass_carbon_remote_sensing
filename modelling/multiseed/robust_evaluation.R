@@ -11,29 +11,18 @@
 ## Then evaluates across `eval_fold_seed_list` by re-instantiating the
 ## pixel-grouped fold assignments with different seeds.
 ##
-if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
-  init_path <- file.path("modelling", "R", "init_repo.R")
-  if (!file.exists(init_path)) {
-    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
-    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
-    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
-  }
-  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
-  sys.source(init_path, envir = .GlobalEnv)
-}
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) source("modelling/R/init_repo.R")
 project_root <- seagrass_init_repo(
-  include_helpers = FALSE,
-  require_core_inputs = FALSE,
-  check_renv = FALSE
+  packages = c("here", "dplyr", "readr", "patchwork", "mgcv", "GauPro", "xgboost", "sf", "randomForest"),
+  source_files = c(
+    "modelling/R/extract_covariates_from_rasters.R",
+    "modelling/R/assign_region_from_latlon.R",
+    "modelling/pipeline_config.R"
+  ),
+  include_helpers = TRUE,
+  require_core_inputs = TRUE,
+  check_renv = TRUE
 )
-project_root <- getwd()
-
-source(file.path(project_root, "modelling/R/helpers.R"))
-source(file.path(project_root, "modelling/R/assign_region_from_latlon.R"))
-source(file.path(project_root, "modelling/pipeline_config.R"))
-load_packages(c("here", "dplyr", "readr", "patchwork", "mgcv", "GauPro", "xgboost", "sf", "randomForest"))
-
 cfg <- get_pipeline_config()
 apply_pipeline_defaults(
   cfg,
@@ -177,7 +166,6 @@ hp_bundle <- build_hyperparams_by_model(
   robust_config_dir = robust_tuning_dir,
   prefer_robust = TRUE,
   include_baseline = FALSE,
-  include_legacy = FALSE,
   include_case_variant_robust = TRUE,
   include_only_with_config = FALSE
 )

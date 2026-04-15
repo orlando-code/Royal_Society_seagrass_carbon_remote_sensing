@@ -1,6 +1,5 @@
 ## Robust SHAP-based covariate selection for seed-resampled `pixel_grouped`.
 ##
-## This replaces permutation-based importance with SHAP (iml::Shapley).
 ## To make it robust to seeded `pixel_grouped` split instantiations,
 ## we compute SHAP on fold-specific training sets for multiple `fold_seed`s
 ## and average the absolute SHAP values across folds and seeds.
@@ -11,30 +10,19 @@
 ##     shap_importance_by_seed_fold_robust_pixel_grouped_seeds_<...>.csv
 ##     shap_importance_by_seed_robust_pixel_grouped_seeds_<...>.csv
 ##
-if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
-  init_path <- file.path("modelling", "R", "init_repo.R")
-  if (!file.exists(init_path)) {
-    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
-    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
-    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
-  }
-  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
-  sys.source(init_path, envir = .GlobalEnv)
-}
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) source("modelling/R/init_repo.R")
 project_root <- seagrass_init_repo(
-  include_helpers = FALSE,
-  require_core_inputs = FALSE,
-  check_renv = FALSE
+  packages = c("here", "dplyr", "readr", "ggplot2", "iml", "sf"),
+  source_files = c(
+    "modelling/R/assign_region_from_latlon.R",
+    "modelling/pipeline_config.R"
+  ),
+  include_helpers = TRUE,
+  require_core_inputs = TRUE,
+  check_renv = TRUE
 )
-project_root <- getwd()
-
-source(file.path(project_root, "modelling/R/helpers.R"))
-source(file.path(project_root, "modelling/R/assign_region_from_latlon.R"))
-source(file.path(project_root, "modelling/pipeline_config.R"))
-load_packages(c("dplyr", "readr", "ggplot2", "iml", "sf", "here"))
-
 cfg <- get_pipeline_config()
+# Assign any absent global variables if they don't already exist in .GlobalEnv
 apply_pipeline_defaults(
   cfg,
   c(
@@ -49,46 +37,46 @@ apply_pipeline_defaults(
   envir = .GlobalEnv
 )
 
-cv_regime_name <- get("cv_regime_name", envir = .GlobalEnv)
 cv_type_hash <- "pixel_grouped"
-cv_type_label <- get("cv_type_label", envir = .GlobalEnv)
+# cv_regime_name <- get("cv_regime_name", envir = .GlobalEnv)
+# cv_type_label <- get("cv_type_label", envir = .GlobalEnv)
 
-target_var <- get("target_var", envir = .GlobalEnv)
-log_transform_target <- isTRUE(get("log_transform_target", envir = .GlobalEnv))
+# target_var <- get("target_var", envir = .GlobalEnv)
+# log_transform_target <- isTRUE(get("log_transform_target", envir = .GlobalEnv))
 
-exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
+# exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
 
-n_folds <- as.integer(get("n_folds", envir = .GlobalEnv))
-cv_blocksize <- get("cv_blocksize", envir = .GlobalEnv)
+# n_folds <- as.integer(get("n_folds", envir = .GlobalEnv))
+# cv_blocksize <- get("cv_blocksize", envir = .GlobalEnv)
 
-robust_fold_seed_list <- get("robust_fold_seed_list", envir = .GlobalEnv)
-robust_fold_seed_list <- as.integer(robust_fold_seed_list)
-include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
+# robust_fold_seed_list <- get("robust_fold_seed_list", envir = .GlobalEnv)
+# robust_fold_seed_list <- as.integer(robust_fold_seed_list)
+# include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
 
-use_correlation_filter <- isTRUE(get("use_correlation_filter", envir = .GlobalEnv))
-correlation_filter_threshold <- get("correlation_filter_threshold", envir = .GlobalEnv)
+# use_correlation_filter <- isTRUE(get("use_correlation_filter", envir = .GlobalEnv))
+# correlation_filter_threshold <- get("correlation_filter_threshold", envir = .GlobalEnv)
 
-# SHAP controls: defaults tuned to reduce runtime.
-shap_n_points <- as.integer(get("shap_n_points", envir = .GlobalEnv))
-shap_folds_per_seed <- as.integer(get("shap_folds_per_seed", envir = .GlobalEnv))
-shap_max_gpr_train <- as.integer(get("shap_max_gpr_train", envir = .GlobalEnv))
+# # SHAP controls: defaults selected to reduce runtime.
+# shap_n_points <- as.integer(get("shap_n_points", envir = .GlobalEnv))
+# shap_folds_per_seed <- as.integer(get("shap_folds_per_seed", envir = .GlobalEnv))
+# shap_max_gpr_train <- as.integer(get("shap_max_gpr_train", envir = .GlobalEnv))
 
-# Selection controls: reuse the existing tuning/pruning defaults
-permutation_coverage <- get("permutation_coverage", envir = .GlobalEnv)
-permutation_max_vars <- as.integer(get("permutation_max_vars", envir = .GlobalEnv))
-shap_selection_policy <- get("shap_selection_policy", envir = .GlobalEnv)
-shap_selection_policy <- match.arg(
-  shap_selection_policy,
-  choices = c("coverage_capped", "coverage_or_floor")
-)
-shap_selection_coverage_grid <- as.numeric(get("shap_selection_coverage_grid", envir = .GlobalEnv))
-shap_selection_max_vars_grid <- as.integer(get("shap_selection_max_vars_grid", envir = .GlobalEnv))
+# # Selection controls: reuse the existing tuning/pruning defaults
+# permutation_coverage <- get("permutation_coverage", envir = .GlobalEnv)
+# permutation_max_vars <- as.integer(get("permutation_max_vars", envir = .GlobalEnv))
+# shap_selection_policy <- get("shap_selection_policy", envir = .GlobalEnv)
+# shap_selection_policy <- match.arg(
+#   shap_selection_policy,
+#   choices = c("coverage_capped", "coverage_or_floor")
+# )
+# shap_selection_coverage_grid <- as.numeric(get("shap_selection_coverage_grid", envir = .GlobalEnv))
+# shap_selection_max_vars_grid <- as.integer(get("shap_selection_max_vars_grid", envir = .GlobalEnv))
 
-model_list <- get("model_list", envir = .GlobalEnv)
+# model_list <- get("model_list", envir = .GlobalEnv)
 model_list <- intersect(model_list, c("GPR", "GAM", "XGB", "LR"))
 if (length(model_list) == 0L) stop("No supported models for SHAP pruning.")
 
-cat("Robust SHAP covariate pruning\n")
+cat("Robust SHAP covariate pruning set-up:\n")
 cat("  cv_regime_name:", cv_regime_name, "\n")
 cat("  cv_type label:", cv_type_label, "\n")
 cat("  cv_type hash:", cv_type_hash, "\n")
@@ -110,29 +98,15 @@ if (length(exclude_regions) > 0L) {
   dat <- dat[is.na(dat$region) | !dat$region %in% exclude_regions, ]
 }
 
-# Candidate predictors (environmental).
-predictor_vars_full <- setdiff(
-  colnames(dat),
-  c(
-    "latitude", "longitude", "number_id_final_version",
-    "seagrass_species",
-    "region", target_var
-  )
+candidate_sets <- build_robust_candidate_predictor_sets(  # check this
+  dat = dat,
+  target_var = target_var,
+  use_correlation_filter = use_correlation_filter,
+  correlation_filter_threshold = correlation_filter_threshold,
+  verbose = TRUE
 )
-predictor_vars_full <- predictor_vars_full[predictor_vars_full %in% colnames(dat)]
-
-cor_predictor_vars <- predictor_vars_full
-if (isTRUE(use_correlation_filter)) {
-  cat("\nPruning predictors by correlation (threshold:", correlation_filter_threshold, ") ...\n")
-  cor_predictor_vars <- prune_by_correlation(
-    data = dat,
-    predictor_vars = cor_predictor_vars,
-    target_var = target_var,
-    cor_threshold = correlation_filter_threshold
-  )
-  cor_predictor_vars <- cor_predictor_vars[cor_predictor_vars %in% colnames(dat)]
-  cat("  After correlation filter:", length(cor_predictor_vars), "predictors.\n")
-}
+predictor_vars_full <- candidate_sets$predictor_vars_full
+cor_predictor_vars <- candidate_sets$candidate_predictor_vars
 
 importance_predictor_vars <- cor_predictor_vars
 if (isTRUE(include_seagrass_species) && "seagrass_species" %in% names(dat)) {
@@ -159,6 +133,7 @@ complete_dat <- dat %>%
 if (nrow(complete_dat) < 20L) stop("Too few complete cases for SHAP pruning.")
 complete_dat$median_carbon_density <- complete_dat[[target_var]]
 
+# Intersect between all predictor vars and the complete data frame
 predictor_vars_full <- predictor_vars_full[predictor_vars_full %in% names(complete_dat)]
 cor_predictor_vars <- cor_predictor_vars[cor_predictor_vars %in% names(complete_dat)]
 importance_predictor_vars <- importance_predictor_vars[importance_predictor_vars %in% names(complete_dat)]
@@ -167,14 +142,12 @@ cat("\n  Complete-case rows:", nrow(complete_dat), "\n")
 cat("  SHAP predictor vars:", length(importance_predictor_vars), "\n")
 
 # ---------------------------------------------------------------------------
-# Load robust hyperparameters (so SHAP uses the same tuned settings)
+# Load robust hyperparameters (so that SHAP uses the same tuned settings)
 # ---------------------------------------------------------------------------
-run_output_dir <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
-if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir))) {
+if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir)) || is.null(run_output_dir)) {
   stop("run_output_dir must be set in .GlobalEnv for robust SHAP pruning.")
 }
-run_output_dir <- as.character(run_output_dir)
-subset_work_root <- if (basename(run_output_dir) == "evaluation") dirname(run_output_dir) else run_output_dir
+subset_work_root <- if (basename(run_output_dir) == "evaluation") dirname(run_output_dir) else run_output_dir  # for run_tuning_seed_sweep.R
 robust_tuning_dir <- if (basename(run_output_dir) == "evaluation") {
   file.path(subset_work_root, "tuning")
 } else {
@@ -189,8 +162,7 @@ hp_bundle <- build_hyperparams_by_model(
   robust_config_dir = robust_tuning_dir,
   prefer_robust = TRUE,
   include_baseline = TRUE,
-  include_legacy = FALSE,
-  defaults_by_model = list(GPR = list(nug.max = 50)),
+  defaults_by_model = NULL,
   include_only_with_config = FALSE
 )
 hyperparams_by_model <- hp_bundle$hyperparams_by_model
@@ -205,6 +177,7 @@ robust_cov_dir <- if (basename(run_output_dir) == "evaluation") {
 }
 dir.create(robust_cov_dir, recursive = TRUE, showWarnings = FALSE)
 
+# Create output files signed by seed list
 seeds_str <- paste(robust_fold_seed_list, collapse = "-")
 out_csv <- file.path(
   robust_cov_dir,
@@ -260,7 +233,7 @@ for (seed in robust_fold_seed_list) {
     for (fold_k in folds_to_use) {
       train_df <- complete_dat[fold_indices != fold_k, , drop = FALSE]
       if (nrow(train_df) < 30L) next
-      # Make SHAP's internal sampling deterministic per seed/fold/model
+      # Make SHAP's internal sampling deterministic per seed/fold/model for reproducibility
       set.seed(as.integer(seed + fold_k))
 
       imp <- tryCatch(
@@ -292,8 +265,7 @@ if (length(per_seed_model_fold_imp) == 0L) stop("No SHAP importances computed; c
 
 imp_all <- dplyr::bind_rows(per_seed_model_fold_imp)
 
-write.csv(imp_all, out_seed_fold_csv, row.names = FALSE)
-
+# Compute per-seed mean and SD of SHAP importance for each model
 imp_by_seed <- imp_all %>%
   group_by(model, variable, fold_seed) %>%
   summarise(
@@ -302,8 +274,8 @@ imp_by_seed <- imp_all %>%
     n_folds_used = dplyr::n(),
     .groups = "drop"
   )
-write.csv(imp_by_seed, out_seed_csv, row.names = FALSE)
 
+# Compute per-model mean and SD of SHAP importance
 imp_avg <- imp_all %>%
   group_by(model, variable) %>%
   summarise(
@@ -313,8 +285,8 @@ imp_avg <- imp_all %>%
     n_seed_fold = dplyr::n(),
     .groups = "drop"
   )
-write.csv(imp_avg, out_summary_csv, row.names = FALSE)
 
+# Compute selection sensitivity grid (variables selected by 'coverage' and 'max_vars' policies)
 selection_sensitivity_rows <- list()
 for (model_name in model_list) {
   dfm <- imp_avg %>% filter(model == model_name) %>% select(variable, shap_importance_mean)
@@ -340,9 +312,8 @@ for (model_name in model_list) {
   }
 }
 selection_sensitivity_df <- dplyr::bind_rows(selection_sensitivity_rows)
-write.csv(selection_sensitivity_df, out_selection_sensitivity_csv, row.names = FALSE)
 
-# Select top env vars per model, preserving the species factor (not pruned).
+# Select top environmental variables per model, preserving the species factor (which is not pruned)
 select_vars_policy <- function(dfm, coverage, max_vars, policy) {
   if (nrow(dfm) == 0L) return(character(0))
   if (!identical(policy, "coverage_or_floor")) {
@@ -385,6 +356,11 @@ for (model_name in model_list) {
 pruned_df <- dplyr::bind_rows(pruned_rows)
 if (nrow(pruned_df) == 0L) stop("SHAP-based pruned set came out empty.")
 
+# Write all the outputs
+write.csv(imp_all, out_seed_fold_csv, row.names = FALSE)
+write.csv(imp_by_seed, out_seed_csv, row.names = FALSE)
+write.csv(imp_avg, out_summary_csv, row.names = FALSE)
+write.csv(selection_sensitivity_df, out_selection_sensitivity_csv, row.names = FALSE)
 write.csv(pruned_df, out_csv, row.names = FALSE)
 cat("\nWrote SHAP robust pruned variables to:\n", out_csv, "\n", sep = "")
 cat("Wrote SHAP seed/fold importances to:\n", out_seed_fold_csv, "\n", sep = "")

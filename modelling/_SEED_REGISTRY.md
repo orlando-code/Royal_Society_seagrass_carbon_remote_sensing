@@ -22,7 +22,7 @@ These are computed by `get_pipeline_config()` from `seed_registry` so downstream
 
 Optional sweep -> robust run flow:
 
-1. `Rscript modelling/analysis/tuning_seed_sweep.R`
+1. `Rscript modelling/analysis/run_tuning_seed_sweep.R`
 2. `Rscript modelling/run_multiseed_pixel_grouped.R`
 
 The sweep writes:

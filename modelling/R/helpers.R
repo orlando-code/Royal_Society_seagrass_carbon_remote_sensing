@@ -848,14 +848,62 @@ load_run_scoped_robust_predictor_vars <- function(run_output_dir,
   )
 }
 
-#' Load best config object for one model from robust/baseline/legacy paths.
+#' Build robust candidate predictor sets (full and correlation-filtered).
+#'
+#' @param dat Input data.frame after region filtering.
+#' @param target_var Response variable column name.
+#' @param use_correlation_filter Logical; whether to apply correlation pruning.
+#' @param correlation_filter_threshold Numeric correlation threshold.
+#' @param verbose Logical; print filter diagnostics.
+#' @return List with \code{predictor_vars_full} and \code{candidate_predictor_vars}.
+build_robust_candidate_predictor_sets <- function(dat,
+                                                  target_var,
+                                                  use_correlation_filter = TRUE,
+                                                  correlation_filter_threshold = 0.8,
+                                                  verbose = TRUE) {
+  predictor_vars_full <- setdiff(
+    colnames(dat),
+    c(
+      "latitude", "longitude", "number_id_final_version",
+      "seagrass_species",
+      "region", target_var
+    )
+  )
+  predictor_vars_full <- predictor_vars_full[predictor_vars_full %in% colnames(dat)]
+
+  candidate_predictor_vars <- predictor_vars_full
+  if (isTRUE(use_correlation_filter)) {
+    if (isTRUE(verbose)) {
+      cat(
+        "\nPruning predictors by correlation (threshold:",
+        correlation_filter_threshold, ") ...\n"
+      )
+    }
+    candidate_predictor_vars <- prune_by_correlation(
+      data = dat,
+      predictor_vars = candidate_predictor_vars,
+      target_var = target_var,
+      cor_threshold = correlation_filter_threshold
+    )
+    candidate_predictor_vars <- candidate_predictor_vars[candidate_predictor_vars %in% colnames(dat)]
+    if (isTRUE(verbose)) {
+      cat("  After correlation filter:", length(candidate_predictor_vars), "predictors.\n")
+    }
+  }
+
+  list(
+    predictor_vars_full = predictor_vars_full,
+    candidate_predictor_vars = candidate_predictor_vars
+  )
+}
+
+#' Load best config object for one model from robust or baseline paths.
 #'
 #' @param model_name Model name, e.g. "GAM", "xgb".
 #' @param config_dir Baseline config directory.
 #' @param robust_config_dir Optional robust config directory.
 #' @param prefer_robust If TRUE, robust file is checked before baseline.
 #' @param include_baseline If TRUE, check best_config_<model>.rds in config_dir.
-#' @param include_legacy If TRUE, check <model>_best_config.rds in config_dir.
 #' @param include_case_variant_robust If TRUE, also check best_config_<MODEL>_robust.rds.
 #' @return Config list, or NULL if no file found/readable.
 load_best_model_config <- function(model_name,
@@ -863,19 +911,17 @@ load_best_model_config <- function(model_name,
                                    robust_config_dir = NULL,
                                    prefer_robust = TRUE,
                                    include_baseline = TRUE,
-                                   include_legacy = TRUE,
                                    include_case_variant_robust = FALSE) {
-  model_lower <- tolower(model_name)
+  model_name_lower <- tolower(model_name)
   robust_paths <- character(0)
   if (!is.null(robust_config_dir) && nzchar(robust_config_dir)) {
-    robust_paths <- c(robust_paths, file.path(robust_config_dir, paste0("best_config_", model_lower, "_robust.rds")))
+    robust_paths <- c(robust_paths, file.path(robust_config_dir, paste0("best_config_", model_name_lower, "_robust.rds")))
     if (isTRUE(include_case_variant_robust)) {
       robust_paths <- c(robust_paths, file.path(robust_config_dir, paste0("best_config_", model_name, "_robust.rds")))
     }
   }
   baseline_paths <- character(0)
-  if (isTRUE(include_baseline)) baseline_paths <- c(baseline_paths, file.path(config_dir, paste0("best_config_", model_lower, ".rds")))
-  if (isTRUE(include_legacy)) baseline_paths <- c(baseline_paths, file.path(config_dir, paste0(model_lower, "_best_config.rds")))
+  if (isTRUE(include_baseline)) baseline_paths <- c(baseline_paths, file.path(config_dir, paste0("best_config_", model_name_lower, ".rds")))
   candidates <- if (isTRUE(prefer_robust)) c(robust_paths, baseline_paths) else c(baseline_paths, robust_paths)
   for (p in unique(candidates)) {
     if (file.exists(p)) {
@@ -946,7 +992,6 @@ model_hyperparams_from_config <- function(model_name, cfg = NULL, defaults_by_mo
 #' @param robust_config_dir Optional robust config directory.
 #' @param prefer_robust If TRUE, robust file is preferred.
 #' @param include_baseline If TRUE, allow baseline best_config files.
-#' @param include_legacy If TRUE, allow legacy *_best_config files.
 #' @param include_case_variant_robust If TRUE, include case-variant robust path.
 #' @param defaults_by_model Optional defaults overrides passed to model_hyperparams_from_config.
 #' @param include_only_with_config If TRUE, include model only when a config file was found.
@@ -956,7 +1001,6 @@ build_hyperparams_by_model <- function(models,
                                        robust_config_dir = NULL,
                                        prefer_robust = TRUE,
                                        include_baseline = TRUE,
-                                       include_legacy = TRUE,
                                        include_case_variant_robust = FALSE,
                                        defaults_by_model = NULL,
                                        include_only_with_config = FALSE) {
@@ -969,7 +1013,6 @@ build_hyperparams_by_model <- function(models,
       robust_config_dir = robust_config_dir,
       prefer_robust = prefer_robust,
       include_baseline = include_baseline,
-      include_legacy = include_legacy,
       include_case_variant_robust = include_case_variant_robust
     )
     if (isTRUE(include_only_with_config) && is.null(cfg)) next
@@ -1109,7 +1152,7 @@ tune_gam_cv <- function(core_data, predictor_vars, fold_indices,
   }
   folds <- as.integer(fold_indices)
   n_folds <- max(folds, na.rm = TRUE)
-  gam_k_grid <- c(2L, 4L, 6L, 8L, 10L, 12L, 15L, 20L)
+  gam_k_grid <- c(2L, 3L, 4L, 5L, 6L, 8L, 10L, 15L, 20L)
 
   gam_results <- vector("list", length(gam_k_grid))
   for (i in seq_along(gam_k_grid)) {

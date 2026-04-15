@@ -28,6 +28,11 @@ project_root <- seagrass_init_repo(
   packages = c("here", "dplyr", "readr", "tidyr", "ggplot2", "patchwork"),
   source_files = c("modelling/pipeline_config.R", "modelling/plots/plot_config.R")
 )
+assign("plot_model_comparison_disable_autorun_on_source", TRUE, envir = .GlobalEnv)
+source(file.path(project_root, "modelling/plots/plot_model_comparison.R"))
+if (exists("plot_model_comparison_disable_autorun_on_source", envir = .GlobalEnv, inherits = FALSE)) {
+  rm("plot_model_comparison_disable_autorun_on_source", envir = .GlobalEnv)
+}
 
 if (getRversion() >= "2.15.1") {
   utils::globalVariables(c("fit_gpr", "fit_rf", "fit_xgboost", "fit_gam"))
@@ -170,7 +175,6 @@ for (m in model_list) {
     robust_config_dir = robust_tuning_dir,
     prefer_robust = TRUE,
     include_baseline = FALSE,
-    include_legacy = FALSE
   )
   hyperparams_by_model[[m]] <- model_hyperparams_from_config(m, cfg_model)
 }
@@ -413,203 +417,14 @@ paired_pooled_delta_summary <- paired_pooled_delta %>%
     .groups = "drop"
   )
 
-model_plot <- by_fold %>%
-  dplyr::filter(approach != "species_mean_baseline") %>%
-  dplyr::mutate(approach_plot = model)
-
-baseline_plot <- by_fold %>%
-  dplyr::filter(approach == "species_mean_baseline") %>%
-  dplyr::group_by(seed, fold) %>%
-  dplyr::summarise(
-    rmse = mean(rmse, na.rm = TRUE),
-    r2 = mean(r2, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  dplyr::mutate(approach_plot = "Species\nMean Baseline")
-
-by_fold_plot <- dplyr::bind_rows(
-  model_plot %>% dplyr::select(approach_plot, rmse, r2),
-  baseline_plot %>% dplyr::select(approach_plot, rmse, r2)
-) %>%
-  dplyr::mutate(
-    approach_plot = factor(approach_plot, levels = c("Species\nMean Baseline", model_list))
-  )
-
-
-# plot the results: side by side boxplots of rmse and r2
-
-# Prepare data for landscape (long format)
-by_fold_plot_long <- by_fold_plot %>%
-  tidyr::pivot_longer(
-    cols = c(rmse, r2),
-    names_to = "metric",
-    values_to = "value"
-  )
-
-# Prepare summaries for plots: fold-wise (mean across all fold×seed rows) vs pooled (one value per seed; bar = mean ± sd across seeds)
-collapse_approach_plot <- function(df, mean_col, sd_col) {
-  df %>%
-    dplyr::mutate(
-      approach_plot = dplyr::case_when(
-        approach == "species_mean_baseline" ~ "Species\nMean Baseline",
-        TRUE ~ model
-      )
-    ) %>%
-    dplyr::group_by(approach_plot) %>%
-    dplyr::summarise(
-      mean_val = mean(.data[[mean_col]], na.rm = TRUE),
-      sd_val = mean(.data[[sd_col]], na.rm = TRUE),
-      .groups = "drop"
-    )
-}
-
-rmse_summary_fold <- summary_tbl %>%
-  dplyr::select(model, approach, mean_rmse, sd_rmse) %>%
-  collapse_approach_plot("mean_rmse", "sd_rmse") %>%
-  dplyr::rename(mean_rmse = mean_val, sd_rmse = sd_val) %>%
-  dplyr::mutate(aggregation = "Mean fold")
-
-rmse_summary_pooled <- pooled_summary_tbl %>%
-  dplyr::select(model, approach, mean_rmse, sd_rmse) %>%
-  collapse_approach_plot("mean_rmse", "sd_rmse") %>%
-  dplyr::rename(mean_rmse = mean_val, sd_rmse = sd_val) %>%
-  dplyr::mutate(aggregation = "Pooled")
-
-rmse_order <- rmse_summary_fold %>%
-  dplyr::arrange(mean_rmse) %>%
-  dplyr::pull(approach_plot) %>%
-  unique()
-
-rmse_both <- dplyr::bind_rows(rmse_summary_fold, rmse_summary_pooled) %>%
-  dplyr::mutate(
-    approach_plot = factor(.data$approach_plot, levels = rmse_order),
-    aggregation = factor(.data$aggregation, levels = c("Mean fold", "Pooled"))
-  )
-
-r2_summary_fold <- summary_tbl %>%
-  dplyr::select(model, approach, mean_r2, sd_r2) %>%
-  collapse_approach_plot("mean_r2", "sd_r2") %>%
-  dplyr::rename(mean_r2 = mean_val, sd_r2 = sd_val) %>%
-  dplyr::mutate(aggregation = "Mean fold")
-
-r2_summary_pooled <- pooled_summary_tbl %>%
-  dplyr::select(model, approach, mean_r2, sd_r2) %>%
-  collapse_approach_plot("mean_r2", "sd_r2") %>%
-  dplyr::rename(mean_r2 = mean_val, sd_r2 = sd_val) %>%
-  dplyr::mutate(aggregation = "Pooled")
-
-r2_both <- dplyr::bind_rows(r2_summary_fold, r2_summary_pooled) %>%
-  dplyr::mutate(
-    approach_plot = factor(.data$approach_plot, levels = rmse_order),
-    aggregation = factor(.data$aggregation, levels = c("Mean fold", "Pooled"))
-  )
-
-plot_colours <- c("Species\nMean Baseline" = "#8c8c8c")
-for (m in model_list) {
-  plot_colours[m] <- MODEL_COLOURS[[m]] %||% "#333333"
-}
-
-# Adjacent bars per model: Mean fold (opaque, dark outline) vs Pooled (lighter fill, gray outline)
-dodge_pos <- ggplot2::position_dodge(width = 0.88)
-
-p_rmse_bar <- ggplot2::ggplot(
-  rmse_both,
-  ggplot2::aes(x = mean_rmse, y = approach_plot, fill = approach_plot, group = aggregation)
-) +
-  ggplot2::geom_col(
-    ggplot2::aes(alpha = aggregation, colour = aggregation),
-    position = dodge_pos,
-    width = 0.38,
-    linewidth = 0.55
-  ) +
-  ggplot2::geom_errorbarh(
-    ggplot2::aes(
-      xmin = mean_rmse - sd_rmse,
-      xmax = mean_rmse + sd_rmse,
-      group = aggregation
-    ),
-    position = dodge_pos,
-    width = 0.18,
-    linewidth = 0.35,
-    colour = "#444444"
-  ) +
-  ggplot2::scale_fill_manual(values = plot_colours, drop = FALSE) +
-  ggplot2::scale_alpha_manual(
-    values = c("Mean fold" = 1, "Pooled" = 0.55),
-    name = "CV summary",
-    labels = c("Mean fold" = "Mean of fold-wise metrics", "Pooled" = "Pooled (all held-out points across all seeds)")
-  ) +
-  ggplot2::scale_colour_manual(
-    values = c("Mean fold" = "#1a1a1a", "Pooled" = "#6a6a6a"),
-    guide = "none"
-  ) +
-  ggplot2::theme_minimal() +
-  ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
-  ggplot2::labs(
-    x = "RMSE (mean ± 1 SD)",
-    y = "Model"
-  ) +
-  ggplot2::guides(fill = "none") +
-  ggplot2::theme(
-    axis.text.y = ggplot2::element_text(face = "bold"),
-    plot.title = ggplot2::element_text(face = "bold"),
-    legend.position = "bottom"
-  )
-
-ggplot2::ggsave(file.path(out_dir, "model_comparison_mean_rmse_barplot.png"), p_rmse_bar, width = 9, height = 4.8, dpi = dpi)
-cat("\nSaved Mean RMSE horizontal bar plot to:", file.path(out_dir, "model_comparison_mean_rmse_barplot.png"), "\n")
-
-p_r2_bar <- ggplot2::ggplot(
-  r2_both,
-  ggplot2::aes(x = mean_r2, y = approach_plot, fill = approach_plot, group = aggregation)
-) +
-  ggplot2::geom_col(
-    ggplot2::aes(alpha = aggregation, colour = aggregation),
-    position = dodge_pos,
-    width = 0.38,
-    linewidth = 0.55
-  ) +
-  ggplot2::geom_errorbarh(
-    ggplot2::aes(
-      xmin = mean_r2 - sd_r2,
-      xmax = mean_r2 + sd_r2,
-      group = aggregation
-    ),
-    position = dodge_pos,
-    width = 0.18,
-    linewidth = 0.35,
-    colour = "#444444"
-  ) +
-  ggplot2::scale_fill_manual(values = plot_colours, drop = FALSE) +
-  ggplot2::scale_alpha_manual(
-    values = c("Mean fold" = 1, "Pooled" = 0.55),
-    name = "CV summary",
-    labels = c("Mean fold" = "Mean of fold-wise metrics", "Pooled" = "Pooled (all held-out points across all seeds)")
-  ) +
-  ggplot2::scale_colour_manual(
-    values = c("Mean fold" = "#1a1a1a", "Pooled" = "#6a6a6a"),
-    guide = "none"
-  ) +
-  ggplot2::theme_minimal() +
-  ggplot2::labs(
-    x = expression(paste(R^2, " (mean ± 1 SD)")),
-    y = "Model"
-  ) +
-  ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
-  ggplot2::guides(fill = "none") +
-  ggplot2::theme(
-    axis.text.y = ggplot2::element_text(face = "bold"),
-    plot.title = ggplot2::element_text(face = "bold"),
-    legend.position = "bottom"
-  )
-
-ggplot2::ggsave(file.path(out_dir, "model_comparison_mean_r2_barplot.png"), p_r2_bar, width = 9, height = 4.8, dpi = dpi)
-cat("\nSaved Mean R2 horizontal bar plot to:", file.path(out_dir, "model_comparison_mean_r2_barplot.png"), "\n")
-
-p_combined <- p_rmse_bar + p_r2_bar + patchwork::plot_layout(nrow = 2, guides = "collect") &
-  ggplot2::theme(legend.position = "bottom")
-ggplot2::ggsave(file.path(out_dir, "model_comparison_combined_plots.png"), p_combined, width = 9, height = 7.2, dpi = dpi)
-cat("\nSaved combined plots to:", file.path(out_dir, "model_comparison_combined_plots.png"), "\n")
+plot_model_comparison_outputs(
+  summary_tbl = summary_tbl,
+  pooled_summary_tbl = pooled_summary_tbl,
+  by_fold = by_fold,
+  model_list = model_list,
+  out_dir = out_dir,
+  dpi = dpi
+)
 
 readr::write_csv(by_fold, file.path(out_dir, "model_comparison_by_fold.csv"))
 readr::write_csv(summary_tbl, file.path(out_dir, "model_comparison_summary.csv"))

@@ -239,7 +239,7 @@ prepare_data_for_model <- function(model_name, train, test, predictor_vars) {
 
 # ================================ GENERIC PREDICTOR ================================
 
-#' Normalize scale_params to shared format (means, sds). Handles legacy x_center/x_scale.
+#' Normalize scale_params to shared format (means, sds).
 normalize_scale_params <- function(sp) {
   if (is.null(sp)) return(NULL)
   if (!is.null(sp$means)) return(sp)

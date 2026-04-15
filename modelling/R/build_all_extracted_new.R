@@ -5,30 +5,19 @@
 # - Attaches key metadata columns.
 # - Makes all column names lower-case before saving.
 # - Clips remote-sensed covariates to zero to remove any processing errors.
-
+#
 # - If data/all_extracted_new.rds exists and FORCE_REBUILD_ALLEXTRACTED is FALSE:
 #   it will do nothing (just print a message)
 #   ELSE: it will re-create the file.
 
-if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
-  init_path <- file.path("modelling", "R", "init_repo.R")
-  if (!file.exists(init_path)) {
-    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
-    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
-    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
-  }
-  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
-  sys.source(init_path, envir = .GlobalEnv)
-}
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) source("modelling/R/init_repo.R")
 project_root <- seagrass_init_repo(
-  include_helpers = FALSE,
+  packages = c("here", "dplyr", "ggplot2", "maps", "readr"),
+  source_files = c("modelling/R/extract_covariates_from_rasters.R"),
+  include_helpers = TRUE,
   require_core_inputs = FALSE,
   check_renv = FALSE
 )
-source("modelling/R/helpers.R")
-source("modelling/R/extract_covariates_from_rasters.R")
-load_packages(c("here", "dplyr", "ggplot2", "maps", "readr"))
 
 # save here
 all_extracted_path <- "data/all_extracted_new.rds"
@@ -86,7 +75,7 @@ all_extracted_new <- dplyr::select(dat, dplyr::all_of(meta_cols)) %>%
 # Clip to zero any values in remote-sensed covariates with negative values (sign of processing error)
 all_extracted_new <- process_rs_covariates(all_extracted_new)
 
-# Report on the dataset condition
+# Report on the dataset condition
 cat("Rows:", nrow(all_extracted_new), "  Columns:", ncol(all_extracted_new), "\n\n")
 
 # Basic NA diagnostics

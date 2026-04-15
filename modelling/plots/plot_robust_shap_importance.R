@@ -9,41 +9,27 @@
 ##     shap_importance_robust_errorbars_by_model.png
 ##     shap_importance_robust_errorbars_combined.png
 
-if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
-  init_path <- file.path("modelling", "R", "init_repo.R")
-  if (!file.exists(init_path)) {
-    ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/this_script.R", call. = FALSE)
-    script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
-    init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
-  }
-  if (!file.exists(init_path)) stop("Missing bootstrap helper: modelling/R/init_repo.R", call. = FALSE)
-  sys.source(init_path, envir = .GlobalEnv)
-}
+if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) source("modelling/R/init_repo.R")
 project_root <- seagrass_init_repo(
-  include_helpers = FALSE,
+  packages = c("dplyr", "ggplot2", "patchwork", "readr", "here", "ggtext"),
+  source_files = c(
+    "modelling/plots/plot_config.R",
+    "modelling/pipeline_config.R"
+  ),
+  include_helpers = TRUE,
   require_core_inputs = FALSE,
   check_renv = FALSE
 )
-project_root <- getwd()
-
-source(file.path(project_root, "modelling/R/helpers.R"))
-source(file.path(project_root, "modelling/plots/plot_config.R"))
-source(file.path(project_root, "modelling/pipeline_config.R"))
 
 cfg <- get_pipeline_config()
 apply_pipeline_defaults(
   cfg,
   c(
-    "dpi", "show_titles", "robust_fold_seed_list", "cv_regime_name", "robust_shap_plot_top_n"
+    "dpi", "show_titles", "robust_fold_seed_list", "cv_regime_name", "robust_shap_plot_top_n", "model_list"
   ),
   envir = .GlobalEnv
 )
 
-load_packages(c("dplyr", "ggplot2", "patchwork", "readr", "here", "ggtext"))
-# show_titles <- get0("show_titles", envir = .GlobalEnv, ifnotfound = FALSE)
-# cv_regime_name <- get0("cv_regime_name", envir = .GlobalEnv, ifnotfound = "pixel_grouped")
-# robust_fold_seed_list <- as.integer(get0("robust_fold_seed_list", envir = .GlobalEnv, ifnotfound = integer()))
 if (length(robust_fold_seed_list) == 0L) {
   stop("robust_fold_seed_list is missing in .GlobalEnv; run from robust pipeline driver.")
 }
@@ -74,6 +60,35 @@ if (!all(req %in% names(imp))) {
   stop("SHAP summary CSV missing required columns: ", paste(setdiff(req, names(imp)), collapse = ", "))
 }
 
+filter_models_required <- function(df, model_list, df_label) {
+  if (!"model" %in% names(df)) return(df)
+  requested <- unique(as.character(model_list))
+  requested <- requested[nzchar(requested)]
+  if (length(requested) == 0L) {
+    stop("model_list from current config is empty; nothing to plot.", call. = FALSE)
+  }
+  available <- unique(as.character(df$model))
+  available <- available[nzchar(available)]
+  missing_requested <- setdiff(requested, available)
+  if (length(missing_requested) > 0L) {
+    stop(
+      "Requested model_list contains models not present in ", df_label, ".\n",
+      "Requested: ", paste(requested, collapse = ", "), "\n",
+      "Available: ", paste(available, collapse = ", "), "\n",
+      "Missing: ", paste(missing_requested, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  extra_available <- setdiff(available, requested)
+  if (length(extra_available) > 0L) {
+    cat("Excluding models not requested by model_list:", paste(extra_available, collapse = ", "), "\n")
+  }
+  df[df$model %in% requested, , drop = FALSE]
+}
+
+imp <- filter_models_required(imp, model_list, basename(in_summary))
+cat("Requested model_list for robust SHAP plot:", paste(unique(as.character(model_list)), collapse = ", "), "\n")
+
 top_n <- as.integer(get0("robust_shap_plot_top_n", envir = .GlobalEnv, ifnotfound = 15L))
 imp_top <- imp %>%
   dplyr::group_by(model) %>%
@@ -90,13 +105,21 @@ imp_top <- imp_top %>%
   dplyr::mutate(
     variable_label = label_vars(variable),
     variable_styled = dplyr::case_when(
-      n_models >= 3L ~ paste0("**", variable_label, "**"),
-      n_models == 1L ~ paste0("*", variable_label, "*"),
+      n_models == 4L ~ paste0("**", variable_label, "**"),  # bold: shared by four models
+      n_models == 3L ~ variable_label,                      # regular: shared by three models
+      n_models == 2L ~ paste0("*", variable_label, "*"),    # italic: shared by two models
+      n_models == 1L ~ paste0("[", variable_label, "]"),    # [variable]: unique to one model
       TRUE ~ variable_label
     ),
     ymin = pmax(0, shap_importance_mean - shap_importance_sd),
     ymax = shap_importance_mean + shap_importance_sd
   )
+
+# save this as a csv for entry into supplement table
+out_csv <- file.path(robust_cov_dir, "shap_importance_robust_pruning_info.csv")
+write.csv(imp_top, out_csv, row.names = FALSE)
+cat("Saved robust SHAP pruning information to:\n")
+cat("  ", out_csv, "\n", sep = "")
 
 make_model_plot <- function(dfm, m, legend_models, show_legend = FALSE) {
   dfm <- dplyr::arrange(dfm, shap_importance_mean)

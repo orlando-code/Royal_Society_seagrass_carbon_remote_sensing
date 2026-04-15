@@ -1,9 +1,7 @@
-# Robust tuning seed-count sweep (standalone, tmux-friendly).
-#
 # Purpose:
 #   Re-run robust tuning + robust SHAP pruning + robust evaluation for different
 #   robust seed counts (e.g., 2/5/10/15/20), then write outputs under a dedicated
-#   run folder (no overwrites across sweeps):
+#   run folder:
 #   output/tuning_seed_sweep_runs/sweep_<run_id>/
 #     - sensitivity_tuning_seed_sweep_summary.csv, manifests, plots, subset_work/<subset_id>/...
 #   Sweep directory reuse (same run id) requires both an identical planned subset manifest *and*
@@ -11,25 +9,13 @@
 #   otherwise a new sweep_<run_id> folder is allocated.
 #   Writes chosen_seeds_latest.rds under output/tuning_seed_sweep_runs/ for optional use by
 #   run_multiseed_pixel_grouped.R when use_robust_seeds_from_tuning_sweep = TRUE.
-#
-# Typical tmux usage:
-#   tmux new -s seed_sweep
-#   cd <project_root>
-#   Rscript modelling/analysis/tuning_seed_sweep.R
-#
-# Optional overrides via .GlobalEnv before sourcing:
-#   cv_regime_name, robust_pruned_importance_type, eval_fold_seed_list,
-#   tuning_seed_sweep_counts, tuning_seed_pool,
-#   tuning_seed_sampling, do_tuning_seed_sweep_refined_tuning,
-#   tuning_seed_sweep_repeats, tuning_seed_sweep_random_seed,
-#   tuning_seed_sweep_skip_existing, tuning_seed_sweep_unique_subsets,
-#   tuning_seed_sweep_parallel_jobs, tuning_seed_sweep_run_id (optional explicit folder suffix)
+
 
 if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
   init_path <- file.path("modelling", "R", "init_repo.R")
   if (!file.exists(init_path)) {
     ff <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/tuning_seed_sweep.R", call. = FALSE)
+    if (!length(ff)) stop("Run from repo root or with: Rscript /path/to/run_tuning_seed_sweep.R", call. = FALSE)
     script_path <- normalizePath(sub("^--file=", "", ff[[1]]), winslash = "/", mustWork = FALSE)
     init_path <- normalizePath(file.path(dirname(script_path), "..", "R", "init_repo.R"), winslash = "/", mustWork = FALSE)
   }
@@ -114,11 +100,6 @@ load_subset_registry <- function() {
       if (!is.null(x)) return(x)
     }
   }
-  legacy_reg <- file.path(
-    project_root, "output", cv_regime_name, "cv_pipeline", "sensitivity_suite",
-    "sensitivity_tuning_seed_sweep_subset_registry.csv"
-  )
-  read_registry_file(legacy_reg)
 }
 
 # Save and restore globals modified by this sweep.
@@ -749,8 +730,12 @@ if (nrow(sweep_df) > 0L) {
   sweep_csv <- file.path(sweep_out_dir, "sensitivity_tuning_seed_sweep_summary.csv")
   readr::write_csv(sweep_df, sweep_csv)
   cat("Wrote tuning seed sweep summary to:\n  ", sweep_csv, "\n", sep = "")
+  assign("plot_tuning_seed_sweep_disable_autorun_on_source", TRUE, envir = .GlobalEnv)
   source(file.path(project_root, "modelling/plots/plot_tuning_seed_sweep.R"))
-  plot_tuning_seed_sweep_summary(sweep_df, sweep_out_dir)
+  if (exists("plot_tuning_seed_sweep_disable_autorun_on_source", envir = .GlobalEnv, inherits = FALSE)) {
+    rm("plot_tuning_seed_sweep_disable_autorun_on_source", envir = .GlobalEnv)
+  }
+  plot_tuning_seed_sweep(sweep_out_dir)
   rep5 <- pick_representative_tuning_seed_subset(
     sweep_df,
     n_tuning_seeds = 5L,
