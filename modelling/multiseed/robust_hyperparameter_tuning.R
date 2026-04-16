@@ -38,30 +38,30 @@ apply_pipeline_defaults(
   envir = .GlobalEnv
 )
 
-cv_regime_name <- get("cv_regime_name", envir = .GlobalEnv)
-cv_type <- get("cv_type", envir = .GlobalEnv)
-stopifnot(identical(cv_type, "pixel_grouped"))
 cv_type_hash <- "pixel_grouped"
+stopifnot(identical(cv_type, "pixel_grouped"))
+# cv_regime_name <- get("cv_regime_name", envir = .GlobalEnv)
+# cv_type <- get("cv_type", envir = .GlobalEnv)
 
-target_var <- get("target_var", envir = .GlobalEnv)
-log_transform_target <- isTRUE(get("log_transform_target", envir = .GlobalEnv))
+# target_var <- get("target_var", envir = .GlobalEnv)
+# log_transform_target <- isTRUE(get("log_transform_target", envir = .GlobalEnv))
 
-exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
-n_folds <- as.integer(get("n_folds", envir = .GlobalEnv))
-cv_blocksize <- get("cv_blocksize", envir = .GlobalEnv) # unused for pixel_grouped
+# exclude_regions <- get("exclude_regions", envir = .GlobalEnv)
+# n_folds <- as.integer(get("n_folds", envir = .GlobalEnv))
+# cv_blocksize <- get("cv_blocksize", envir = .GlobalEnv) # unused for pixel_grouped
 
-robust_fold_seed_list <- get("robust_fold_seed_list", envir = .GlobalEnv)
-robust_fold_seed_list <- as.integer(robust_fold_seed_list)
-include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
-use_correlation_filter <- isTRUE(get("use_correlation_filter", envir = .GlobalEnv))
-correlation_filter_threshold <- as.numeric(get("correlation_filter_threshold", envir = .GlobalEnv))
+# robust_fold_seed_list <- get("robust_fold_seed_list", envir = .GlobalEnv)
+# robust_fold_seed_list <- as.integer(robust_fold_seed_list)
+# include_seagrass_species <- isTRUE(get("include_seagrass_species", envir = .GlobalEnv))
+# use_correlation_filter <- isTRUE(get("use_correlation_filter", envir = .GlobalEnv))
+# correlation_filter_threshold <- as.numeric(get("correlation_filter_threshold", envir = .GlobalEnv))
 
-run_output_dir <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
-if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir))) {
+# run_output_dir <- get0("run_output_dir", envir = .GlobalEnv, ifnotfound = NA_character_)
+if (is.na(run_output_dir) || !nzchar(as.character(run_output_dir)) || is.null(run_output_dir)) {
   stop("run_output_dir must be set in .GlobalEnv for robust hyperparameter tuning.")
 }
-run_output_dir <- as.character(run_output_dir)
-subset_work_root <- if (basename(run_output_dir) == "evaluation") dirname(run_output_dir) else run_output_dir
+# run_output_dir <- as.character(run_output_dir)
+subset_work_root <- if (basename(run_output_dir) == "evaluation") dirname(run_output_dir) else run_output_dir # for run_tuning_seed_sweep.R
 robust_dir <- if (basename(run_output_dir) == "evaluation") {
   file.path(subset_work_root, "tuning")
 } else {
