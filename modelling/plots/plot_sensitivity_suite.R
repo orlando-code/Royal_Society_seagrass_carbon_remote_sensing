@@ -17,10 +17,6 @@ project_root <- seagrass_init_repo(
   require_core_inputs = FALSE,
   check_renv = FALSE
 )
-library(dplyr)
-library(ggplot2)
-library(readr)
-library(tidyr)
 
 plot_log_sp <- function(message_text) {
   message(sprintf("[plot:plot_sensitivity_suite] %s", message_text))
