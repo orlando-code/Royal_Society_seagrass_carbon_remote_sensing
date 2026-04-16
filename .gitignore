@@ -45,6 +45,7 @@ testing.ipynb
 
 sanity.R
 sanity_helpers.R
+diagnose_shap_lr_vs_gam_toy.R
 
 # renv local caches / temporary local libs
 .r-local/
