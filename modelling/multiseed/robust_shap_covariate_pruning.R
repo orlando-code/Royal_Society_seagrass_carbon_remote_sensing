@@ -30,7 +30,7 @@ apply_pipeline_defaults(
     "exclude_regions", "n_folds", "cv_blocksize", "robust_fold_seed_list",
     "use_correlation_filter", "correlation_filter_threshold",
     "shap_n_points", "shap_folds_per_seed", "shap_max_gpr_train",
-    "permutation_coverage", "permutation_max_vars", "model_list",
+    "feature_coverage", "permutation_max_vars", "model_list",
     "shap_selection_policy", "shap_selection_coverage_grid", "shap_selection_max_vars_grid",
     "include_seagrass_species"
   ),
@@ -62,7 +62,7 @@ cv_type_hash <- "pixel_grouped"
 # shap_max_gpr_train <- as.integer(get("shap_max_gpr_train", envir = .GlobalEnv))
 
 # # Selection controls: reuse the existing tuning/pruning defaults
-# permutation_coverage <- get("permutation_coverage", envir = .GlobalEnv)
+# feature_coverage <- get("feature_coverage", envir = .GlobalEnv)
 # permutation_max_vars <- as.integer(get("permutation_max_vars", envir = .GlobalEnv))
 # shap_selection_policy <- get("shap_selection_policy", envir = .GlobalEnv)
 # shap_selection_policy <- match.arg(
@@ -85,7 +85,7 @@ cat("  n_folds:", n_folds, " cv_blocksize:", cv_blocksize, "\n")
 cat("  models:", paste(model_list, collapse = ", "), "\n")
 cat("  SHAP: n_points=", shap_n_points, " folds_per_seed=", shap_folds_per_seed,
     " max_gpr_train=", shap_max_gpr_train, "\n")
-cat("  select: max_vars=", permutation_max_vars, " coverage=", permutation_coverage, "\n")
+cat("  select: max_vars=", permutation_max_vars, " coverage=", feature_coverage, "\n")
 cat("  select policy:", shap_selection_policy, "\n")
 cat("  select sensitivity grid (coverage):", paste(shap_selection_coverage_grid, collapse = ", "), "\n")
 cat("  select sensitivity grid (max_vars):", paste(shap_selection_max_vars_grid, collapse = ", "), "\n")
@@ -344,7 +344,7 @@ for (model_name in model_list) {
     rename(shap_importance = shap_importance_mean)
   v <- select_vars_policy(
     dfm = dfm,
-    coverage = permutation_coverage,
+    coverage = feature_coverage,
     max_vars = permutation_max_vars,
     policy = shap_selection_policy
   )
@@ -357,11 +357,11 @@ pruned_df <- dplyr::bind_rows(pruned_rows)
 if (nrow(pruned_df) == 0L) stop("SHAP-based pruned set came out empty.")
 
 # Write all the outputs
+write.csv(pruned_df, out_csv, row.names = FALSE)
 write.csv(imp_all, out_seed_fold_csv, row.names = FALSE)
 write.csv(imp_by_seed, out_seed_csv, row.names = FALSE)
 write.csv(imp_avg, out_summary_csv, row.names = FALSE)
 write.csv(selection_sensitivity_df, out_selection_sensitivity_csv, row.names = FALSE)
-write.csv(pruned_df, out_csv, row.names = FALSE)
 cat("\nWrote SHAP robust pruned variables to:\n", out_csv, "\n", sep = "")
 cat("Wrote SHAP seed/fold importances to:\n", out_seed_fold_csv, "\n", sep = "")
 cat("Wrote SHAP per-seed importances to:\n", out_seed_csv, "\n", sep = "")
