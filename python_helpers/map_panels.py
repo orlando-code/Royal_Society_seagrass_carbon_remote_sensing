@@ -294,7 +294,7 @@ def style_map_axes(
     ax.set_extent(extent, crs=ccrs.PlateCarree())
 
 
-def add_panel_label(ax, text, fontsize=12):
+def add_panel_label(ax, text, fontsize=12, _corner_pad_points=(-10, -10)):
     """Draw a small boxed title in the upper-left of the axes.
 
     Args:
@@ -305,12 +305,14 @@ def add_panel_label(ax, text, fontsize=12):
     Returns:
         None
     """
-    ax.text(
-        0.02,
-        0.98,
+    ax.annotate(
         text,
+        xy=(1.0, 1.0),
+        xycoords="axes fraction",
+        xytext=_corner_pad_points,
+        textcoords="offset points",
         transform=ax.transAxes,
-        ha="left",
+        ha="right",
         va="top",
         fontsize=fontsize,
         bbox=dict(facecolor="white", edgecolor="0.3", boxstyle="square,pad=0.2"),

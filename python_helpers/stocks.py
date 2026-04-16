@@ -131,7 +131,6 @@ def plot_comparison_bars(df: pd.DataFrame, dpi: int = 300):
         # Mark missing values with crosses so one-sided availability is explicit.
         missing_gomis = ~np.isfinite(gomis_vals)
         missing_study = ~np.isfinite(study_vals)
-
         ax.set_xticks(x)
         country_labels = [str(country).replace(" ", "\n") for country in countries]
         ax.set_xticklabels(country_labels, ha="center", fontsize=10, rotation=45)
@@ -457,7 +456,9 @@ def plot_territory_species_stacked_split(
         va="top",
         fontsize=11,
         bbox=dict(
-            boxstyle="round,pad=0.3", facecolor="white", edgecolor="#cccccc", alpha=0.85
+            boxstyle="square,pad=0.3",
+            facecolor="white",
+            edgecolor="#cccccc",
         ),
     )
 
