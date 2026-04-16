@@ -81,7 +81,7 @@ filter_models_required <- function(df, model_list, df_label) {
   }
   extra_available <- setdiff(available, requested)
   if (length(extra_available) > 0L) {
-    cat("Excluding models not requested by model_list:", paste(extra_available, collapse = ", "), "\n")
+    cat("excluding model(s) not requested by model_list:", paste(extra_available, collapse = ", "), "\n")
   }
   df[df$model %in% requested, , drop = FALSE]
 }

@@ -128,7 +128,7 @@ validate_model_list_for_pdp <- function(model_list, cv_out) {
 
   extra_available <- setdiff(available, requested)
   if (length(extra_available) > 0L) {
-    cat("Excluding models not requested by model_list:", paste(extra_available, collapse = ", "), "\n")
+    cat("excluding model(s) not requested by model_list:", paste(extra_available, collapse = ", "), "\n")
   }
 
   requested
