@@ -64,7 +64,7 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 - `correlation_filter_threshold` – Absolute correlation threshold for pruning (default `r > 0.8`).
 - `permutation_max_vars` – Maximum number of covariates retained after permutation selection (default `15`).
 - `n_permutations` – Replicates per variable when computing permutation importance (default `1` since very computationally intensive).
-- `permutation_coverage` – Cumulative importance coverage target (default `0.99`).
+- `feature_coverage` – Cumulative importance coverage target (default `0.99`).
 - `use_shap_per_model` – Prefer per-model SHAP-selected covariate sets where available (default `TRUE`).
 
 ### Models
