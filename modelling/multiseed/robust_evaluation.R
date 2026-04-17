@@ -179,6 +179,7 @@ by_seed_detailed_list <- list()
 by_seed_summary_list <- list()
 pooled_r2_list       <- list()
 pooled_counts_list  <- list()
+raw_predictions_list <- list()
 
 for (seed in eval_fold_seed_list) {
   cat("\n--- eval fold_seed =", seed, " ---\n")
@@ -204,27 +205,44 @@ for (seed in eval_fold_seed_list) {
     tune_hyperparams = FALSE,
     nested_tuning = FALSE,
     verbose = FALSE,
-    return_predictions = FALSE,
+    return_predictions = TRUE,
     models = models,
     log_response = log_response
   )
-  if (is.null(res) || nrow(res) == 0L) next
+  if (is.null(res)) next
 
-  seed_pooled_r2 <- attr(res, "pooled_r2")
+  # run_cv returns either:
+  # - data.frame of metrics (return_predictions = FALSE), or
+  # - list(metrics = ..., predictions = ...) when return_predictions = TRUE.
+  metrics_df <- if (is.list(res) && !is.null(res$metrics)) res$metrics else res
+  preds_df <- if (is.list(res) && !is.null(res$predictions)) res$predictions else NULL
+
+  if (is.null(metrics_df) || nrow(metrics_df) == 0L) next
+
+  seed_pooled_r2 <- attr(metrics_df, "pooled_r2")
   if (!is.null(seed_pooled_r2) && nrow(seed_pooled_r2) > 0L) {
     seed_pooled_r2$fold_seed <- seed
     pooled_r2_list[[length(pooled_r2_list) + 1L]] <- seed_pooled_r2
   }
 
-  seed_pooled_counts <- attr(res, "pooled_counts_by_model_fold")
+  seed_pooled_counts <- attr(metrics_df, "pooled_counts_by_model_fold")
   if (!is.null(seed_pooled_counts) && nrow(seed_pooled_counts) > 0L) {
     seed_pooled_counts$fold_seed <- seed
     pooled_counts_list[[length(pooled_counts_list) + 1L]] <- seed_pooled_counts
   }
 
-  by_seed_detailed <- res %>%
+  by_seed_detailed <- metrics_df %>%
     dplyr::mutate(fold_seed = seed, robust_fold_seed_list = seeds_str, cv_regime = cv_regime_name)
   by_seed_detailed_list[[length(by_seed_detailed_list) + 1L]] <- by_seed_detailed
+
+  if (!is.null(preds_df) && nrow(preds_df) > 0L) {
+    raw_predictions_list[[length(raw_predictions_list) + 1L]] <- preds_df %>%
+      dplyr::mutate(
+        fold_seed = seed,
+        robust_fold_seed_list = seeds_str,
+        cv_regime = cv_regime_name
+      )
+  }
 
   by_seed_summary <- by_seed_detailed %>%
     dplyr::group_by(model) %>%
@@ -265,6 +283,15 @@ if (nrow(pooled_counts_all) > 0L) {
   write.csv(
     pooled_counts_all,
     file.path(out_dir, "n_predictions_by_model_fold_seed.csv"),
+    row.names = FALSE
+  )
+}
+
+raw_predictions_all <- dplyr::bind_rows(raw_predictions_list)
+if (nrow(raw_predictions_all) > 0L) {
+  write.csv(
+    raw_predictions_all,
+    file.path(out_dir, "raw_predictions_by_seed.csv"),
     row.names = FALSE
   )
 }

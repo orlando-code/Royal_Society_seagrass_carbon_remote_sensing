@@ -9,7 +9,7 @@
 #' @param lon_range,lat_range Longitude/latitude ranges (length-2).
 #' @param n_lon,n_lat Grid dimensions (\code{length.out} for \code{seq}).
 #' @param covariates Character vector of covariate names; default all
-#'   \code{raster_covariates} (typically 42 layers under \code{data/covariate_rasters}).
+#'   \code{raster_covariates} (typically 42 layers under \code{data/env_rasters}).
 #' @param use_closest Must stay \code{FALSE} for an NA diagnostic map.
 #' @param method Passed to \code{extract_from_nc} (e.g. \code{"nearest"}).
 #' @param drop_all_na If \code{TRUE}, drop rows where every covariate is NA (e.g. land).

@@ -402,7 +402,7 @@ if ("XGB" %in% models) {
 # ---------------------------------------------------------------------------
 if ("GAM" %in% models) {
   cat("\n=== Robust tuning: GAM ===\n")
-  gam_k_grid <- c(2L, 4L, 6L, 8L, 10L, 12L, 15L, 20L)
+  gam_k_grid <- c(2L, 3L, 4L, 5L, 6L, 8L, 10L)
   rows <- list()
   for (k_cov in gam_k_grid) {
     hp <- list(k_covariate = k_cov)

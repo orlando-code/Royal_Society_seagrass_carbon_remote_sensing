@@ -169,6 +169,9 @@ tune_folds <- cv_fold_info$fold_indices
 if (log_transform_target) {
   final_data <- transform_response(core_data, "median_carbon_density", log = TRUE)
 }
+
+config_dir <- file.path(cv_output_dir, "cv_pipeline")
+
 # ---------------------------------------------------------------------------
 # XGBoost: load best config from tuning outputs
 # ---------------------------------------------------------------------------
@@ -176,7 +179,6 @@ if ("XGB" %in% model_list) {
   cat("=== XGBoost: hyperparameter tuning ===\n")
   xgb_pvars <- load_model_vars_final("XGB")
   cat("  Predictors (", length(xgb_pvars), "): ", paste(xgb_pvars, collapse = ", "), "\n", sep = "")
-  config_dir <- file.path(cv_output_dir, "cv_pipeline")
   xgb_cfg <- load_best_model_config(
     model_name = "xgb",
     config_dir = config_dir,

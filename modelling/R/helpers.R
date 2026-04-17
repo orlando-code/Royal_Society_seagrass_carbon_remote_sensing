@@ -1152,7 +1152,7 @@ tune_gam_cv <- function(core_data, predictor_vars, fold_indices,
   }
   folds <- as.integer(fold_indices)
   n_folds <- max(folds, na.rm = TRUE)
-  gam_k_grid <- c(2L, 3L, 4L, 5L, 6L, 8L, 10L, 15L, 20L)
+  gam_k_grid <- c(2L, 3L, 4L, 5L, 6L, 8L, 10L)
 
   gam_results <- vector("list", length(gam_k_grid))
   for (i in seq_along(gam_k_grid)) {
