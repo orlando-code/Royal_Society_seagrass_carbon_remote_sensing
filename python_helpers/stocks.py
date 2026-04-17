@@ -55,7 +55,12 @@ def weighted_mean_standard_error(se, weights, values_for_mask):
     return float(np.sqrt(np.sum((w_m**2) * (se_m**2))) / np.sum(w_m))
 
 
-def plot_comparison_bars(df: pd.DataFrame, dpi: int = 300):
+def plot_comparison_bars(
+    df: pd.DataFrame,
+    density_error_metric: str = "stock_kg_ha",
+    stock_error_metric: str = "stock_Gg",
+    dpi: int = 300,
+):
     GOMIS_COLOR = "#0C0787"
     STUDY_COLOR = "#FBA237"
     BAR_WIDTH = 0.38
@@ -77,7 +82,7 @@ def plot_comparison_bars(df: pd.DataFrame, dpi: int = 300):
             "ax": axes[1],
             "col_gomis": "Biomass carbon stock (kg C / ha)",
             "col_study": "stock_kg_ha",
-            "col_study_se": "stock_kg_ha_se",
+            "col_study_se": density_error_metric,
             "ylabel": "Stock density (kg C / ha)",
             "title": "Mean sediment carbon stock density",
         },
@@ -85,7 +90,7 @@ def plot_comparison_bars(df: pd.DataFrame, dpi: int = 300):
             "ax": axes[2],
             "col_gomis": "Biomass carbon stock (Gg)",
             "col_study": "stock_Gg",
-            "col_study_se": "stock_Gg_se",
+            "col_study_se": stock_error_metric,
             "ylabel": "Total carbon stock (Gg C)",
             "title": "Total sediment carbon stock",
         },
@@ -196,15 +201,32 @@ def _territory_total_stock_se(
     df: pd.DataFrame,
     territory_col: str,
     se_col: str,
+    *,
+    method: str = "rss",
 ) -> pd.Series:
-    """Standard error of summed stock per territory (sqrt of summed variances)."""
+    """Standard error of summed stock per territory.
+
+    Args:
+        df: Input dataframe with per-row standard errors.
+        territory_col: Territory grouping column.
+        se_col: Per-row standard error column.
+        method: Aggregation method:
+            - ``"rss"``: ``sqrt(sum(se_i^2))`` (independence lower-ish bound)
+            - ``"upper"``: ``sum(se_i)`` (fully correlated upper-ish bound)
+    """
     if se_col not in df.columns:
         return pd.Series(dtype=float)
     se = pd.to_numeric(df[se_col], errors="coerce").to_numpy(dtype=float)
     g2 = df[[territory_col]].copy()
-    g2["_var"] = np.nan_to_num(np.square(se), nan=0.0)
-    summed = g2.groupby(territory_col, sort=False)["_var"].sum()
-    return np.sqrt(summed)
+    method = str(method).lower()
+    if method == "rss":
+        g2["_tmp"] = np.nan_to_num(np.square(se), nan=0.0)
+        summed = g2.groupby(territory_col, sort=False)["_tmp"].sum()
+        return np.sqrt(summed)
+    if method == "upper":
+        g2["_tmp"] = np.nan_to_num(se, nan=0.0)
+        return g2.groupby(territory_col, sort=False)["_tmp"].sum()
+    raise ValueError("method must be one of {'rss', 'upper'}")
 
 
 def _species_ordered_stack_pivot(
@@ -286,6 +308,7 @@ def plot_territory_species_stacked_all(
     species_col: str = "seagrass_species",
     value_col: str = "stock_Gg",
     se_col: str = "stock_Gg_se",
+    error_method: str = "rss",
     show_total_errorbars: bool = False,
     dpi: int = 300,
     figsize: tuple[float, float] = (12.0, 5.0),
@@ -294,7 +317,7 @@ def plot_territory_species_stacked_all(
     ylabel: str = "Carbon Stock (GgC)",
     legend_bbox: tuple[float, float] = (0.5, 1.1),
     errorbar_capsize: float = 3.0,
-    errorbar_color: str = "0.15",
+    errorbar_color: str = "grey",
 ) -> tuple[plt.Figure, plt.Axes, pd.DataFrame]:
     """Single stacked bar chart: all territories by species, ordered by total stock.
 
@@ -305,8 +328,10 @@ def plot_territory_species_stacked_all(
         species_col: Species column name.
         value_col: Stock column (GgC).
         se_col: Per-row stock standard error; used only if ``show_total_errorbars``.
+        error_method: Territory-level error-bar aggregation method:
+            ``"rss"`` or ``"upper"``.
         show_total_errorbars: If ``True``, draw one SE bar on each stacked total
-            (``sqrt(sum se^2)`` per territory).
+            (``sqrt(sum se^2)`` for ``"rss"`` or ``sum(se)`` for ``"upper"``).
         dpi: Figure DPI.
         figsize: ``(width, height)`` inches.
         ylim: Fixed y-axis limits, or ``None`` for matplotlib default.
@@ -330,7 +355,12 @@ def plot_territory_species_stacked_all(
     stacked = stacked.loc[stacked.sum(axis=1).sort_values(ascending=False).index]
     territory_se: pd.Series | None = None
     if show_total_errorbars:
-        territory_se = _territory_total_stock_se(g, territory_col, se_col)
+        territory_se = _territory_total_stock_se(
+            g,
+            territory_col,
+            se_col,
+            method=error_method,
+        )
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     _plot_stacked_species_bars_on_ax(
@@ -369,13 +399,14 @@ def plot_territory_species_stacked_split(
     species_col: str = "seagrass_species",
     value_col: str = "stock_Gg",
     se_col: str = "stock_Gg_se",
+    error_method: str = "rss",
     top_n: int = 5,
     dpi: int = 300,
     figsize_height: float = 5.0,
     ylim_left: tuple[float, float] | None = (0, 26e4),
     ylim_right: tuple[float, float] | None = (0, 31e2),
-    left_panel_title: str = "A) Top 5 National Territories",
-    right_panel_title: str = "B) Remaining National Territories",
+    left_panel_title: str = "A) Top 5 Territories",
+    right_panel_title: str = "B) Remaining Territories",
     ylabel: str = "Carbon Stock (GgC)",
     supxlabel: str = "National Territory",
     errorbar_capsize: float = 3.0,
@@ -383,7 +414,9 @@ def plot_territory_species_stacked_split(
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes]]:
     """Stacked species contributions by territory in two panels, with total SE error bars.
 
-    Uncertainty for each territory total is ``sqrt(sum se_i^2)`` over rows (independence).
+    Uncertainty for each territory total can use either:
+    - ``"rss"``: ``sqrt(sum(se_i^2))`` (independence lower-ish bound)
+    - ``"upper"``: ``sum(se_i)`` (fully correlated upper-ish bound)
 
     Args:
         g: Dataframe with territory, species, stock, and optional per-row standard error.
@@ -392,6 +425,8 @@ def plot_territory_species_stacked_split(
         species_col: Column name for seagrass species.
         value_col: Column name for carbon stock (GgC).
         se_col: Column name for per-row stock standard error; if missing, no error bars.
+        error_method: Territory-level error-bar aggregation method:
+            ``"rss"`` or ``"upper"``.
         top_n: Number of largest territories (by total stock) on the left panel.
         dpi: Figure resolution.
         figsize_height: Figure height in inches; width follows panel count ratio.
@@ -416,7 +451,12 @@ def plot_territory_species_stacked_split(
     )
 
     territory_totals = stacked.sum(axis=1).sort_values(ascending=False)
-    territory_se = _territory_total_stock_se(g, territory_col, se_col)
+    territory_se = _territory_total_stock_se(
+        g,
+        territory_col,
+        se_col,
+        method=error_method,
+    )
     top = territory_totals.index[:top_n]
     rest = territory_totals.index[top_n:]
     stacked_top, stacked_rest = stacked.loc[top], stacked.loc[rest]

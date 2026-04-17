@@ -11,35 +11,56 @@ from rasterio.transform import from_origin
 from shapely import wkt
 from tqdm.auto import tqdm
 
-from . import spatial_join, stocks
+from . import spatial_join, species_assignment, stocks
+
+
+def _coerce_arrow_compatible(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Make GeoDataFrame columns safe for pyarrow parquet serialization.
+
+    Arrow rejects mixed-type object columns (e.g., ints + bytes in `objectid`).
+    We coerce non-geometry object columns to pandas string dtype, decoding bytes
+    where possible.
+    """
+    out = gdf.copy()
+    obj_cols = [
+        c for c in out.select_dtypes(include=["object"]).columns if c != "geometry"
+    ]
+    for col in obj_cols:
+        out[col] = out[col].apply(
+            lambda v: (
+                v.decode("utf-8", errors="replace")
+                if isinstance(v, (bytes, bytearray))
+                else v
+            )
+        )
+        out[col] = out[col].astype("string")
+    return out
 
 
 def load_or_prepare_eov_geometries(
     *,
     all_poly_fp: Path,
-    processed_polygon_fp: Path,
-    processed_points_fp: Path,
+    all_points_fp: Path,
     poly_cache_fp: Path,
     points_cache_fp: Path,
     inv_species_index_map: dict,
-    lons=(-20, 30),
-    lats=(30, 60),
+    lons=(-25, 35),
+    lats=(30, 65),
 ):
     """Load or prepare seagrass EOV geometries from CSV files and cache them as GeoJSON files.
 
     Args:
         all_poly_fp (Path): Path to the CSV file containing the seagrass EOV geometries.
-        processed_polygon_fp (Path): Path to the CSV file containing the processed seagrass EOV geometries.
-        processed_points_fp (Path): Path to the CSV file containing the processed seagrass EOV points.
+        all_points_fp (Path): Path to the CSV file containing the seagrass EOV points.
         poly_cache_fp (Path): Path to the GeoJSON file to cache the processed seagrass EOV geometries.
         points_cache_fp (Path): Path to the GeoJSON file to cache the processed seagrass EOV points.
         inv_species_index_map (dict): Dictionary mapping seagrass species indices to seagrass species names.
-        lons (tuple, optional): Longitude range to crop the seagrass EOV geometries to. Defaults to (-20, 30).
-        lats (tuple, optional): Latitude range to crop the seagrass EOV geometries to. Defaults to (30, 60).
-
+        lons (tuple, optional): Longitude range to crop the seagrass EOV geometries to. Defaults to (-25, 35).
+        lats (tuple, optional): Latitude range to crop the seagrass EOV geometries to. Defaults to (30, 65).
     Returns:
         gpd.GeoDataFrame: GeoDataFrame containing the processed seagrass EOV geometries.
-        gpd.GeoDataFrame: GeoDataFrame containing the processed seagrass EOV points.
+        gpd.GeoDataFrame: GeoDataFrame containing the processed seagrass EOV points.        lons (tuple, optional): Longitude range to crop the seagrass EOV geometries to. Defaults to (-25, 35).
+        lats (tuple, optional): Latitude range to crop the seagrass EOV geometries to. Defaults to (30, 65).
     """
     # Ensure cache parent directories exist before any reads/writes.
     poly_cache_fp.parent.mkdir(parents=True, exist_ok=True)
@@ -52,33 +73,42 @@ def load_or_prepare_eov_geometries(
             # If a stale/partial cache exists, rebuild from source CSVs.
             pass
 
-    poly_df = pd.read_csv(all_poly_fp)
+    poly_df = pd.read_csv(all_poly_fp, low_memory=False)
     poly_df["geometry"] = poly_df["geom"].apply(wkt.loads)
     poly_gdf = gpd.GeoDataFrame(poly_df, geometry="geometry").drop(columns=["geom"])
-    poly_gdf.set_crs(crs="epsg:3857", inplace=True)
-    poly_gdf.to_crs(epsg=4326, inplace=True)
+    poly_gdf.set_crs(crs="epsg:3857", inplace=True)  # original crs
+    poly_gdf.to_crs(epsg=4326, inplace=True)  # convert to lat/lon
     poly_gdf = poly_gdf.cx[min(lons) : max(lons), min(lats) : max(lats)]
 
-    processed_polygon_df = pd.read_csv(processed_polygon_fp, low_memory=False)
-    id_and_species = processed_polygon_df[["id", "seagrass_species"]]
-    poly_gdf = poly_gdf.merge(id_and_species, on="id", how="left")
+    # assign species information to the polygons
+    poly_gdf = species_assignment.process_poly_df_species(poly_gdf)
     poly_gdf = poly_gdf[poly_gdf["seagrass_species"].notna()].copy()
     poly_gdf["prediction_species_index"] = poly_gdf["seagrass_species"].map(
         inv_species_index_map
     )
+    print("Polygon species assignment:")
+    print(poly_gdf["seagrass_species"].value_counts())
 
-    points_df = pd.read_csv(processed_points_fp)
+    points_df = pd.read_csv(all_points_fp, low_memory=False)
     points_df["geometry"] = points_df["geom"].apply(wkt.loads)
     points_gdf = gpd.GeoDataFrame(points_df, geometry="geometry").drop(columns=["geom"])
     points_gdf.set_crs(crs="epsg:3857", inplace=True)
     points_gdf.to_crs(epsg=4326, inplace=True)
     points_gdf["lat"] = points_gdf["geometry"].y
     points_gdf["lon"] = points_gdf["geometry"].x
+
+    # assign species information to the points
+    points_gdf = species_assignment.process_points_df_species(points_gdf)
+    print("Point species assignment:")
+    print(points_gdf["seagrass_species"].value_counts())
+
     points_gdf = points_gdf[points_gdf["seagrass_species"].notna()].copy()
     points_gdf["prediction_species_index"] = points_gdf["seagrass_species"].map(
         inv_species_index_map
     )
 
+    poly_gdf = _coerce_arrow_compatible(poly_gdf)
+    points_gdf = _coerce_arrow_compatible(points_gdf)
     poly_gdf.to_parquet(poly_cache_fp, index=False)
     points_gdf.to_parquet(points_cache_fp, index=False)
     return poly_gdf, points_gdf
@@ -210,14 +240,22 @@ def attribute_geometries_from_prediction_grid(
         se_window = se_by_species[sp][iy0 : iy1 + 1, ix0 : ix1 + 1]
         vals = pred_window[mask]
         se_vals = se_window[mask]
-        vals = vals[np.isfinite(vals)]
-        se_vals = se_vals[np.isfinite(se_vals)]
-        if vals.size == 0 or se_vals.size == 0:
+        # Keep prediction/SE pairs aligned for proper uncertainty propagation.
+        pair_ok = np.isfinite(vals) & np.isfinite(se_vals)
+        vals = vals[pair_ok]
+        se_vals = se_vals[pair_ok]
+        if vals.size == 0:
             continue
 
         if polygon_stat == "mean":
             poly_values[row_pos] = float(vals.mean())
-            poly_se_values[row_pos] = float(se_vals.mean())
+            # Propagate per-pixel model SEs to the SE of the polygon mean.
+            # If polygon mean = (1/n) * sum(x_i), then under independence:
+            #   Var(mean) = sum(se_i^2) / n^2
+            #   SE(mean)  = sqrt(sum(se_i^2)) / n
+            # This is more correct than averaging the SE values.
+            n = float(se_vals.size)
+            poly_se_values[row_pos] = float(np.sqrt(np.sum(np.square(se_vals))) / n)
         else:
             raise ValueError("Only polygon_stat='mean' is implemented.")
 
@@ -256,11 +294,12 @@ def load_or_build_attributed_geometries(
     attributed_polygon_fp: Path,
     attributed_points_fp: Path,
     all_poly_fp: Path,
-    processed_polygon_fp: Path,
-    processed_points_fp: Path,
+    all_points_fp: Path,
     poly_cache_fp: Path,
     points_cache_fp: Path,
     inv_species_index_map: dict,
+    lons: tuple[float, float] = (-25, 35),
+    lats: tuple[float, float] = (30, 65),
 ):
     """Load cached attributed geometries or build them from source files.
 
@@ -269,8 +308,7 @@ def load_or_build_attributed_geometries(
         attributed_polygon_fp (Path): Output/cache path for attributed polygons.
         attributed_points_fp (Path): Output/cache path for attributed points.
         all_poly_fp (Path): Path to raw polygon CSV.
-        processed_polygon_fp (Path): Path to processed polygon CSV with species labels.
-        processed_points_fp (Path): Path to processed point CSV with species labels.
+        all_points_fp (Path): Path to raw point CSV.
         poly_cache_fp (Path): Path to cached polygon GeoJSON prepared from CSV.
         points_cache_fp (Path): Path to cached point GeoJSON prepared from CSV.
         inv_species_index_map (dict): Mapping from species label to model species index.
@@ -293,15 +331,18 @@ def load_or_build_attributed_geometries(
 
     poly_gdf, points_gdf = load_or_prepare_eov_geometries(
         all_poly_fp=all_poly_fp,
-        processed_polygon_fp=processed_polygon_fp,
-        processed_points_fp=processed_points_fp,
+        all_points_fp=all_points_fp,
         poly_cache_fp=poly_cache_fp,
         points_cache_fp=points_cache_fp,
         inv_species_index_map=inv_species_index_map,
+        lons=lons,
+        lats=lats,
     )
     gdf_attributed, pts_attributed = attribute_geometries_from_prediction_grid(
         poly_gdf, points_gdf, pred_ds
     )
+    gdf_attributed = _coerce_arrow_compatible(gdf_attributed)
+    pts_attributed = _coerce_arrow_compatible(pts_attributed)
     gdf_attributed.to_parquet(attributed_polygon_fp, index=False)
     pts_attributed.to_parquet(attributed_points_fp, index=False)
     return gdf_attributed, pts_attributed
@@ -384,6 +425,7 @@ def build_or_load_eez_joins(
                 else np.nan
             )
 
+        gdf_attributed_joined = _coerce_arrow_compatible(gdf_attributed_joined)
         gdf_attributed_joined.to_parquet(polygon_join_fp, index=False)
         spatial_join.log_step(
             f"Polygon join + save done in {spatial_join.time.time() - t0:.1f}s"
@@ -411,6 +453,7 @@ def build_or_load_eez_joins(
         pts_attributed_joined = pts_attributed_joined.drop(
             columns=drop_cols, errors="ignore"
         )
+        pts_attributed_joined = _coerce_arrow_compatible(pts_attributed_joined)
         pts_attributed_joined.to_parquet(point_join_fp, index=False)
         spatial_join.log_step(
             f"Point join + save done in {spatial_join.time.time() - t0:.1f}s"
@@ -515,6 +558,25 @@ def load_gomis_table(gomis_fp: Path):
     return gomis_df
 
 
+def aggregate_error_bounds(
+    df, metric: str = "stock_Gg", groupby_col: str = "TERRITORY1"
+):
+    metric_se = f"{metric}_se"
+    g = df.groupby(groupby_col, as_index=False).agg(
+        metric_total=(metric, "sum"),
+        # Lower-ish bound: independent errors (root-sum-of-squares).
+        se_rss=(
+            metric_se,
+            lambda s: np.sqrt(np.nansum(np.square(s.to_numpy(dtype=float)))),
+        ),
+        # Upper-ish bound: fully correlated errors (linear sum).
+        se_upper=(metric_se, lambda s: np.nansum(s.to_numpy(dtype=float))),
+    )
+    g["pct_err_rss"] = 100 * g["se_rss"] / g["metric_total"]
+    g["pct_err_upper"] = 100 * g["se_upper"] / g["metric_total"]
+    return g
+
+
 def build_national_metrics(ea_gdf: gpd.GeoDataFrame):
     """Aggregate national stock metrics from polygon-level data.
 
@@ -524,7 +586,7 @@ def build_national_metrics(ea_gdf: gpd.GeoDataFrame):
     Returns:
         pd.DataFrame: National summary table keyed by ``Country``.
     """
-    return (
+    national_metrics = (
         ea_gdf.groupby("TERRITORY1")
         .apply(
             lambda g: pd.Series(
@@ -539,19 +601,70 @@ def build_national_metrics(ea_gdf: gpd.GeoDataFrame):
                         g["stock_kg_ha"],
                     ),
                     "stock_Gg": g["stock_Gg"].sum(),
-                    # Propagate SE for summed stock using root-sum-of-squares
-                    # (assumes polygon-level errors are independent).
-                    "stock_Gg_se": float(
-                        np.sqrt(
-                            np.nansum(np.square(g["stock_Gg_se"].to_numpy(dtype=float)))
-                        )
-                    ),
                 }
             )
         )
         .reset_index()
         .rename(columns={"TERRITORY1": "Country"})
     )
+
+    # Add uncertainty bounds for territory-level weighted mean stock density.
+    # - rss (already in stock_kg_ha_se): assumes independent polygon errors.
+    # - upper: fully positively correlated polygon errors.
+    def _weighted_mean_se_upper(g: pd.DataFrame) -> float:
+        se = pd.to_numeric(g["stock_kg_ha_se"], errors="coerce").to_numpy(dtype=float)
+        w = pd.to_numeric(g["area_ha"], errors="coerce").to_numpy(dtype=float)
+        x = pd.to_numeric(g["stock_kg_ha"], errors="coerce").to_numpy(dtype=float)
+        mask = np.isfinite(se) & np.isfinite(w) & np.isfinite(x) & (w > 0)
+        if np.sum(mask) == 0 or np.sum(w[mask]) == 0:
+            return np.nan
+        return float(np.sum(w[mask] * se[mask]) / np.sum(w[mask]))
+
+    density_bounds = (
+        ea_gdf.groupby("TERRITORY1")
+        .apply(
+            lambda g: pd.Series(
+                {
+                    "stock_kg_ha_se_upper": _weighted_mean_se_upper(g),
+                }
+            )
+        )
+        .reset_index()
+        .rename(columns={"TERRITORY1": "Country"})
+    )
+
+    national_metrics = national_metrics.merge(density_bounds, on="Country", how="left")
+    national_metrics["stock_kg_ha_pct_err_rss"] = (
+        100 * national_metrics["stock_kg_ha_se"] / national_metrics["stock_kg_ha"]
+    )
+    national_metrics["stock_kg_ha_pct_err_upper"] = (
+        100 * national_metrics["stock_kg_ha_se_upper"] / national_metrics["stock_kg_ha"]
+    )
+
+    # Add both uncertainty bounds for national summed stock.
+    # - rss: lower-ish bound under independence.
+    # - upper: upper-ish bound under full positive correlation.
+    bounds = aggregate_error_bounds(
+        ea_gdf, metric="stock_Gg", groupby_col="TERRITORY1"
+    ).rename(
+        columns={
+            "TERRITORY1": "Country",
+            "se_rss": "stock_Gg_se",
+            "se_upper": "stock_Gg_se_upper",
+            "pct_err_rss": "stock_Gg_pct_err_rss",
+            "pct_err_upper": "stock_Gg_pct_err_upper",
+        }
+    )[
+        [
+            "Country",
+            "stock_Gg_se",
+            "stock_Gg_se_upper",
+            "stock_Gg_pct_err_rss",
+            "stock_Gg_pct_err_upper",
+        ]
+    ]
+
+    return national_metrics.merge(bounds, on="Country", how="left")
 
 
 def build_comparison_dataframe(ea_gdf: gpd.GeoDataFrame, gomis_fp: Path):
