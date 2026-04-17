@@ -84,7 +84,7 @@ This applies to covariate pruning, CV, tuning, final fits, and prediction maps.
 ## Pipeline order (`run_multiseed_pixel_grouped.R`)
 
 
-![Flowchart](report/flowchart.png)
+![Flowchart](report/modelling_flowchart.png)
 
 Primary outputs for a run live under **`output/pixel_grouped_<robust_fold_seeds>/`** (hyphen-separated seed string). Shared baseline paths still use **`output/<cv_regime>/`** from `cv_regime_name` / `cv_output_dir`.
 
