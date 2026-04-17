@@ -141,7 +141,7 @@ build_core_data <- function(project_root) {
 
 seagrass_require_core_inputs <- function(project_root) {
   core_data_path <- file.path(project_root, "data", "all_extracted_new.rds")
-  raster_dir <- file.path(project_root, "data", "covariate_rasters")
+  raster_dir <- file.path(project_root, "data", "env_rasters")
   if (!file.exists(core_data_path)) {
     build_core_data(project_root)
   }

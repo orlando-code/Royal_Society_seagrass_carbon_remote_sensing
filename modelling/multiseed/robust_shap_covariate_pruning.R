@@ -351,6 +351,8 @@ for (model_name in model_list) {
   if (length(v) >= 2L) {
     pruned_rows[[model_name]] <- data.frame(model = model_name, variable = v, stringsAsFactors = FALSE)
   }
+  # print any discarded variables
+  cat("  discarded variables for ", model_name, ": ", setdiff(importance_predictor_vars, v), "\n")
 }
 
 pruned_df <- dplyr::bind_rows(pruned_rows)

@@ -17,15 +17,16 @@ get_pipeline_config <- function(overrides = list()) {
     exclude_regions = c("Black Sea"),
 
     # Models / pruning defaults
-    # model_list = c("GPR", "GAM", "XGB", "LR"),
-    model_list = c("GPR", "GAM", "LR"),
+    model_list = c("GPR", "GAM", "XGB", "LR"),
+    # model_list = c("GPR", "GAM", "LR"),
+    # model_list = c("GAM", "LR"),
     include_seagrass_species = TRUE,
     use_correlation_filter = TRUE,
     # correlation_filter_threshold = 0.8,
     correlation_filter_threshold = 0.7,
     permutation_max_vars = 15L,
-    n_permutations = 1L,
-    permutation_coverage = 0.99,
+    n_permutations = 1L,  # for permutation importance
+    feature_coverage = 0.99,
     use_shap_per_model = TRUE,
     shap_selection_policy = "coverage_capped",
 
@@ -252,17 +253,17 @@ seagrass_confirm_same_config <- function(current_cfg,
   }
 }
 
-# Build a run-folder name that encodes split regime + seed-budget geometry.
-# Example:
-#   pixel_grouped_evaluation_62x3_seeds_48-66-77
-build_seeded_run_folder_name <- function(cv_type_label, folder_type,
-                                         repeat_seed_list, robust_seed_list,
-                                         include_seed_values = TRUE) {
-  n_repeats <- length(as.integer(repeat_seed_list))
-  n_seeds <- length(as.integer(robust_seed_list))
-  base <- paste0(cv_type_label, "_", folder_type, "_", n_repeats, "x", n_seeds, "_seeds")
-  if (!isTRUE(include_seed_values)) return(base)
-  seed_str <- paste(as.integer(robust_seed_list), collapse = "-")
-  if (!nzchar(seed_str)) return(base)
-  paste0(base, "_", seed_str)
-}
+# # Build a run-folder name that encodes split regime + seed-budget geometry.
+# # Example:
+# #   pixel_grouped_evaluation_62x3_seeds_48-66-77
+# build_seeded_run_folder_name <- function(cv_type_label, folder_type,
+#                                          repeat_seed_list, robust_seed_list,
+#                                          include_seed_values = TRUE) {
+#   n_repeats <- length(as.integer(repeat_seed_list))
+#   n_seeds <- length(as.integer(robust_seed_list))
+#   base <- paste0(cv_type_label, "_", folder_type, "_", n_repeats, "x", n_seeds, "_seeds")
+#   if (!isTRUE(include_seed_values)) return(base)
+#   seed_str <- paste(as.integer(robust_seed_list), collapse = "-")
+#   if (!nzchar(seed_str)) return(base)
+#   paste0(base, "_", seed_str)
+# }

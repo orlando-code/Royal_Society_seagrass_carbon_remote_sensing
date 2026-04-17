@@ -113,7 +113,7 @@ Primary outputs for a run live under **`output/pixel_grouped_<robust_fold_seeds>
 seagrass_mapping/
 ├── data/                         # Input data and build artefacts
 │   ├── all_extracted_new.rds     # Main extracted dataset (built by pipeline step 0)
-│   ├── covariate_rasters/              # NetCDF rasters (download from Zenodo repository: see below)
+│   ├── env_rasters/              # NetCDF rasters (download from Zenodo repository: see below)
 │   ├── ICES_ecoregions/          # Shapefiles from which to assign new points without regions (download online: see below)
 │   └── MEOW/                     # MEOW shapefile for region assignment (download online: see below)
 ├── modelling/
@@ -222,7 +222,7 @@ python -m pip install -r requirements.txt
 
 ## Environmental data
 
-The NetCDF raster files containing environmental covariates (from remote sensing and re-analysis products) are stored via Zenodo (persistent identifier: [https://doi.org/10.5281/zenodo.19329403](https://doi.org/10.5281/zenodo.19329403)). Download and place all `.nc` files under `data/covariate_rasters/`. The pipeline will auto-discover these covariates at runtime via the `build_covariate_config_from_dir` function in `modelling/R/extract_covariates_from_rasters.R`.
+The NetCDF raster files containing environmental covariates (from remote sensing and re-analysis products) are stored via Zenodo (persistent identifier: [https://doi.org/10.5281/zenodo.19329403](https://doi.org/10.5281/zenodo.19329403)). Download and place all `.nc` files under `data/env_rasters/`. The pipeline will auto-discover these covariates at runtime via the `build_covariate_config_from_dir` function in `modelling/R/extract_covariates_from_rasters.R`.
 
 ## Regions data
 
