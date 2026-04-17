@@ -45,7 +45,7 @@ if (!exists("seagrass_init_repo", mode = "function", inherits = TRUE)) {
 }
 
 project_root <- seagrass_init_repo(
-  packages = c("here", "readr", "dplyr", "tidyr", "ggplot2"),
+  packages = c("here", "readr", "dplyr", "tidyr", "ggplot2", "patchwork"),
   source_files = c("modelling/pipeline_config.R", "modelling/plots/plot_config.R")
 )
 cfg <- get_pipeline_config()
@@ -69,6 +69,198 @@ resolve_sweep_out_dir <- function(project_root, cfg, sweep_out_dir = NULL) {
   sweep_dirs[which.max(file.info(sweep_dirs)$mtime)]
 }
 
+validate_tss_model_list <- function(sweep_df, model_list) {
+  available <- sort(unique(as.character(sweep_df$model)))
+  requested <- as.character(model_list)
+  missing <- setdiff(requested, available)
+  if (length(missing) > 0L) {
+    stop(
+      "Requested model_list not found in sweep summary CSV: ",
+      paste(missing, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  requested
+}
+
+plot_tuning_seed_sweep_summary <- function(
+  sweep_df,
+  out_dir,
+  project_root,
+  dpi = cfg$dpi,
+  model_list = cfg$model_list
+) {
+  required_cols <- c(
+    "model", "n_tuning_seeds",
+    "mean_pooled_r2", "mean_mean_r2",
+    "mean_pooled_rmse", "mean_mean_rmse"
+  )
+  missing_cols <- setdiff(required_cols, names(sweep_df))
+  if (length(missing_cols) > 0L) {
+    stop(
+      "Sweep summary missing required columns: ",
+      paste(missing_cols, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  if (!("sd_pooled_r2" %in% names(sweep_df))) sweep_df$sd_pooled_r2 <- NA_real_
+  if (!("sd_mean_r2" %in% names(sweep_df))) sweep_df$sd_mean_r2 <- NA_real_
+  if (!("sd_pooled_rmse" %in% names(sweep_df))) sweep_df$sd_pooled_rmse <- NA_real_
+  if (!("sd_mean_rmse" %in% names(sweep_df))) sweep_df$sd_mean_rmse <- NA_real_
+
+  model_list <- validate_tss_model_list(sweep_df, model_list)
+
+  df <- sweep_df %>%
+    dplyr::mutate(
+      model = as.character(model),
+      n_tuning_seeds = as.integer(n_tuning_seeds)
+    ) %>%
+    dplyr::filter(model %in% model_list)
+
+  # Aggregate across sweep repeats so each model has one pooled and one mean-fold
+  # point per n_tuning_seeds; error bars are standard errors across repeats.
+  summarise_by_repeat <- function(long_df) {
+    long_df %>%
+      dplyr::group_by(model, n_tuning_seeds, Type) %>%
+      dplyr::summarise(
+        n_rep = sum(is.finite(Value)),
+        Value = mean(Value, na.rm = TRUE),
+        SE = dplyr::if_else(
+          n_rep > 1L,
+          stats::sd(Value_raw, na.rm = TRUE) / sqrt(n_rep),
+          NA_real_
+        ),
+        .groups = "drop"
+      )
+  }
+
+  r2_long <- dplyr::bind_rows(
+    df %>%
+      dplyr::transmute(
+        model,
+        n_tuning_seeds,
+        Type = "Pooled",
+        Value_raw = as.numeric(mean_pooled_r2)
+      ),
+    df %>%
+      dplyr::transmute(
+        model,
+        n_tuning_seeds,
+        Type = "Mean fold",
+        Value_raw = as.numeric(mean_mean_r2)
+      )
+  ) %>%
+    dplyr::mutate(Value = Value_raw) %>%
+    summarise_by_repeat()
+
+  rmse_long <- dplyr::bind_rows(
+    df %>%
+      dplyr::transmute(
+        model,
+        n_tuning_seeds,
+        Type = "Pooled",
+        Value_raw = as.numeric(mean_pooled_rmse)
+      ),
+    df %>%
+      dplyr::transmute(
+        model,
+        n_tuning_seeds,
+        Type = "Mean fold",
+        Value_raw = as.numeric(mean_mean_rmse)
+      )
+  ) %>%
+    dplyr::mutate(Value = Value_raw) %>%
+    summarise_by_repeat()
+
+  r2_long <- r2_long %>%
+    dplyr::mutate(
+      model = factor(model, levels = model_list),
+      Type = factor(Type, levels = c("Pooled", "Mean fold"))
+    )
+  rmse_long <- rmse_long %>%
+    dplyr::mutate(
+      model = factor(model, levels = model_list),
+      Type = factor(Type, levels = c("Pooled", "Mean fold"))
+    )
+
+  linestyle_values <- c(
+    "Pooled" = unname(METRIC_LINESTYLES["Pooled R2"]),
+    "Mean fold" = unname(METRIC_LINESTYLES["Mean-fold R2"])
+  )
+
+  p_r2 <- ggplot2::ggplot(
+    r2_long,
+    ggplot2::aes(
+      x = n_tuning_seeds,
+      y = Value,
+      color = model,
+      linetype = Type,
+      group = interaction(model, Type)
+    )
+  ) +
+    ggplot2::geom_line(linewidth = 0.8) +
+    ggplot2::geom_point(size = 1.8) +
+    ggplot2::geom_errorbar(
+      ggplot2::aes(ymin = Value - SE, ymax = Value + SE),
+      width = 0.22,
+      alpha = 0.75,
+      na.rm = TRUE
+    ) +
+    ggplot2::scale_color_manual(values = MODEL_COLOURS, breaks = model_list, drop = FALSE) +
+    ggplot2::scale_linetype_manual(values = linestyle_values, drop = FALSE) +
+    ggplot2::labs(
+      x = "Number of model tuning seeds",
+      y = expression(R^2*" value"),
+      color = "Model",
+      linetype = "Type"
+    ) +
+    theme_paper()
+
+  p_rmse <- ggplot2::ggplot(
+    rmse_long,
+    ggplot2::aes(
+      x = n_tuning_seeds,
+      y = Value,
+      color = model,
+      linetype = Type,
+      group = interaction(model, Type)
+    )
+  ) +
+    ggplot2::geom_line(linewidth = 0.8) +
+    ggplot2::geom_point(size = 1.8) +
+    ggplot2::geom_errorbar(
+      ggplot2::aes(ymin = Value - SE, ymax = Value + SE),
+      width = 0.22,
+      alpha = 0.75,
+      na.rm = TRUE
+    ) +
+    ggplot2::scale_color_manual(values = MODEL_COLOURS, breaks = model_list, drop = FALSE) +
+    ggplot2::scale_linetype_manual(values = linestyle_values, drop = FALSE) +
+    ggplot2::labs(
+      x = "Number of model tuning seeds",
+      y = "RMSE",
+      color = "Model",
+      linetype = "Type"
+    ) +
+    theme_paper()
+
+  combined <- p_r2 / p_rmse + patchwork::plot_layout(guides = "collect")
+
+  out_r2 <- file.path(out_dir, TUNING_SWEEP_OUTPUT_PNGS[[1]])
+  out_rmse <- file.path(out_dir, TUNING_SWEEP_OUTPUT_PNGS[[2]])
+  out_combined <- file.path(out_dir, TUNING_SWEEP_OUTPUT_PNGS[[3]])
+
+  ggplot2::ggsave(out_r2, p_r2, width = 9.5, height = 4.6, dpi = dpi)
+  ggplot2::ggsave(out_rmse, p_rmse, width = 9.5, height = 4.6, dpi = dpi)
+  ggplot2::ggsave(out_combined, combined, width = 10.5, height = 8.4, dpi = dpi)
+
+  plot_log_tss(paste0("Wrote: ", rel_path_tss(out_r2)))
+  plot_log_tss(paste0("Wrote: ", rel_path_tss(out_rmse)))
+  plot_log_tss(paste0("Wrote: ", rel_path_tss(out_combined)))
+  invisible(combined)
+}
+
 plot_tuning_seed_sweep <- function(sweep_out_dir = NULL,
                                             model_list = cfg$model_list,
                                             dpi = cfg$dpi) {
@@ -81,7 +273,6 @@ plot_tuning_seed_sweep <- function(sweep_out_dir = NULL,
     stop("Missing sweep summary CSV: ", sweep_csv, call. = FALSE)
   }
 
-  source(file.path(project_root, "modelling/plots/plot_tuning_seed_sweep.R"))
   plot_log_tss("Sources: modelling/R/init_repo.R, modelling/pipeline_config.R, modelling/plots/plot_config.R, modelling/plots/plot_tuning_seed_sweep.R")
   plot_log_tss(paste0("Input CSV: ", rel_path_tss(sweep_csv)))
   plot_log_tss(paste0("Requested model_list: ", paste(as.character(model_list), collapse = ", ")))
