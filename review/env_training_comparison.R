@@ -241,8 +241,8 @@ compare_prediction_env_to_training <- function(
       pmax(min_val, pmin(max_val, x))
     }
     plot_height_for_n_points <- function(n) {
-      row_in <- if (n > 100L) 0.12 else if (n > 50L) 0.2 else 0.35
-      clamp_plot_inches(row_in * n + 2)
+      row_in <- if (n > 100L) 0.06 else if (n > 50L) 0.1 else 0.18
+      clamp_plot_inches(row_in * n + 1)
     }
     plot_width_for_n_vars <- function(n) {
       clamp_plot_inches(0.45 * n + 4, min_val = 8)
@@ -273,6 +273,14 @@ compare_prediction_env_to_training <- function(
       levels = rev(unique(plot_df$point_label))
     )
 
+    plot_df$outside_range_label <- sprintf(
+      "%d/%d",
+      plot_df$env_n_predictors_outside_range,
+      plot_df$env_n_predictors_compared
+    )
+    x_max <- max(plot_df$env_similarity_score, na.rm = TRUE)
+    label_x <- x_max * 1.08
+
     p_sim <- ggplot2::ggplot(
       plot_df,
       ggplot2::aes(
@@ -281,11 +289,29 @@ compare_prediction_env_to_training <- function(
         fill = .data$env_flag_extrapolation
       )
     ) +
-      ggplot2::geom_col(width = 0.7) +
+      ggplot2::geom_col(width = 0.35) +
+      ggplot2::geom_text(
+        ggplot2::aes(
+          y = .data$point_label,
+          label = .data$outside_range_label
+        ),
+        x = label_x,
+        hjust = 1,
+        size = 2.2,
+        colour = "grey15",
+        inherit.aes = FALSE
+      ) +
       ggplot2::geom_vline(
         xintercept = similarity_threshold,
         linetype = "dashed",
         colour = "firebrick"
+      ) +
+      ggplot2::scale_x_continuous(
+        limits = c(0, label_x),
+        expand = ggplot2::expansion(mult = c(0.02, 0))
+      ) +
+      ggplot2::scale_y_discrete(
+        expand = ggplot2::expansion(mult = c(0, 0), add = 0.08)
       ) +
       ggplot2::scale_fill_manual(
         values = c("TRUE" = "#D6604D", "FALSE" = "#2166AC"),
@@ -295,12 +321,17 @@ compare_prediction_env_to_training <- function(
       ggplot2::labs(
         title = "Environmental similarity to training data",
         subtitle = paste0(
-          "Dashed line = similarity threshold (", similarity_threshold, ")"
+          "Dashed line = similarity threshold (", similarity_threshold,
+          "); bar labels = covariates outside training range"
         ),
         x = paste0("Similarity score (", similarity_method, ")"),
         y = NULL
       ) +
-      ggplot2::theme_minimal()
+      ggplot2::theme_minimal() +
+      ggplot2::theme(
+        plot.margin = ggplot2::margin(4, 4, 4, 4, "pt"),
+        axis.text.y = ggplot2::element_text(size = 6)
+      )
 
     ggplot2::ggsave(
       file.path(output_dir, "env_training_similarity_by_point.png"),
