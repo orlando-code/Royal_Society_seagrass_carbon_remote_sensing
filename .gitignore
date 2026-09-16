@@ -59,3 +59,5 @@ renv/library/
 __pycache__/
 python_helpers/ignore.ipynb
 *ignore
+# local GPR refit helper (not versioned)
+review/export_gpr_final.R
