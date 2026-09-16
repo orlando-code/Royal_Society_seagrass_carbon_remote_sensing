@@ -102,7 +102,7 @@ env_cmp <- compare_prediction_env_to_training(
 )
 
 # -----------------------------------------------------------------------------
-# Predict carbon density and calculate carbon stock in upper metre of sediment
+# Predict carbon density
 # -----------------------------------------------------------------------------
 cat("\n\nPredicting carbon density at", nrow(points), "point(s)...\n")
 pred <- predict_model(model, pred_data, se = TRUE)
