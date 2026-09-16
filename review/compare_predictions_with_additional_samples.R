@@ -215,10 +215,10 @@ metrics_annotation <- function(model_metrics, species_metrics) {
   )
 }
 
-add_comparison_scatter <- function(plot, x_model, x_species, y_measured) {
+add_comparison_scatter <- function(plot, y_model, y_species, x_measured) {
   plot +
-    geom_point(aes(x = .data[[x_model]], y = .data[[y_measured]], color = "Model prediction")) +
-    geom_point(aes(x = .data[[x_species]], y = .data[[y_measured]], color = "Species-mean prediction")) +
+    geom_point(aes(x = .data[[x_measured]], y = .data[[y_model]], color = "Model prediction")) +
+    geom_point(aes(x = .data[[x_measured]], y = .data[[y_species]], color = "Species-mean prediction")) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey40") +
     scale_color_manual(name = NULL, values = comparison_colors)
 }
@@ -302,8 +302,8 @@ save_and_show_plot(
     metrics_annotation(training_model_metrics, training_species_metrics) +
     labs(
       title = "Sanity check: original training data",
-      x = "Predicted carbon density",
-      y = "Measured carbon density"
+      x = "Measured carbon density",
+      y = "Predicted carbon density"
     ) +
     theme_minimal() +
     theme(plot.margin = ggplot2::margin(5.5, 12, 5.5, 5.5)),
@@ -323,7 +323,7 @@ save_and_show_plot(
     "measured_carbon_density"
   ) +
     metrics_annotation(model_density_metrics, species_density_metrics) +
-    labs(x = "Predicted carbon density", y = "Measured carbon density") +
+    labs(x = "Measured carbon density", y = "Predicted carbon density") +
     theme_minimal() +
     theme(plot.margin = ggplot2::margin(5.5, 12, 5.5, 5.5)),
   "predicted_vs_measured_carbon_density.png",
