@@ -66,7 +66,7 @@ raster_covars <- setdiff(
 missing_rasters <- setdiff(tolower(raster_covars), raster_covariates)
 if (length(missing_rasters) > 0) {
   stop(
-    "Model requires raster covariate(s) not found under data/env_rasters: ",
+    "Model requires raster covariate(s) not found under data/env_rasters directory: ",
     paste(missing_rasters, collapse = ", ")
   )
 }
