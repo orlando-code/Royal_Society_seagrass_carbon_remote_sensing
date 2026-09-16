@@ -1,7 +1,7 @@
 # Predict seagrass carbon density at points and compare with measured values
-
-# Run from the repository root (or source in an interactive session after opening
-# this folder as the R working directory so renv activates via .Rprofile).
+#
+# First install the renv package and run `renv::restore()` to install the
+# necessary packages.
 
 sys.source("modelling/R/init_repo.R", envir = .GlobalEnv)
 project_root <- seagrass_init_repo(
@@ -22,12 +22,15 @@ sys.source("review/env_training_comparison.R", envir = .GlobalEnv)
 # -----------------------------------------------------------------------------
 dat_fp <- file.path("data", "review", "PercOC_only_unique_reduced_df.xlsx")
 model_fp <- file.path("data", "review", "GPR_final.rds")
-output_fp <- file.path("data", "review", "PercOC_only_unique_reduced_df_predictions.csv")
+output_fp <- file.path("output", "review", "PercOC_only_unique_reduced_df_predictions.csv")
 plot_output_dir <- file.path("output", "review", "additional_samples_comparison")
 env_comparison_output_dir <- file.path(plot_output_dir, "env_training_comparison")
 train_data_fp <- file.path(project_root, "data", "all_extracted_new.rds")
 measured_carbon_density_column <- "median_carbon_density_100cm_calc"
 
+# make sure output directories exist
+dir.create(dirname(output_fp), showWarnings = FALSE, recursive = TRUE)
+dir.create(plot_output_dir, showWarnings = FALSE, recursive = TRUE)
 # -----------------------------------------------------------------------------
 # Load sample coordinates from file 
 # -----------------------------------------------------------------------------
@@ -100,7 +103,7 @@ env_cmp <- compare_prediction_env_to_training(
 )
 
 # -----------------------------------------------------------------------------
-# Predict carbon density and calculate carbon stock in upper metre of sediment
+# Predict carbon density
 # -----------------------------------------------------------------------------
 cat("\n\nPredicting carbon density at", nrow(points), "point(s)...\n")
 pred <- predict_model(model, pred_data, se = TRUE)
@@ -124,13 +127,6 @@ results <- dplyr::bind_cols(
     )
 )
 
-# calculate carbon stock in upper metre of sediment
-results <- results %>%
-  mutate(
-    carbon_stock = predicted_carbon_density * 1000 * 0.1  # 1000 kg C/ha * 0.1 m = 100 kg C/m2
-  ) # TODO: check this calculation
-
-
 # -----------------------------------------------------------------------------
 # Compare predictions with measured values
 # -----------------------------------------------------------------------------
@@ -142,9 +138,7 @@ if (!measured_carbon_density_column %in% names(results)) {
 results <- results %>%
   mutate(
     measured_carbon_density = .data[[measured_carbon_density_column]],
-    measured_carbon_stock = measured_carbon_density * 1000 * 0.1,
     density_residual = measured_carbon_density - predicted_carbon_density,
-    stock_residual = measured_carbon_stock - carbon_stock
   )
 
 
@@ -162,9 +156,7 @@ results <- results %>%
       seagrass_species,
       fallback = global_mean
     ),
-    species_mean_carbon_stock = species_mean_predicted_carbon_density * 1000 * 0.1,
     species_mean_density_residual = measured_carbon_density - species_mean_predicted_carbon_density,
-    species_mean_stock_residual = measured_carbon_stock - species_mean_carbon_stock
   )
 
 model_density_metrics <- calculate_metrics(
@@ -175,14 +167,7 @@ species_density_metrics <- calculate_metrics(
   results$measured_carbon_density,
   results$species_mean_predicted_carbon_density
 )
-model_stock_metrics <- calculate_metrics(
-  results$measured_carbon_stock,
-  results$carbon_stock
-)
-species_stock_metrics <- calculate_metrics(
-  results$measured_carbon_stock,
-  results$species_mean_carbon_stock
-)
+
 
 # -----------------------------------------------------------------------------
 # Plot functions
@@ -253,7 +238,7 @@ cat("\n\nPlotting and writing results...\n")
 dir.create(plot_output_dir, recursive = TRUE, showWarnings = FALSE)
 
 # -----------------------------------------------------------------------------
-# Sanity check: model predictions on original training data
+# Sanity check: model predictions on original training data – shows a nice scatter along 1:1 line
 # -----------------------------------------------------------------------------
 cat("\nSanity check: predicting on original training data (all_extracted_new.rds)...\n")
 training_data <- process_rs_covariates(train_data)
@@ -328,7 +313,7 @@ save_and_show_plot(
 )
 
 # -----------------------------------------------------------------------------
-# Additional samples: compare model predictions with species-mean predictions
+# Additional samples: compare model predictions with species-mean predictions (the current state of the art baseline)
 # -----------------------------------------------------------------------------
 save_and_show_plot(
   add_comparison_scatter(
@@ -346,24 +331,6 @@ save_and_show_plot(
   height = 5.5
 )
 
-save_and_show_plot(
-  add_comparison_scatter(
-    ggplot(results, aes()),
-    "carbon_stock",
-    "species_mean_carbon_stock",
-    "measured_carbon_stock"
-  ) +
-    metrics_annotation(model_stock_metrics, species_stock_metrics) +
-    labs(
-      x = "Predicted carbon stock in upper metre of sediment",
-      y = "Measured carbon stock in upper metre of sediment"
-    ) +
-    theme_minimal() +
-    theme(plot.margin = ggplot2::margin(5.5, 12, 5.5, 5.5)),
-  "predicted_vs_measured_carbon_stock.png",
-  width = 7.5,
-  height = 5.5
-)
 
 save_and_show_plot(
   add_comparison_residuals(
@@ -382,24 +349,74 @@ save_and_show_plot(
   height = 5.5
 )
 
+# -----------------------------------------------------------------------------
+# Carbon density distributions: training vs additional samples
+# -----------------------------------------------------------------------------
+distribution_colors <- c(
+  "Training" = "#4D4D4D",
+  "Additional samples" = "#2166AC"
+)
+
+additional_species <- sort(unique(as.character(results$seagrass_species)))
+
+distribution_plot_data <- dplyr::bind_rows(
+  train_data %>%
+    dplyr::transmute(
+      seagrass_species = as.character(.data$seagrass_species),
+      carbon_density = .data$median_carbon_density_100cm,
+      dataset = "Training"
+    ),
+  results %>%
+    dplyr::transmute(
+      seagrass_species = as.character(.data$seagrass_species),
+      carbon_density = .data$measured_carbon_density,
+      dataset = "Additional samples"
+    )
+) %>%
+  dplyr::filter(
+    .data$seagrass_species %in% additional_species,
+    is.finite(.data$carbon_density)
+  )
+
+distribution_mean_lines <- distribution_plot_data %>%
+  dplyr::group_by(.data$seagrass_species, .data$dataset) %>%
+  dplyr::summarise(
+    mean_carbon_density = mean(.data$carbon_density),
+    n = dplyr::n(),
+    .groups = "drop"
+  )
+
 save_and_show_plot(
-  add_comparison_residuals(
-    ggplot(results, aes()),
-    "carbon_stock",
-    "species_mean_carbon_stock",
-    "stock_residual",
-    "species_mean_stock_residual"
-  ) +
-    metrics_annotation(model_stock_metrics, species_stock_metrics) +
+  ggplot(distribution_plot_data, aes(x = .data$carbon_density, fill = .data$dataset, colour = .data$dataset)) +
+    geom_histogram(
+      bins = 30,
+      boundary = 0,
+      position = "identity",
+      alpha = 0.45
+    ) +
+    geom_vline(
+      data = distribution_mean_lines,
+      aes(xintercept = .data$mean_carbon_density, colour = .data$dataset),
+      linetype = "dashed",
+      linewidth = 0.8
+    ) +
+    facet_wrap(~ .data$seagrass_species, scales = "free") +
+    scale_fill_manual(name = NULL, values = distribution_colors) +
+    scale_colour_manual(name = NULL, values = distribution_colors) +
     labs(
-      x = "Predicted carbon stock in upper metre of sediment",
-      y = "Stock residual (measured - predicted)"
+      title = "Carbon density: training vs additional samples",
+      subtitle = "Dashed vertical lines show the species mean in each dataset",
+      x = "Carbon density (g C/cm\u00b3)",
+      y = "Count"
     ) +
     theme_minimal() +
-    theme(plot.margin = ggplot2::margin(5.5, 12, 5.5, 5.5)),
-  "carbon_stock_residuals.png",
-  width = 7.5,
-  height = 5.5
+    theme(
+      plot.margin = ggplot2::margin(5.5, 12, 5.5, 5.5),
+      strip.text = element_text(face = "bold")
+    ),
+  "carbon_density_training_vs_additional_histogram.png",
+  width = 10,
+  height = 6.5
 )
 
 

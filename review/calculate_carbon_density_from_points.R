@@ -1,7 +1,7 @@
 # Predict seagrass carbon density at sample coordinates using the pre-trained model.
 #
-# Run from the repository root (or source in an interactive session after opening
-# this folder as the R working directory so renv activates via .Rprofile).
+# First install the renv package and run `renv::restore()` to install the
+# necessary packages.
 
 sys.source("modelling/R/init_repo.R", envir = .GlobalEnv)
 project_root <- seagrass_init_repo(
@@ -22,9 +22,12 @@ sys.source("review/env_training_comparison.R", envir = .GlobalEnv)
 # -----------------------------------------------------------------------------
 dat_fp <- file.path("data", "review", "SMEEF Donor Meadow Coordinates.xlsx")
 model_fp <- file.path("data", "review", "GPR_final.rds")
-output_fp <- file.path("data", "review", "donor_meadow_carbon_density_predictions.csv")
+output_fp <- file.path("output", "review", "donor_meadow_carbon_density_predictions.csv")
 env_comparison_output_dir <- file.path("output", "review", "donor_meadow_env_comparison")
 train_data_fp <- file.path(project_root, "data", "all_extracted_new.rds")
+
+# make sure output directory exists
+dir.create(dirname(output_fp), showWarnings = FALSE, recursive = TRUE)
 
 # -----------------------------------------------------------------------------
 # Load sample coordinates from file 
@@ -121,13 +124,6 @@ results <- dplyr::bind_cols(
       env_flag_extrapolation
     )
 )
-
-# Calculate carbon stock in upper metre of sediment
-results <- results %>%
-  mutate(
-    carbon_stock = predicted_carbon_density * 1000 * 0.1  # 1000 kg C/ha * 0.1 m = 100 kg C/m2
-  ) # TODO: check this calculation
-
 
 # -----------------------------------------------------------------------------
 # Append to original dataframe and write results to file
