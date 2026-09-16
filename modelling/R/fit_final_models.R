@@ -13,8 +13,10 @@
 #   $cv_metrics       – data.frame of tuning fold metrics when loaded from tuning
 #   $train_metrics    – r2 / rmse on the full training set (in-sample)
 #   $scale_params     – list(means, sds) for z-score re-prediction
-#   $encoding         – categorical encoding (levels) for factor predictors used
-#   $encoded_names    – same as predictor_vars (no one-hot expansion)
+#   $encoding         – categorical encoding (levels); GPR uses type gpr_species_adjusted
+#   $encoded_names    – design-matrix column names (env kernel dims for GPR; may differ from predictor_vars)
+#   $species_means    – GPR species fixed-effect means (added back at prediction)
+#   $global_mean      – GPR fallback mean for unseen species levels
 #
 # Usage: sourced from run_paper.R (step 5), or run standalone.
 
@@ -303,6 +305,8 @@ if ("GPR" %in% model_list) {
     scale_params       = gpr_final_fit$scale_params,
     encoding           = gpr_final_fit$encoding,
     encoded_names      = gpr_final_fit$encoded_names,
+    species_means      = gpr_final_fit$species_means,
+    global_mean        = gpr_final_fit$global_mean,
     cv_metrics        = gpr_cv_metrics,
     train_metrics      = gpr_train_metrics,
     log_response       = log_transform_target

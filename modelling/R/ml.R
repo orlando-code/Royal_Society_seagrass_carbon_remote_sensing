@@ -17,9 +17,98 @@ quote_formula_terms <- function(vars) {
 }
 
 # ================================ SCALING & ENCODING ================================
-# XGB: categoricals -> integer codes, then z-score scale (prepare_predictors_train / prepare_predictors_new).
-# GPR: categoricals -> one-hot expansion, then z-score scale (prepare_predictors_train_onehot / prepare_predictors_new_onehot).
-# GAM/RF/LR: scale numerics only, categoricals stay as factors (prepare_predictors_train_numeric_only).
+# GAM/LR/RF: factor(seagrass_species) + z-scaled numerics (prepare_predictors_train_numeric_only).
+# XGB: categoricals -> one-hot dummies (not scaled) + z-scaled numerics (prepare_predictors_train_xgb).
+# GPR: training-fold species means subtracted from response; GP kernel on env predictors only
+#      (prepare_predictors_train_onehot on kernel vars); species means added back at predict.
+# Integer codes (prepare_predictors_train) retained for XGB/GPR SHAP variable selection only.
+
+SPECIES_FIXED_EFFECT_VARS <- "seagrass_species"
+DEFAULT_CATEGORICAL_VARS  <- c("seagrass_species", "region", "Region")
+
+#' Species columns handled as training-fold fixed effects in GPR (excluded from GP kernel).
+get_species_fixed_vars <- function(predictor_vars) {
+  intersect(predictor_vars, SPECIES_FIXED_EFFECT_VARS)
+}
+
+#' Ensure categorical predictors are factors (GAM/LR/RF/GPR/XGB).
+#'
+#' When \code{reference_levels} is supplied (typically training-fold levels for
+#' test data), values outside those levels are left as \code{NA}. Downstream
+#' encoders decide how to handle them:
+#' \itemize{
+#'   \item XGB one-hot: cold encoding (all category dummies 0); see
+#'     \code{build_one_hot_dummies_cold}.
+#'   \item GAM/LR/RF: reference-level imputation in \code{prepare_data_for_model}.
+#'   \item CV metrics: rows outside the training support are dropped via
+#'     \code{test_rows_with_factors_in_train}.
+#' }
+ensure_categorical_factors <- function(data, predictor_vars,
+                                       categorical_vars = DEFAULT_CATEGORICAL_VARS,
+                                       reference_levels = NULL) {
+  data <- as.data.frame(data)
+  cat_vars <- intersect(predictor_vars, categorical_vars)
+  cat_vars <- cat_vars[vapply(cat_vars, function(v) v %in% names(data), logical(1))]
+  cat_vars <- cat_vars[vapply(cat_vars, function(v) {
+    is.factor(data[[v]]) || is.character(data[[v]])
+  }, logical(1))]
+  for (v in cat_vars) {
+    if (!is.null(reference_levels) && v %in% names(reference_levels)) {
+      data[[v]] <- factor(as.character(data[[v]]), levels = reference_levels[[v]])
+    } else {
+      if (is.character(data[[v]])) data[[v]] <- factor(data[[v]])
+      if (!is.factor(data[[v]])) data[[v]] <- factor(as.character(data[[v]]))
+    }
+  }
+  data
+}
+
+#' One-hot dummy block with cold encoding for unseen category levels.
+#' Rows whose category is absent from \code{train_levels_by_var} keep all dummies at 0.
+build_one_hot_dummies_cold <- function(X, cat_vars, train_levels_by_var, dummy_colnames) {
+  n <- nrow(X)
+  dummy_colnames <- as.character(dummy_colnames)
+  if (length(dummy_colnames) == 0L || n == 0L) {
+    return(as.data.frame(matrix(numeric(0), nrow = n, ncol = 0L)))
+  }
+  out <- as.data.frame(matrix(0, nrow = n, ncol = length(dummy_colnames)))
+  names(out) <- dummy_colnames
+  if (length(cat_vars) == 0L) return(out)
+
+  for (v in cat_vars) {
+    levs <- train_levels_by_var[[v]]
+    if (is.null(levs) || length(levs) == 0L) next
+    raw <- as.character(X[[v]])
+    known <- !is.na(raw) & raw %in% levs
+    if (!any(known)) next
+    Xi <- data.frame(tmp = raw[known], stringsAsFactors = FALSE)
+    names(Xi) <- v
+    Xi[[v]] <- factor(raw[known], levels = levs)
+    mm <- model.matrix(as.formula(paste("~", v, "- 1")), data = Xi)
+    colnames(mm) <- make.names(colnames(mm), unique = TRUE)
+    for (cn in colnames(mm)) {
+      if (cn %in% dummy_colnames) out[[cn]][known] <- mm[, cn]
+    }
+  }
+  out
+}
+
+#' Training-fold species means for GPR Option A (on the response scale used for fitting).
+compute_train_species_means <- function(train_data, response_var = "median_carbon_density",
+                                        species_var = "seagrass_species") {
+  if (!species_var %in% names(train_data)) return(NULL)
+  means <- tapply(train_data[[response_var]], train_data[[species_var]], mean, na.rm = TRUE)
+  structure(as.numeric(means), names = names(means))
+}
+
+#' Look up species means for prediction; unseen levels get \code{fallback}.
+lookup_species_means <- function(species_means, species_vec, fallback = 0) {
+  if (is.null(species_means)) return(rep(fallback, length(species_vec)))
+  out <- as.numeric(species_means[as.character(species_vec)])
+  nas <- is.na(out)
+  if (any(nas)) out[nas] <- fallback
+  out
+}
 
 #' Compute z-score scaling parameters from training data (numeric columns only).
 #' @param data Training data frame.
@@ -156,6 +245,81 @@ prepare_predictors_new_onehot <- function(data, encoding, encoded_names) {
   mm_df
 }
 
+#' Build one-hot encoded design matrix for XGB.
+#' Numeric predictors are z-scaled; categorical dummy columns are left on the 0/1 scale.
+prepare_predictors_train_xgb <- function(data, predictor_vars,
+                                         categorical_vars = c("seagrass_species", "region", "Region")) {
+  data <- ensure_categorical_factors(data, predictor_vars, categorical_vars)
+  X <- as.data.frame(data[, predictor_vars, drop = FALSE])
+  cat_vars <- intersect(predictor_vars, categorical_vars)
+  cat_vars <- cat_vars[vapply(X[cat_vars], function(col) is.factor(col) || is.character(col), logical(1))]
+  num_vars <- setdiff(predictor_vars, cat_vars)
+
+  dummy_df <- if (length(cat_vars) > 0L) {
+    mm <- model.matrix(as.formula(paste("~", paste(cat_vars, collapse = " + "), "- 1")), data = X)
+    colnames(mm) <- make.names(colnames(mm), unique = TRUE)
+    as.data.frame(mm)
+  } else {
+    data.frame()
+  }
+
+  num_df <- if (length(num_vars) > 0L) X[, num_vars, drop = FALSE] else data.frame()
+  if (ncol(num_df) > 0L) {
+    sp <- compute_scale_params(num_df, names(num_df))
+    num_df <- apply_scaling(num_df, sp, names(num_df))
+  } else {
+    sp <- list(means = numeric(), sds = numeric())
+  }
+
+  out <- cbind(num_df, dummy_df)
+  list(
+    data = out,
+    scale_params = sp,
+    encoding = list(
+      type = "xgb_one_hot",
+      levels = stats::setNames(lapply(cat_vars, function(v) levels(X[[v]])), cat_vars),
+      numeric_vars = num_vars,
+      dummy_vars = names(dummy_df),
+      predictor_vars = predictor_vars
+    ),
+    encoded_names = names(out)
+  )
+}
+
+#' Apply train-derived XGB one-hot encoding to new data and align columns.
+#' Unseen category levels use cold encoding (all dummies 0 for that variable).
+prepare_predictors_new_xgb <- function(data, encoding, encoded_names) {
+  pvars <- encoding$predictor_vars %||% names(data)
+  categorical_vars <- names(encoding$levels %||% list())
+  data <- ensure_categorical_factors(
+    data,
+    pvars,
+    categorical_vars = categorical_vars,
+    reference_levels = encoding$levels
+  )
+  X <- as.data.frame(data[, pvars, drop = FALSE])
+  cat_vars <- intersect(names(encoding$levels %||% list()), pvars)
+  dummy_vars <- encoding$dummy_vars %||% character()
+
+  num_vars <- encoding$numeric_vars %||% character()
+  num_df <- if (length(num_vars) > 0L) X[, num_vars, drop = FALSE] else data.frame()
+  if (ncol(num_df) > 0L && length(encoding$scale_params$means %||% NULL) > 0L) {
+    num_df <- apply_scaling(num_df, encoding$scale_params, num_vars)
+  }
+
+  dummy_df <- build_one_hot_dummies_cold(
+    X = X,
+    cat_vars = cat_vars,
+    train_levels_by_var = encoding$levels,
+    dummy_colnames = dummy_vars
+  )
+
+  out <- cbind(num_df, dummy_df)
+  miss <- setdiff(encoded_names, names(out))
+  for (m in miss) out[[m]] <- 0
+  out[, encoded_names, drop = FALSE]
+}
+
 #' Prepare predictor matrix from training data: categoricals to codes + scale. Single source of truth for all models.
 #' @param data Training data (predictor columns only or full frame with predictor_vars).
 #' @param predictor_vars Character vector of predictor names.
@@ -190,20 +354,36 @@ prepare_predictors_train_numeric_only <- function(data, predictor_vars) {
 }
 
 #' Prepare train/test data for a given model.
-#' XGB: categoricals -> integer codes + scale. GAM/RF/LR: scale numerics only, categoricals stay as factors.
-#' GPR returns raw so \code{fit_gpr} can do prep internally (formula, prediction_grid, etc.).
+#' XGB: one-hot categoricals + z-scaled numerics. GAM/RF/LR: scale numerics only, categoricals stay as factors.
+#' GPR returns raw so \code{fit_gpr} can do species adjustment and kernel prep internally.
 prepare_data_for_model <- function(model_name, train, test, predictor_vars) {
-  if (model_name == "GPR")
-    return(list(train = train, test = test, predictor_vars = predictor_vars, scale_params = NULL, encoding = NULL))
-
   train <- as.data.frame(train)
   test  <- as.data.frame(test)
+  if (model_name %in% c("GAM", "RF", "LR", "GPR", "XGB")) {
+    train <- ensure_categorical_factors(train, predictor_vars)
+    test  <- ensure_categorical_factors(test, predictor_vars)
+  }
+  if (model_name == "GPR")
+    return(list(train = train, test = test, predictor_vars = predictor_vars,
+                scale_params = NULL, encoding = NULL, encoded_names = predictor_vars))
+
   if (model_name == "GAM" || model_name == "RF" || model_name == "LR") {
     prep     <- prepare_predictors_train_numeric_only(train, predictor_vars)
     test_prep <- as.data.frame(apply_scaling(test[, predictor_vars, drop = FALSE], prep$scale_params, predictor_vars))
+    encoded_names <- predictor_vars
+  } else if (model_name == "XGB") {
+    prep <- prepare_predictors_train_xgb(train, predictor_vars)
+    enc  <- c(prep$encoding, list(scale_params = prep$scale_params))
+    test <- ensure_categorical_factors(
+      test, predictor_vars,
+      reference_levels = prep$encoding$levels
+    )
+    test_prep <- prepare_predictors_new_xgb(test, enc, prep$encoded_names)
+    encoded_names <- prep$encoded_names
   } else {
     prep     <- prepare_predictors_train(train, predictor_vars)
     test_prep <- prepare_predictors_new(test, predictor_vars, prep$scale_params, prep$encoding)
+    encoded_names <- predictor_vars
   }
   # Attach response so fit_* have median_carbon_density; GAM also needs longitude, latitude for s(longitude, latitude)
   train_out <- prep$data
@@ -232,6 +412,7 @@ prepare_data_for_model <- function(model_name, train, test, predictor_vars) {
     train          = train_out,
     test           = test_prep,
     predictor_vars = predictor_vars,
+    encoded_names  = encoded_names,
     scale_params   = prep$scale_params,
     encoding       = prep$encoding
   )
@@ -239,7 +420,7 @@ prepare_data_for_model <- function(model_name, train, test, predictor_vars) {
 
 # ================================ GENERIC PREDICTOR ================================
 
-#' Normalize scale_params to shared format (means, sds).
+#' Normalize scale_params to shared format (means, sds). Handles legacy x_center/x_scale.
 normalize_scale_params <- function(sp) {
   if (is.null(sp)) return(NULL)
   if (!is.null(sp$means)) return(sp)
@@ -259,12 +440,93 @@ infer_model_type <- function(obj) {
   stop("Could not infer model type from object.")
 }
 
+#' Choose GAM family from response scale.
+#' @param log_response If TRUE, response is log-transformed (Gaussian on log scale).
+#' @param y_train Training response vector on the fitting scale.
+gam_family_for_response <- function(log_response, y_train) {
+  if (isTRUE(log_response)) return(gaussian())
+  if (any(y_train <= 0, na.rm = TRUE)) {
+    warning("Non-positive training responses with log_response=FALSE; using Gaussian.")
+    return(gaussian())
+  }
+  Gamma(link = "log")
+}
+
+#' Clamp predictions on the model fitting scale.
+clamp_fitted_scale <- function(pred, y_range, margin = 3) {
+  if (length(y_range) < 2L || !all(is.finite(y_range))) return(pred)
+  if (diff(y_range) <= 0) return(pred)
+  lo <- y_range[1] - margin * diff(y_range)
+  hi <- y_range[2] + margin * diff(y_range)
+  pmin(pmax(pred, lo), hi)
+}
+
+#' Clamp carbon-density predictions on the original (g/cm3) scale.
+clamp_original_carbon <- function(pred, y_range_orig, margin = 0.1) {
+  if (length(y_range_orig) < 2L || !all(is.finite(y_range_orig))) return(pmax(pred, 0))
+  hi <- y_range_orig[2] * (1 + margin)
+  pmax(0, pmin(pred, hi))
+}
+
+#' Species means / global mean for GAM reliability blending (original scale).
+compute_gam_species_metadata <- function(train_data,
+                                         response_var = "median_carbon_density",
+                                         log_response = TRUE) {
+  y_orig <- train_data[[response_var]]
+  if (isTRUE(log_response)) {
+    y_orig <- exp(as.numeric(y_orig))
+  }
+  global_mean <- mean(y_orig, na.rm = TRUE)
+  species_means <- NULL
+  if ("seagrass_species" %in% names(train_data)) {
+    species_means <- compute_train_species_means(
+      data.frame(median_carbon_density = y_orig, seagrass_species = train_data$seagrass_species),
+      response_var, "seagrass_species"
+    )
+  }
+  list(
+    species_means = species_means,
+    global_mean = global_mean,
+    y_range_fitted = range(train_data[[response_var]], na.rm = TRUE),
+    y_range_original = range(y_orig, na.rm = TRUE)
+  )
+}
+
+#' Blend model predictions toward species means when environmental similarity is low.
+blend_with_species_mean <- function(mean_vec, se_vec, species_vec, species_means, global_mean,
+                                    similarity_scores, log_response = FALSE) {
+  if (is.null(similarity_scores) || length(similarity_scores) != length(mean_vec)) {
+    return(list(mean = mean_vec, se = se_vec))
+  }
+  s <- pmax(0, pmin(1, as.numeric(similarity_scores)))
+  sp_mean <- lookup_species_means(species_means, species_vec, fallback = global_mean)
+  if (isTRUE(log_response)) {
+    mean_orig <- exp(mean_vec)
+    se_orig <- if (!is.null(se_vec)) se_vec * mean_orig else NULL
+    blended_orig <- s * mean_orig + (1 - s) * sp_mean
+    out_se <- if (!is.null(se_orig)) {
+      sqrt((s * se_orig)^2 + ((1 - s) * (mean_orig - sp_mean))^2)
+    } else NULL
+    list(
+      mean = log(pmax(blended_orig, .Machine$double.eps)),
+      se = if (!is.null(out_se)) out_se / pmax(blended_orig, .Machine$double.eps) else NULL
+    )
+  }
+  blended <- s * mean_vec + (1 - s) * sp_mean
+  out_se <- if (!is.null(se_vec)) {
+    sqrt((s * se_vec)^2 + ((1 - s) * (mean_vec - sp_mean))^2)
+  } else NULL
+  list(mean = blended, se = out_se)
+}
+
 #' Generic predictor for saved models (GPR, XGB, GAM, LR, RF).
 #' @param obj Saved model list (model, predictor_vars, scale_params, encoding, encoded_names, log_response, ...)
 #' @param newdata Data frame with predictor columns
-#' @param se If TRUE and model supports it (GPR), return standard errors
-#' @return List with \code{mean} (predictions on original scale) and \code{se} (NULL or on original scale if GPR)
-predict_model <- function(obj, newdata, se = TRUE) {
+#' @param se If TRUE and model supports it (GPR, GAM), return predictive standard errors
+#' @param similarity_scores Optional numeric vector in [0, 1] for GAM reliability blending
+#'   toward training species means when extrapolating (same length as \code{newdata} rows).
+#' @return List with \code{mean} (predictions on original scale) and \code{se} (NULL or on original scale)
+predict_model <- function(obj, newdata, se = TRUE, similarity_scores = NULL) {
   type <- infer_model_type(obj)
   pvars <- obj$predictor_vars
   X <- newdata[, pvars, drop = FALSE]
@@ -273,19 +535,48 @@ predict_model <- function(obj, newdata, se = TRUE) {
     if (!"longitude" %in% names(X)) X$longitude <- newdata$longitude
     if (!"latitude" %in% names(X)) X$latitude <- newdata$latitude
   }
+  model_cols <- obj$encoded_names %||% pvars
   if (!is.null(obj$encoding)) {
-    if (!is.null(obj$encoding$type) && identical(obj$encoding$type, "one_hot")) {
-      X <- prepare_predictors_new_onehot(X, obj$encoding, obj$encoded_names %||% pvars)
+  enc_type <- obj$encoding$type %||% NA_character_
+  if (type == "GPR" && identical(enc_type, "one_hot") &&
+      !is.null(obj$species_means) &&
+      !is.null(obj$encoding$kernel_predictor_vars)) {
+    enc_type <- "gpr_species_adjusted"
+  }
+  if (identical(enc_type, "gpr_species_adjusted")) {
+      kernel_pvars <- obj$encoding$kernel_predictor_vars %||%
+        setdiff(pvars, get_species_fixed_vars(pvars))
+      X <- newdata[, kernel_pvars, drop = FALSE]
+      X <- prepare_predictors_new_onehot(X, obj$encoding, model_cols)
+      sp <- normalize_scale_params(obj$scale_params)
+      if (!is.null(sp) && length(sp$means) > 0L) {
+        X <- apply_scaling(X, sp, model_cols)
+      }
+    } else if (identical(enc_type, "one_hot")) {
+      X <- prepare_predictors_new_onehot(X, obj$encoding, model_cols)
+      # Legacy GPR fits store type = "one_hot" (species dummies in the GP kernel).
+      # Training scales the full encoded design matrix; prediction must match.
+      if (type == "GPR") {
+        sp <- normalize_scale_params(obj$scale_params)
+        if (!is.null(sp) && length(sp$means) > 0L) {
+          X <- apply_scaling(X, sp, model_cols)
+        }
+      }
+    } else if (identical(enc_type, "xgb_one_hot")) {
+      enc <- c(obj$encoding, list(scale_params = normalize_scale_params(obj$scale_params)))
+      X <- prepare_predictors_new_xgb(X, enc, model_cols)
     } else {
       X <- apply_categorical_encoding(X, obj$encoding, pvars)
+      sp <- normalize_scale_params(obj$scale_params)
+      if (!is.null(sp) && length(sp$means) > 0L) {
+        X <- apply_scaling(X, sp, model_cols)
+      }
     }
-  }
-  model_cols <- obj$encoded_names %||% pvars
-
-  # Scale if params present
-  sp <- normalize_scale_params(obj$scale_params)
-  if (!is.null(sp) && length(sp$means) > 0L) {
-    X <- apply_scaling(X, sp, model_cols)
+  } else {
+    sp <- normalize_scale_params(obj$scale_params)
+    if (!is.null(sp) && length(sp$means) > 0L) {
+      X <- apply_scaling(X, sp, model_cols)
+    }
   }
 
   if (type == "GPR") {
@@ -297,16 +588,51 @@ predict_model <- function(obj, newdata, se = TRUE) {
     } else {
       out <- list(mean = as.numeric(pred_out), se = NULL)
     }
+    sp_var <- obj$encoding$species_var %||% NULL
+    if (!is.null(obj$species_means) && !is.null(sp_var) && sp_var %in% names(newdata)) {
+      fallback <- obj$global_mean %||% 0
+      sp_adj <- lookup_species_means(obj$species_means, newdata[[sp_var]], fallback)
+      out$mean <- out$mean + sp_adj
+    }
   } else if (type == "XGB") {
     X_mat <- as.matrix(X[, model_cols, drop = FALSE])
     storage.mode(X_mat) <- "double"
     out <- list(mean = as.numeric(predict(obj$model, newdata = X_mat)), se = NULL)
   } else if (type == "GAM") {
+    gam_fit <- obj$model
+    log_resp <- isTRUE(obj$log_response)
+    pred_type <- if (log_resp || identical(gam_fit$family$family, "gaussian")) "link" else "response"
     if (isTRUE(se)) {
-      pr <- mgcv::predict.gam(obj$model, newdata = X, type = "response", se.fit = TRUE)
-      out <- list(mean = as.numeric(pr$fit), se = as.numeric(pr$se.fit))
+      pr <- mgcv::predict.gam(gam_fit, newdata = X, type = pred_type, se.fit = TRUE)
+      se_mean <- as.numeric(pr$se.fit)
+      scale_par <- sqrt(as.numeric(gam_fit$scale))
+      if (!is.finite(scale_par) || scale_par <= 0) scale_par <- 0
+      if (identical(gam_fit$family$family, "Gamma")) {
+        mu <- as.numeric(pr$fit)
+        se_pred <- sqrt(se_mean^2 + scale_par * pmax(mu, 0))
+      } else {
+        se_pred <- sqrt(se_mean^2 + scale_par^2)
+      }
+      out <- list(mean = as.numeric(pr$fit), se = se_pred)
     } else {
-      out <- list(mean = as.numeric(mgcv::predict.gam(obj$model, newdata = X, type = "response")), se = NULL)
+      out <- list(
+        mean = as.numeric(mgcv::predict.gam(gam_fit, newdata = X, type = pred_type)),
+        se = NULL
+      )
+    }
+    y_range_fit <- obj$y_range_fitted
+    if (is.null(y_range_fit) && !is.null(obj$y_range)) y_range_fit <- obj$y_range
+    if (!is.null(y_range_fit)) {
+      out$mean <- clamp_fitted_scale(out$mean, y_range_fit)
+    }
+    if (!is.null(obj$species_means) && "seagrass_species" %in% names(newdata)) {
+      blended <- blend_with_species_mean(
+        out$mean, out$se, newdata$seagrass_species,
+        obj$species_means, obj$global_mean %||% 0,
+        similarity_scores, log_response = log_resp
+      )
+      out$mean <- blended$mean
+      out$se <- blended$se
     }
   } else if (type == "LR") {
     out <- list(mean = as.numeric(stats::predict(obj$model, newdata = X)), se = NULL)
@@ -318,6 +644,17 @@ predict_model <- function(obj, newdata, se = TRUE) {
   if (isTRUE(obj$log_response)) {
     out$mean <- inverse_response_transform(out$mean, log = TRUE)
     if (!is.null(out$se)) out$se <- out$se * out$mean
+  }
+  if (type == "GAM") {
+    y_range_orig <- obj$y_range_original
+    if (is.null(y_range_orig) && !is.null(obj$y_range_fitted) && isTRUE(obj$log_response)) {
+      y_range_orig <- exp(obj$y_range_fitted)
+    }
+    if (!is.null(y_range_orig)) {
+      out$mean <- clamp_original_carbon(out$mean, y_range_orig)
+    } else {
+      out$mean <- pmax(out$mean, 0)
+    }
   }
   out
 }
@@ -370,23 +707,47 @@ fit_gpr <- function(train_data,
   }
 
   train_data <- as.data.frame(train_data)
+  species_fixed <- get_species_fixed_vars(predictor_vars)
+  has_species_fe <- length(species_fixed) > 0L
+  species_var <- if (has_species_fe) species_fixed[[1L]] else NULL
+  kernel_vars <- if (has_species_fe) setdiff(predictor_vars, species_fixed) else predictor_vars
+
   train_X <- train_data[, predictor_vars, drop = FALSE]
   train_y <- train_data$median_carbon_density
   ok_train <- complete.cases(train_X) & !is.na(train_y)
-  train_X <- train_X[ok_train, , drop = FALSE]
+  train_sub <- train_data[ok_train, , drop = FALSE]
   train_y <- train_y[ok_train]
+  train_X <- train_X[ok_train, , drop = FALSE]
+  global_mean <- mean(train_y, na.rm = TRUE)
+  species_means <- NULL
+
+  if (has_species_fe) {
+    species_means <- compute_train_species_means(train_sub, "median_carbon_density", species_var)
+    train_y <- train_y - lookup_species_means(species_means, train_sub[[species_var]], fallback = global_mean)
+  }
+
   if (nrow(train_X) < 2L) {
-    out <- list(model = NULL, scale_params = NULL, encoding = NULL, encoded_names = predictor_vars,
-                predictor_vars = predictor_vars, model_type = "GPR")
+    out <- list(model = NULL, scale_params = NULL, encoding = NULL, encoded_names = kernel_vars,
+                predictor_vars = predictor_vars, model_type = "GPR",
+                species_means = species_means, global_mean = global_mean)
     if (!is.null(test_data)) out <- c(out, list(predictions = rep(NA_real_, nrow(test_data)), r2 = NA_real_, rmse = NA_real_))
     if (!is.null(prediction_grid)) out <- c(out, list(predictions = numeric(), se = numeric(), prediction_grid = prediction_grid, n_train = 0L, n_pred = 0L))
     return(out)
   }
 
-  prep <- prepare_predictors_train_onehot(train_X, predictor_vars)
+  train_X_kernel <- train_sub[, kernel_vars, drop = FALSE]
+  prep <- prepare_predictors_train_onehot(train_X_kernel, kernel_vars)
   train_sc <- prep$data
   sp <- prep$scale_params
   encoded_names <- prep$encoded_names
+  encoding <- prep$encoding
+  if (has_species_fe) {
+    encoding <- utils::modifyList(encoding, list(
+      type = "gpr_species_adjusted",
+      species_var = species_var,
+      kernel_predictor_vars = kernel_vars
+    ))
+  }
 
   model_pvars <- if (!is.null(formula)) {
     intersect(setdiff(all.vars(formula), value_var), encoded_names)
@@ -404,29 +765,41 @@ fit_gpr <- function(train_data,
     error = function(e) NULL
   )
   if (is.null(mdl)) {
-    out <- list(model = NULL, scale_params = sp, encoding = prep$encoding, encoded_names = encoded_names,
-                predictor_vars = predictor_vars, model_type = "GPR")
+    out <- list(model = NULL, scale_params = sp, encoding = encoding, encoded_names = encoded_names,
+                predictor_vars = predictor_vars, model_type = "GPR",
+                species_means = species_means, global_mean = global_mean)
     if (!is.null(test_data)) out <- c(out, list(predictions = rep(NA_real_, nrow(test_data)), r2 = NA_real_, rmse = NA_real_))
     if (!is.null(prediction_grid)) out <- c(out, list(predictions = numeric(), se = numeric(), prediction_grid = prediction_grid, n_train = nrow(train_data), n_pred = 0L))
     return(out)
   }
 
-  base <- list(model = mdl, scale_params = sp, encoding = prep$encoding, encoded_names = encoded_names,
-               predictor_vars = predictor_vars, model_type = "GPR")
+  gpr_predict_kernel <- function(X_df, ok_idx = rep(TRUE, nrow(X_df))) {
+    na_pred <- rep(NA_real_, nrow(X_df))
+    if (sum(ok_idx) > 0L) {
+      test_sc <- prepare_predictors_new_onehot(X_df[ok_idx, kernel_vars, drop = FALSE], prep$encoding, encoded_names)
+      test_sc <- as.data.frame(apply_scaling(test_sc, sp, encoded_names))
+      X_mat <- as.matrix(test_sc[, model_pvars, drop = FALSE])
+      storage.mode(X_mat) <- "double"
+      preds <- na_pred
+      preds[ok_idx] <- as.numeric(mdl$pred(X_mat, se.fit = FALSE))
+      preds
+    } else na_pred
+  }
+
+  add_species_effect <- function(preds, data_df) {
+    if (!has_species_fe || is.null(species_means) || !species_var %in% names(data_df)) return(preds)
+    preds + lookup_species_means(species_means, data_df[[species_var]], fallback = global_mean)
+  }
+
+  base <- list(model = mdl, scale_params = sp, encoding = encoding, encoded_names = encoded_names,
+               predictor_vars = predictor_vars, model_type = "GPR",
+               species_means = species_means, global_mean = global_mean)
 
   if (!is.null(test_data)) {
     test_data <- as.data.frame(test_data)
     test_X <- test_data[, predictor_vars, drop = FALSE]
     ok_test <- complete.cases(test_X)
-    na_pred <- rep(NA_real_, nrow(test_data))
-    if (sum(ok_test) > 0L) {
-      test_sc <- prepare_predictors_new_onehot(test_X, prep$encoding, encoded_names)
-      test_sc <- as.data.frame(apply_scaling(test_sc, sp, encoded_names))
-      X_mat <- as.matrix(test_sc[ok_test, model_pvars, drop = FALSE])
-      storage.mode(X_mat) <- "double"
-      preds <- na_pred
-      preds[ok_test] <- as.numeric(mdl$pred(X_mat, se.fit = FALSE))
-    } else preds <- na_pred
+    preds <- add_species_effect(gpr_predict_kernel(test_data, ok_test), test_data)
     obs <- test_data$median_carbon_density
     valid <- !is.na(preds) & !is.na(obs) & is.finite(preds) & is.finite(obs)
     r2 <- if (sum(valid) >= 2) cor(preds[valid], obs[valid])^2 else NA_real_
@@ -441,13 +814,15 @@ fit_gpr <- function(train_data,
     mu <- se <- rep(NA_real_, nrow(prediction_grid))
     if (sum(pred_ok) > 0L) {
       pred_sc <- prepare_predictors_new_onehot(
-        prediction_grid[pred_ok, predictor_vars, drop = FALSE], prep$encoding, encoded_names)
+        prediction_grid[pred_ok, kernel_vars, drop = FALSE], prep$encoding, encoded_names)
       pred_sc <- as.data.frame(apply_scaling(pred_sc, sp, encoded_names))
       XX <- as.matrix(pred_sc[, model_pvars, drop = FALSE])
       storage.mode(XX) <- "double"
       pr <- mdl$pred(XX, se.fit = TRUE, return_df = TRUE)
-      mu[pred_ok] <- as.numeric(pr$mean)
-      se[pred_ok] <- as.numeric(pr$se)
+      resid_mu <- as.numeric(pr$mean)
+      resid_se <- as.numeric(pr$se)
+      mu[pred_ok] <- add_species_effect(resid_mu, prediction_grid[pred_ok, , drop = FALSE])
+      se[pred_ok] <- resid_se
     }
     prediction_grid$gpr_mean <- mu
     prediction_grid$gpr_se   <- se
@@ -499,7 +874,7 @@ fit_xgboost <- function(train_data, test_data, predictor_vars, hyperparams = NUL
 }
 
 fit_gam <- function(train_data, test_data, predictor_vars, k_spatial = 80,
-                    include_spatial = FALSE, k_covariate = 6L) {
+                    include_spatial = FALSE, k_covariate = 6L, ...) {
   if (!requireNamespace("mgcv", quietly = TRUE))
     return(list(model = NULL, predictions = rep(NA_real_, nrow(test_data))))
 
@@ -533,7 +908,7 @@ fit_gam <- function(train_data, test_data, predictor_vars, k_spatial = 80,
 
   fit <- try(
     mgcv::gam(form, data = train_data, family = family_used,
-              method = "REML", select = FALSE), # TODO: does this now throw infs?
+              method = "REML", select = FALSE),
     silent = TRUE
   )
   if (inherits(fit, "try-error"))

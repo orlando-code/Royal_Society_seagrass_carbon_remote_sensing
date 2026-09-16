@@ -462,7 +462,9 @@ for (model_name in model_list) {
 
   species_levels <- "all"
   if ("seagrass_species" %in% pvars) {
-    if (!is.null(obj$encoding) && "seagrass_species" %in% names(obj$encoding) && length(obj$encoding$seagrass_species) > 0L) {
+    if (identical(obj$encoding$type, "gpr_species_adjusted") && !is.null(obj$species_means)) {
+      species_levels <- names(obj$species_means)
+    } else if (!is.null(obj$encoding) && "seagrass_species" %in% names(obj$encoding) && length(obj$encoding$seagrass_species) > 0L) {
       species_levels <- unique(as.character(obj$encoding$seagrass_species))
     } else if ("seagrass_species" %in% names(dat)) {
       species_levels <- sort(unique(as.character(dat$seagrass_species)))

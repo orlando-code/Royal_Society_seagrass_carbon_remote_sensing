@@ -193,20 +193,12 @@ make_predictor <- function(model_name) {
     )
 
   } else if (model_name == "GPR") {
-    # Reconstruct the gpr list that predict_gpr expects
-    gpr_list <- list(
-      model          = obj$model,
-      predictor_vars = obj$predictor_vars,
-      scale_params   = obj$scale_params,
-      encoding       = obj$encoding,
-      encoded_names  = obj$encoded_names
-    )
     pred_fun <- function(m, newdata) {
-      res <- predict_gpr(m, newdata[, pvars, drop = FALSE], se = FALSE)
+      res <- predict_model(m, newdata[, m$predictor_vars, drop = FALSE], se = FALSE)
       as.numeric(res$mean)
     }
     iml::Predictor$new(
-      model            = gpr_list,
+      model            = obj,
       data             = core_data[, pvars, drop = FALSE],
       y                = core_data$median_carbon_density,
       predict.function = pred_fun

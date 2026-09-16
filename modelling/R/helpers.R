@@ -459,16 +459,27 @@ compute_shap_importance <- function(core_data, target_var, predictor_vars,
     train_core <- if (nrow(core) > max_gpr_train) {
       core[sample(nrow(core), max_gpr_train), , drop = FALSE]
     } else core
-    train_X <- train_core[, predictor_vars, drop = FALSE]
-    # Use integer-coded categoricals (not one-hot) so iml::Shapley
-    # sees one column per original predictor and works reliably.
-    prep    <- prepare_predictors_train(train_X, predictor_vars)
-    train_sc <- prep$data
-    pvars <- predictor_vars
-    train_df <- cbind(median_carbon_density = train_core$median_carbon_density,
-                      train_sc)
-    X <- train_sc[, pvars, drop = FALSE]
+    train_core <- ensure_categorical_factors(train_core, predictor_vars)
+    species_fixed <- get_species_fixed_vars(predictor_vars)
+    species_var <- if (length(species_fixed)) species_fixed[[1L]] else NULL
+    kernel_vars <- setdiff(predictor_vars, species_fixed)
+    global_mean <- mean(train_core$median_carbon_density, na.rm = TRUE)
+    species_means <- NULL
     y_gpr <- train_core$median_carbon_density
+    if (!is.null(species_var) && species_var %in% names(train_core)) {
+      species_means <- compute_train_species_means(train_core, "median_carbon_density", species_var)
+      y_gpr <- y_gpr - lookup_species_means(species_means, train_core[[species_var]], fallback = global_mean)
+    }
+    train_X <- train_core[, kernel_vars, drop = FALSE]
+    # Integer-coded env predictors (species excluded) so iml::Shapley sees one column per var.
+    prep    <- prepare_predictors_train(train_X, kernel_vars)
+    train_sc <- prep$data
+    pvars <- kernel_vars
+    train_df <- cbind(median_carbon_density = y_gpr, train_sc)
+    X <- train_sc[, pvars, drop = FALSE]
+    if (!is.null(species_var) && species_var %in% names(train_core)) {
+      X[[species_var]] <- train_core[[species_var]]
+    }
     form_str <- paste(
       quote_formula_terms("median_carbon_density"), "~",
       paste(quote_formula_terms(pvars), collapse = " + ")
@@ -488,9 +499,13 @@ compute_shap_importance <- function(core_data, target_var, predictor_vars,
     pred_fun  <- function(m, newdata) {
       Xn <- as.matrix(newdata[, pvars, drop = FALSE])
       storage.mode(Xn) <- "double"
-      as.numeric(m$pred(Xn, se.fit = FALSE))
+      resid <- as.numeric(m$pred(Xn, se.fit = FALSE))
+      if (!is.null(species_means) && !is.null(species_var) && species_var %in% names(newdata)) {
+        resid <- resid + lookup_species_means(species_means, newdata[[species_var]], fallback = global_mean)
+      }
+      resid
     }
-    y <- y_gpr
+    y <- train_core$median_carbon_density
   } else {
     stop("compute_shap_importance: unsupported model_name '", model_name, "'")
   }
