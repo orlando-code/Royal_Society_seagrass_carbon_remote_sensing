@@ -3,6 +3,8 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import matplotlib.patches as mpatches
+from matplotlib.patches import Rectangle
 
 
 def convert_carbon_density_to_carbon_stock(
@@ -197,19 +199,19 @@ def plot_comparison_bars(
     return fig, axes
 
 
-def _territory_total_stock_se(
+def _aggregate_stock_se(
     df: pd.DataFrame,
-    territory_col: str,
     se_col: str,
+    group_cols: list[str],
     *,
     method: str = "rss",
 ) -> pd.Series:
-    """Standard error of summed stock per territory.
+    """Aggregate per-row stock SE over ``group_cols``.
 
     Args:
         df: Input dataframe with per-row standard errors.
-        territory_col: Territory grouping column.
         se_col: Per-row standard error column.
+        group_cols: Columns to group by before aggregation.
         method: Aggregation method:
             - ``"rss"``: ``sqrt(sum(se_i^2))`` (independence lower-ish bound)
             - ``"upper"``: ``sum(se_i)`` (fully correlated upper-ish bound)
@@ -217,16 +219,46 @@ def _territory_total_stock_se(
     if se_col not in df.columns:
         return pd.Series(dtype=float)
     se = pd.to_numeric(df[se_col], errors="coerce").to_numpy(dtype=float)
-    g2 = df[[territory_col]].copy()
+    grouped = df[group_cols].copy()
     method = str(method).lower()
     if method == "rss":
-        g2["_tmp"] = np.nan_to_num(np.square(se), nan=0.0)
-        summed = g2.groupby(territory_col, sort=False)["_tmp"].sum()
+        grouped["_tmp"] = np.nan_to_num(np.square(se), nan=0.0)
+        summed = grouped.groupby(group_cols, sort=False)["_tmp"].sum()
         return np.sqrt(summed)
     if method == "upper":
-        g2["_tmp"] = np.nan_to_num(se, nan=0.0)
-        return g2.groupby(territory_col, sort=False)["_tmp"].sum()
+        grouped["_tmp"] = np.nan_to_num(se, nan=0.0)
+        return grouped.groupby(group_cols, sort=False)["_tmp"].sum()
     raise ValueError("method must be one of {'rss', 'upper'}")
+
+
+def _territory_total_stock_se(
+    df: pd.DataFrame,
+    territory_col: str,
+    se_col: str,
+    *,
+    method: str = "rss",
+) -> pd.Series:
+    """Standard error of summed stock per territory."""
+    return _aggregate_stock_se(
+        df, se_col, [territory_col], method=method
+    )
+
+
+def _territory_species_stock_se(
+    df: pd.DataFrame,
+    territory_col: str,
+    species_col: str,
+    se_col: str,
+    *,
+    method: str = "rss",
+) -> pd.DataFrame:
+    """Territory × species standard error pivot for stacked-bar error bars."""
+    aggregated = _aggregate_stock_se(
+        df, se_col, [territory_col, species_col], method=method
+    )
+    if aggregated.empty:
+        return pd.DataFrame()
+    return aggregated.unstack(fill_value=0.0)
 
 
 def _species_ordered_stack_pivot(
@@ -256,6 +288,44 @@ def _prettify_territory_xlabels(ax: plt.Axes) -> None:
     ax.tick_params(axis="x", rotation=45)
 
 
+def _plot_species_segment_errorbars(
+    ax: plt.Axes,
+    data: pd.DataFrame,
+    species_se: pd.DataFrame,
+    colors: list[str],
+    *,
+    errorbar_capsize: float,
+    x_offset: float,
+    linewidth: float,
+) -> None:
+    """Draw species-coloured SE bars at the top of each stacked segment."""
+    n_bars = len(data)
+    if n_bars == 0 or species_se is None or species_se.empty:
+        return
+    x_pos = np.arange(n_bars, dtype=float) + x_offset
+    values = data.to_numpy(dtype=float)
+    se_vals = species_se.reindex(index=data.index, columns=data.columns).to_numpy(
+        dtype=float
+    )
+    segment_tops = np.cumsum(values, axis=1)
+    for j, color in enumerate(colors):
+        tops = segment_tops[:, j]
+        errs = se_vals[:, j]
+        valid = np.isfinite(tops) & np.isfinite(errs) & (errs > 0)
+        if np.any(valid):
+            ax.errorbar(
+                x_pos[valid],
+                tops[valid],
+                yerr=errs[valid],
+                fmt="none",
+                ecolor=color,
+                elinewidth=linewidth,
+                capsize=errorbar_capsize,
+                capthick=linewidth,
+                zorder=25,
+            )
+
+
 def _plot_stacked_species_bars_on_ax(
     ax: plt.Axes,
     data: pd.DataFrame,
@@ -263,10 +333,15 @@ def _plot_stacked_species_bars_on_ax(
     *,
     y_label: str,
     territory_se: pd.Series | None,
+    species_se: pd.DataFrame | None,
+    show_species_errorbars: bool,
     errorbar_capsize: float,
     errorbar_color: str,
+    species_errorbar_x_offset: float,
+    species_errorbar_linewidth: float,
+    species_errorbar_capsize: float,
 ) -> None:
-    """Draw stacked species bars and optional per-territory total error bars."""
+    """Draw stacked species bars and optional per-segment / total error bars."""
     data.plot(
         kind="bar",
         stacked=True,
@@ -281,12 +356,24 @@ def _plot_stacked_species_bars_on_ax(
     ax.grid(True, which="minor", axis="y", alpha=0.1)
     _prettify_territory_xlabels(ax)
     n_bars = len(data)
-    if territory_se is None or territory_se.empty or n_bars == 0:
+    if n_bars == 0:
+        return
+    if show_species_errorbars:
+        _plot_species_segment_errorbars(
+            ax,
+            data,
+            species_se,
+            colors,
+            errorbar_capsize=species_errorbar_capsize,
+            x_offset=species_errorbar_x_offset,
+            linewidth=species_errorbar_linewidth,
+        )
+    if territory_se is None or territory_se.empty:
         return
     x_pos = np.arange(n_bars, dtype=float)
     totals = data.sum(axis=1).to_numpy(dtype=float)
     errs = territory_se.reindex(data.index).to_numpy(dtype=float)
-    valid = np.isfinite(totals) & np.isfinite(errs)
+    valid = np.isfinite(totals) & np.isfinite(errs) & (errs > 0)
     if np.any(valid):
         ax.errorbar(
             x_pos[valid],
@@ -300,6 +387,422 @@ def _plot_stacked_species_bars_on_ax(
         )
 
 
+def _species_color_legend_handles(
+    colors: list[str], species_labels: list[str] | pd.Index
+) -> list[mpatches.Patch]:
+    """Legend patches for species-coloured grouped bar charts."""
+    return [
+        mpatches.Patch(facecolor=colors[j], edgecolor="none", label=str(label))
+        for j, label in enumerate(species_labels)
+    ]
+
+
+def _prepare_grouped_species_tables(
+    g: pd.DataFrame,
+    species_color_map: dict[str, str],
+    *,
+    territory_col: str,
+    species_col: str,
+    value_col: str,
+    se_col: str,
+    error_method: str,
+) -> tuple[pd.DataFrame, list[str], pd.Series, pd.DataFrame]:
+    """Build sorted grouped stock table and territory/species SE pivots."""
+    grouped, colors = _species_ordered_stack_pivot(
+        g,
+        species_color_map,
+        territory_col=territory_col,
+        species_col=species_col,
+        value_col=value_col,
+    )
+    grouped = grouped.loc[grouped.sum(axis=1).sort_values(ascending=False).index]
+    territory_se = _territory_total_stock_se(
+        g,
+        territory_col,
+        se_col,
+        method=error_method,
+    )
+    species_se = _territory_species_stock_se(
+        g,
+        territory_col,
+        species_col,
+        se_col,
+        method=error_method,
+    )
+    species_se = species_se.reindex(
+        index=grouped.index, columns=grouped.columns, fill_value=0.0
+    )
+    return grouped, colors, territory_se, species_se
+
+
+def _plot_grouped_species_bars_on_ax(
+    ax: plt.Axes,
+    data: pd.DataFrame,
+    colors: list[str],
+    *,
+    y_label: str,
+    territory_se: pd.Series | None,
+    species_se: pd.DataFrame | None,
+    group_width: float,
+    errorbar_capsize: float,
+    errorbar_color: str,
+    region_outline_color: str,
+    region_outline_linewidth: float,
+    region_errorbar_linewidth: float,
+    species_errorbar_linewidth: float,
+    species_errorbar_capsize: float,
+    species_errorbar_x_offset: float,
+) -> None:
+    """Draw grouped species bars per territory with region outline and error bars."""
+    n_groups = len(data)
+    n_species = len(data.columns)
+    if n_groups == 0 or n_species == 0:
+        return
+    species_list = list(data.columns)
+    x_groups = np.arange(n_groups, dtype=float)
+    values = data.to_numpy(dtype=float)
+    se_vals = (
+        species_se.reindex(index=data.index, columns=data.columns).to_numpy(dtype=float)
+        if species_se is not None and not species_se.empty
+        else np.full_like(values, np.nan)
+    )
+    totals = values.sum(axis=1)
+
+    for i in range(n_groups):
+        present = [
+            (j, float(values[i, j]), float(se_vals[i, j]))
+            for j in range(n_species)
+            if np.isfinite(values[i, j]) and values[i, j] > 0
+        ]
+        present.sort(key=lambda item: item[1], reverse=True)
+        if not present:
+            continue
+        bar_width = group_width / len(present)
+        for rank, (j, height, err) in enumerate(present):
+            x = (
+                x_groups[i]
+                - group_width / 2
+                + bar_width / 2
+                + rank * bar_width
+            )
+            color = colors[j]
+            ax.bar(
+                x,
+                height,
+                width=bar_width * 0.92,
+                color=color,
+                edgecolor="none",
+                zorder=4,
+            )
+            if np.isfinite(err) and err > 0:
+                ax.errorbar(
+                    x + species_errorbar_x_offset,
+                    height,
+                    yerr=err,
+                    fmt="none",
+                    ecolor=color,
+                    elinewidth=species_errorbar_linewidth,
+                    capsize=species_errorbar_capsize,
+                    capthick=species_errorbar_linewidth,
+                    zorder=6,
+                )
+
+    for i, total in enumerate(totals):
+        if not np.isfinite(total) or total <= 0:
+            continue
+        rect = Rectangle(
+            (x_groups[i] - group_width / 2, 0.0),
+            group_width,
+            float(total),
+            linewidth=region_outline_linewidth,
+            edgecolor=region_outline_color,
+            facecolor="none",
+            zorder=2,
+        )
+        ax.add_patch(rect)
+
+    if territory_se is not None and not territory_se.empty:
+        errs = territory_se.reindex(data.index).to_numpy(dtype=float)
+        valid = np.isfinite(totals) & np.isfinite(errs) & (errs > 0) & (totals > 0)
+        if np.any(valid):
+            ax.errorbar(
+                x_groups[valid],
+                totals[valid],
+                yerr=errs[valid],
+                fmt="none",
+                ecolor=errorbar_color,
+                elinewidth=region_errorbar_linewidth,
+                capsize=errorbar_capsize,
+                capthick=region_errorbar_linewidth,
+                zorder=7,
+            )
+
+    ax.set_ylabel(y_label)
+    ax.set_xticks(x_groups)
+    ax.set_xticklabels([str(t) for t in data.index])
+    _prettify_territory_xlabels(ax)
+    ax.set_axisbelow(True)
+    ax.grid(True, which="major", axis="y", alpha=0.5)
+    ax.grid(True, which="minor", axis="y", alpha=0.1)
+
+
+def plot_territory_species_grouped_all(
+    g: pd.DataFrame,
+    *,
+    species_color_map: dict[str, str],
+    territory_col: str = "TERRITORY1",
+    species_col: str = "seagrass_species",
+    value_col: str = "stock_Gg",
+    se_col: str = "stock_Gg_se",
+    error_method: str = "upper",
+    dpi: int = 300,
+    figsize: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
+    xlabel: str = "National Territory",
+    ylabel: str = "Carbon Stock (GgC)",
+    legend_bbox: tuple[float, float] = (0.5, 1.12),
+    group_width: float = 0.85,
+    errorbar_capsize: float = 4.0,
+    errorbar_color: str = "grey",
+    region_outline_color: str = "grey",
+    region_outline_linewidth: float = 1.5,
+    region_errorbar_linewidth: float = 2.5,
+    species_errorbar_x_offset: float = 0.03,
+    species_errorbar_linewidth: float = 2.5,
+    species_errorbar_capsize: float = 4.5,
+) -> tuple[plt.Figure, plt.Axes, pd.DataFrame]:
+    """Grouped species bars per territory, with region outline and error bars.
+
+    For each territory, species contributions are drawn as side-by-side coloured
+    bars sorted left-to-right by descending stock within that territory. A
+    rectangular outline spans the full group width up to the territory total.
+    Species-coloured error bars sit on each species bar; a grey error bar marks
+    the aggregate territory total at the top of the outline.
+
+    Args:
+        g: Dataframe with territory, species, stock, and per-row SE columns.
+        species_color_map: Species-to-color mapping (column order follows this dict).
+        territory_col: Territory column name.
+        species_col: Species column name.
+        value_col: Stock column (GgC).
+        se_col: Per-row stock standard error column.
+        error_method: ``"rss"`` (``sqrt(sum se^2)``) or ``"upper"`` (``sum(se)``).
+            Defaults to ``"upper"`` to match the split-panel stock figures.
+        dpi: Figure DPI.
+        figsize: ``(width, height)`` inches; auto-scales width with territory count
+            when ``None``.
+        ylim: Fixed y-axis limits, or ``None`` for matplotlib default.
+        xlabel: X axis label.
+        ylabel: Y axis label.
+        legend_bbox: ``(x, y)`` in axes fraction terms for ``bbox_to_anchor``.
+        group_width: Width of each territory group in x-axis units.
+        errorbar_capsize: Cap width for territory-total error bars.
+        errorbar_color: Territory-total error bar colour.
+        region_outline_color: Colour of the rectangular region outline.
+        region_outline_linewidth: Line width of the region outline.
+        region_errorbar_linewidth: Line width for territory-total error bars.
+        species_errorbar_x_offset: Horizontal offset for species error bars.
+        species_errorbar_linewidth: Line width for species error bars.
+        species_errorbar_capsize: Cap width for species error bars.
+
+    Returns:
+        ``(fig, ax, grouped_table)`` — territory × species table actually plotted
+        (territories sorted by descending total stock).
+    """
+    grouped, colors, territory_se, species_se = _prepare_grouped_species_tables(
+        g,
+        species_color_map,
+        territory_col=territory_col,
+        species_col=species_col,
+        value_col=value_col,
+        se_col=se_col,
+        error_method=error_method,
+    )
+
+    if figsize is None:
+        figsize = (max(12.0, 0.55 * len(grouped)), 5.0)
+
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    _plot_grouped_species_bars_on_ax(
+        ax,
+        grouped,
+        colors,
+        y_label=ylabel,
+        territory_se=territory_se,
+        species_se=species_se,
+        group_width=group_width,
+        errorbar_capsize=errorbar_capsize,
+        errorbar_color=errorbar_color,
+        region_outline_color=region_outline_color,
+        region_outline_linewidth=region_outline_linewidth,
+        region_errorbar_linewidth=region_errorbar_linewidth,
+        species_errorbar_linewidth=species_errorbar_linewidth,
+        species_errorbar_capsize=species_errorbar_capsize,
+        species_errorbar_x_offset=species_errorbar_x_offset,
+    )
+    ax.set_xlabel(xlabel)
+    legend_handles = _species_color_legend_handles(colors, list(grouped.columns))
+    legend = ax.legend(
+        legend_handles,
+        [str(species) for species in grouped.columns],
+        title="Seagrass Species",
+        bbox_to_anchor=legend_bbox,
+        ncols=len(grouped.columns),
+        loc="center",
+        borderaxespad=0.0,
+    )
+    if legend.get_title() is not None:
+        legend.get_title().set_fontweight("bold")
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    plt.tight_layout()
+    return fig, ax, grouped
+
+
+def plot_territory_species_grouped_split(
+    g: pd.DataFrame,
+    *,
+    species_color_map: dict[str, str],
+    territory_col: str = "TERRITORY1",
+    species_col: str = "seagrass_species",
+    value_col: str = "stock_Gg",
+    se_col: str = "stock_Gg_se",
+    error_method: str = "upper",
+    top_n: int = 5,
+    dpi: int = 300,
+    figsize_height: float = 5.0,
+    ylim_left: tuple[float, float] | None = (0, 6e4),
+    ylim_right: tuple[float, float] | None = (0, 800),
+    left_panel_title: str = "A) Top 5 Territories",
+    right_panel_title: str = "B) Remaining Territories",
+    ylabel: str = "Carbon Stock (GgC)",
+    supxlabel: str = "National Territory",
+    group_width: float = 0.85,
+    errorbar_capsize: float = 4.0,
+    errorbar_color: str = "grey",
+    region_outline_color: str = "grey",
+    region_outline_linewidth: float = 1.5,
+    region_errorbar_linewidth: float = 2.5,
+    species_errorbar_x_offset: float = 0.03,
+    species_errorbar_linewidth: float = 2.5,
+    species_errorbar_capsize: float = 4.5,
+) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes]]:
+    """Grouped species bars per territory in two panels, with region outlines and SE bars.
+
+    Same layout as :func:`plot_territory_species_grouped_all`, split into the top
+    ``top_n`` territories (left) and the remainder (right).
+
+    Returns:
+        ``(fig, (ax_left, ax_right))``
+    """
+    grouped, colors, territory_se, species_se = _prepare_grouped_species_tables(
+        g,
+        species_color_map,
+        territory_col=territory_col,
+        species_col=species_col,
+        value_col=value_col,
+        se_col=se_col,
+        error_method=error_method,
+    )
+    territory_totals = grouped.sum(axis=1)
+    top = territory_totals.index[:top_n]
+    rest = territory_totals.index[top_n:]
+    grouped_top, grouped_rest = grouped.loc[top], grouped.loc[rest]
+
+    n_top = len(grouped_top)
+    n_rest = len(grouped_rest)
+    width_ratios = [1, max(1, n_rest / max(n_top, 1))]
+
+    fig, (ax_l, ax_r) = plt.subplots(
+        1,
+        2,
+        figsize=(14.0, figsize_height),
+        dpi=dpi,
+        gridspec_kw={"width_ratios": width_ratios},
+    )
+    grouped_kwargs = {
+        "colors": colors,
+        "territory_se": territory_se,
+        "species_se": species_se,
+        "group_width": group_width,
+        "errorbar_capsize": errorbar_capsize,
+        "errorbar_color": errorbar_color,
+        "region_outline_color": region_outline_color,
+        "region_outline_linewidth": region_outline_linewidth,
+        "region_errorbar_linewidth": region_errorbar_linewidth,
+        "species_errorbar_linewidth": species_errorbar_linewidth,
+        "species_errorbar_capsize": species_errorbar_capsize,
+        "species_errorbar_x_offset": species_errorbar_x_offset,
+    }
+
+    _plot_grouped_species_bars_on_ax(
+        ax_l,
+        grouped_top,
+        y_label=ylabel,
+        **grouped_kwargs,
+    )
+    ax_l.set_xlabel("")
+    _corner_pad_pts = (-10.0, -10.0)
+    ax_l.annotate(
+        left_panel_title,
+        xy=(1.0, 1.0),
+        xycoords="axes fraction",
+        xytext=_corner_pad_pts,
+        textcoords="offset points",
+        ha="right",
+        va="top",
+        fontsize=11,
+        bbox=dict(
+            boxstyle="square,pad=0.3",
+            facecolor="white",
+            edgecolor="#cccccc",
+        ),
+    )
+
+    _plot_grouped_species_bars_on_ax(
+        ax_r,
+        grouped_rest,
+        y_label="",
+        **grouped_kwargs,
+    )
+    ax_r.set_xlabel("")
+    ax_r.annotate(
+        right_panel_title,
+        xy=(1.0, 1.0),
+        xycoords="axes fraction",
+        xytext=_corner_pad_pts,
+        textcoords="offset points",
+        ha="right",
+        va="top",
+        fontsize=11,
+        bbox=dict(
+            boxstyle="round,pad=0.3", facecolor="white", edgecolor="#cccccc", alpha=0.85
+        ),
+    )
+
+    fig.supxlabel(supxlabel)
+    legend_handles = _species_color_legend_handles(colors, list(grouped.columns))
+    legend = fig.legend(
+        legend_handles,
+        [str(species) for species in grouped.columns],
+        title="Seagrass Species",
+        bbox_to_anchor=(0.5, 1.0),
+        ncol=len(grouped.columns),
+        loc="center",
+        borderaxespad=0.0,
+    )
+    if legend.get_title() is not None:
+        legend.get_title().set_fontweight("bold")
+
+    if ylim_left is not None:
+        ax_l.set_ylim(*ylim_left)
+    if ylim_right is not None:
+        ax_r.set_ylim(*ylim_right)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    return fig, (ax_l, ax_r)
+
+
 def plot_territory_species_stacked_all(
     g: pd.DataFrame,
     *,
@@ -310,6 +813,7 @@ def plot_territory_species_stacked_all(
     se_col: str = "stock_Gg_se",
     error_method: str = "rss",
     show_total_errorbars: bool = False,
+    show_species_errorbars: bool = False,
     dpi: int = 300,
     figsize: tuple[float, float] = (12.0, 5.0),
     ylim: tuple[float, float] | None = None,
@@ -318,6 +822,9 @@ def plot_territory_species_stacked_all(
     legend_bbox: tuple[float, float] = (0.5, 1.1),
     errorbar_capsize: float = 3.0,
     errorbar_color: str = "grey",
+    species_errorbar_x_offset: float = 0.14,
+    species_errorbar_linewidth: float = 2.5,
+    species_errorbar_capsize: float = 4.5,
 ) -> tuple[plt.Figure, plt.Axes, pd.DataFrame]:
     """Single stacked bar chart: all territories by species, ordered by total stock.
 
@@ -327,19 +834,28 @@ def plot_territory_species_stacked_all(
         territory_col: Territory column name.
         species_col: Species column name.
         value_col: Stock column (GgC).
-        se_col: Per-row stock standard error; used only if ``show_total_errorbars``.
+        se_col: Per-row stock standard error; used when error bars are shown.
         error_method: Territory-level error-bar aggregation method:
             ``"rss"`` or ``"upper"``.
-        show_total_errorbars: If ``True``, draw one SE bar on each stacked total
-            (``sqrt(sum se^2)`` for ``"rss"`` or ``sum(se)`` for ``"upper"``).
+        show_total_errorbars: If ``True``, draw one aggregate SE bar on each
+            stacked total (``sqrt(sum se^2)`` for ``"rss"`` or ``sum(se)`` for
+            ``"upper"``).
+        show_species_errorbars: If ``True``, draw species-coloured SE bars at
+            the top of each stacked segment (same aggregation as the total bar,
+            grouped by territory and species). Also draws the aggregate total
+            error bar unless ``show_total_errorbars`` is explicitly ``False``.
         dpi: Figure DPI.
         figsize: ``(width, height)`` inches.
         ylim: Fixed y-axis limits, or ``None`` for matplotlib default.
         xlabel: X axis label.
         ylabel: Y axis label.
         legend_bbox: ``(x, y)`` in axes fraction terms for ``bbox_to_anchor``.
-        errorbar_capsize: Cap width when error bars are shown.
-        errorbar_color: Error bar color when error bars are shown.
+        errorbar_capsize: Cap width for the aggregate total error bars.
+        errorbar_color: Aggregate total error bar color.
+        species_errorbar_x_offset: Horizontal offset (in bar-index units) applied
+            to species error bars so they sit just right of the aggregate bar.
+        species_errorbar_linewidth: Line width for species error bars.
+        species_errorbar_capsize: Cap width for species error bars.
 
     Returns:
         ``(fig, ax, stacked_table)`` — territory × species table actually plotted
@@ -353,13 +869,26 @@ def plot_territory_species_stacked_all(
         value_col=value_col,
     )
     stacked = stacked.loc[stacked.sum(axis=1).sort_values(ascending=False).index]
+    draw_total_errorbars = show_total_errorbars or show_species_errorbars
     territory_se: pd.Series | None = None
-    if show_total_errorbars:
+    species_se: pd.DataFrame | None = None
+    if draw_total_errorbars or show_species_errorbars:
         territory_se = _territory_total_stock_se(
             g,
             territory_col,
             se_col,
             method=error_method,
+        )
+    if show_species_errorbars:
+        species_se = _territory_species_stock_se(
+            g,
+            territory_col,
+            species_col,
+            se_col,
+            method=error_method,
+        )
+        species_se = species_se.reindex(
+            index=stacked.index, columns=stacked.columns, fill_value=0.0
         )
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
@@ -368,9 +897,14 @@ def plot_territory_species_stacked_all(
         stacked,
         colors,
         y_label=ylabel,
-        territory_se=territory_se,
+        territory_se=territory_se if draw_total_errorbars else None,
+        species_se=species_se,
+        show_species_errorbars=show_species_errorbars,
         errorbar_capsize=errorbar_capsize,
         errorbar_color=errorbar_color,
+        species_errorbar_x_offset=species_errorbar_x_offset,
+        species_errorbar_linewidth=species_errorbar_linewidth,
+        species_errorbar_capsize=species_errorbar_capsize,
     )
     ax.set_xlabel(xlabel)
     handles, labels = ax.get_legend_handles_labels()
@@ -400,6 +934,7 @@ def plot_territory_species_stacked_split(
     value_col: str = "stock_Gg",
     se_col: str = "stock_Gg_se",
     error_method: str = "rss",
+    show_species_errorbars: bool = False,
     top_n: int = 5,
     dpi: int = 300,
     figsize_height: float = 5.0,
@@ -411,6 +946,9 @@ def plot_territory_species_stacked_split(
     supxlabel: str = "National Territory",
     errorbar_capsize: float = 3.0,
     errorbar_color: str = "0.15",
+    species_errorbar_x_offset: float = 0.14,
+    species_errorbar_linewidth: float = 2.5,
+    species_errorbar_capsize: float = 4.5,
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes]]:
     """Stacked species contributions by territory in two panels, with total SE error bars.
 
@@ -427,6 +965,8 @@ def plot_territory_species_stacked_split(
         se_col: Column name for per-row stock standard error; if missing, no error bars.
         error_method: Territory-level error-bar aggregation method:
             ``"rss"`` or ``"upper"``.
+        show_species_errorbars: If ``True``, draw species-coloured SE bars at
+            the top of each stacked segment in both panels.
         top_n: Number of largest territories (by total stock) on the left panel.
         dpi: Figure resolution.
         figsize_height: Figure height in inches; width follows panel count ratio.
@@ -457,6 +997,18 @@ def plot_territory_species_stacked_split(
         se_col,
         method=error_method,
     )
+    species_se: pd.DataFrame | None = None
+    if show_species_errorbars:
+        species_se = _territory_species_stock_se(
+            g,
+            territory_col,
+            species_col,
+            se_col,
+            method=error_method,
+        )
+        species_se = species_se.reindex(
+            index=stacked.index, columns=stacked.columns, fill_value=0.0
+        )
     top = territory_totals.index[:top_n]
     rest = territory_totals.index[top_n:]
     stacked_top, stacked_rest = stacked.loc[top], stacked.loc[rest]
@@ -479,8 +1031,13 @@ def plot_territory_species_stacked_split(
         colors,
         y_label=ylabel,
         territory_se=territory_se,
+        species_se=species_se,
+        show_species_errorbars=show_species_errorbars,
         errorbar_capsize=errorbar_capsize,
         errorbar_color=errorbar_color,
+        species_errorbar_x_offset=species_errorbar_x_offset,
+        species_errorbar_linewidth=species_errorbar_linewidth,
+        species_errorbar_capsize=species_errorbar_capsize,
     )
     ax_l.set_xlabel("")
     # Inset from each panel's top-right in points (not axes fraction) so padding matches
@@ -508,8 +1065,13 @@ def plot_territory_species_stacked_split(
         colors,
         y_label="",
         territory_se=territory_se,
+        species_se=species_se,
+        show_species_errorbars=show_species_errorbars,
         errorbar_capsize=errorbar_capsize,
         errorbar_color=errorbar_color,
+        species_errorbar_x_offset=species_errorbar_x_offset,
+        species_errorbar_linewidth=species_errorbar_linewidth,
+        species_errorbar_capsize=species_errorbar_capsize,
     )
     ax_r.set_xlabel("")
     ax_r.annotate(
